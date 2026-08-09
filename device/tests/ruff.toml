@@ -1,0 +1,4 @@
+# 親の device/pyproject.toml は MicroPython 向けにルールを緩めている
+# (ANN / UP / SIM105 / B904)。ここにあるのはデバイスのコードを CPython で
+# 検証するテストで、その緩和は当てはまらない。ルートの設定へ戻す。
+extend = "../../pyproject.toml"

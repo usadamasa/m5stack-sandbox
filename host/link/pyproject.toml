@@ -1,0 +1,72 @@
+# デバイスと喋るための土台。REPL transport (device_repl) と、その上に載る
+# ホスト側クライアント (buddy_bridge) を持つ。host/mcp と host/tools は
+# どちらもここに依存する。
+
+[project]
+name = "buddy-host-link"
+version = "0.1.0"
+description = "USB serial transport and client for the Cardputer-Adv."
+requires-python = ">=3.13"
+dependencies = [
+    # MicroPython's own remote-control tool. Used as a library, not a CLI:
+    # `mpremote.transport_serial.SerialTransport` is the raw-paste REPL
+    # transport that host/tools/src/buddy_deploy.py drives.
+    #
+    # 実行時依存。以前は dev group にあったが、MCP server の経路
+    # (buddy_mcp -> buddy_bridge -> device_repl) が起動のたびに import する。
+    "mpremote>=1.28.0",
+    "pyserial==3.5",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# flat module のまま wheel の top-level に載せる。`only-include` があるので
+# 隣の tests/ は sys.path に漏れない。
+[tool.hatch.build.targets.wheel]
+sources = ["src"]
+only-include = ["src"]
+
+[dependency-groups]
+dev = ["types-pyserial>=3.5.0.20250822"]
+
+# ---------------------------------------------------------------- ruff
+
+[tool.ruff]
+extend = "../../pyproject.toml"
+
+# ---------------------------------------------------------------- pytest
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers --strict-config"
+
+# ---------------------------------------------------------- basedpyright
+
+[tool.basedpyright]
+pythonVersion = "3.13"
+include = ["src", "tests"]
+exclude = ["**/__pycache__"]
+# editable install が入っていれば venv 経由でも引けるが、hatchling の
+# editable は import hook なので静的解析からは見えないことがある。
+extraPaths = ["src"]
+typeCheckingMode = "standard"
+
+# -------------------------------------------------------------- coverage
+
+[tool.coverage.run]
+branch = true
+source = ["src"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+# 目標ではなく回帰バー。実測 46%。ここが 4 member でいちばん低いのは、
+# シリアルポートが実際に刺さっていないと通らない経路を最も多く持つため。
+fail_under = 43
+exclude_also = [
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

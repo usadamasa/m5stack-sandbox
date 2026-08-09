@@ -11,28 +11,35 @@ M5Stack Cardputer-Adv を USB シリアル経由で Claude Code から操作す�
 ## コマンド
 
 ```bash
-uv sync                        # .venv を作る (dev グループ込み)
-uv run pytest                  # テスト
-uv run pytest --cov            # カバレッジ付き
-uv run ruff check              # lint
-uv run ruff format             # format
-uv run basedpyright            # 型検査
-uv run python host/buddy_deploy.py --compile-only   # device/ が MicroPython で通るか
+uv sync --all-packages         # .venv を作る (全 member + dev グループ)
+uv run ruff check              # lint。ルートから 1 回で全 member を見る
+uv run ruff format             # format。同上
+uv run python host/tools/src/buddy_deploy.py --compile-only   # device/ が MicroPython で通るか
+```
+
+pytest と basedpyright は **member ごと**に回す。どちらも 1 プロセス 1 プロジェクトで、
+member の設定を読むにはそこで動かすしかない (`device` / `host/link` / `host/mcp` /
+`host/tools`)。
+
+```bash
+uv run --directory host/link pytest
+uv run --directory host/link pytest --cov
+uv run --directory host/link basedpyright
 ```
 
 デバイス操作は必ず `uv run` を通す。
 
 ```bash
-docker compose up -d                                       # VOICEVOX ENGINE
+docker compose up -d                                            # VOICEVOX ENGINE
 PORT=/dev/cu.usbmodem101
-uv run python host/buddy_deploy.py --port $PORT            # 転送 + 起動 + 発話で確認
-uv run python host/buddy_bridge.py --port $PORT --status   # 単発で叩く
+uv run python host/tools/src/buddy_deploy.py --port $PORT       # 転送 + 起動 + 発話で確認
+uv run python host/link/src/buddy_bridge.py --port $PORT --status   # 単発で叩く
 
 # 声を出すなら、一度だけ WiFi を焼く (以降ブートごとの操作は不要)
 export BUDDY_WIFI_PSK=...
-uv run python host/provision_wifi.py --port $PORT --ssid <SSID> --verify
+uv run python host/tools/src/provision_wifi.py --port $PORT --ssid <SSID> --verify
 
-uv run python host/buddy_bridge.py --port $PORT --speak 'ずんだもんなのだ'
+uv run python host/link/src/buddy_bridge.py --port $PORT --speak 'ずんだもんなのだ'
 ```
 
 `sandbox` は loopback 宛でも `curl` を拒否する。エンジンの疎通確認は `uv run` 経由の
@@ -46,6 +53,26 @@ Seatbelt はこれを拒否する。グローバル設定の `sandbox.excludedCo
 
 ## 構成
 
+uv workspace で 4 つの member に分かれている。ルートの `pyproject.toml` はパッケージでは
+なく、member の列挙とツール本体 (ruff / pytest / basedpyright) だけを持つ。
+
+| member | ディレクトリ | 中身 | 固有の依存 |
+| --- | --- | --- | --- |
+| `buddy-device` | `device/` | デバイスの上で動くコード | 無し (テストのみ host-link) |
+| `buddy-host-link` | `host/link/` | REPL transport とホスト側クライアント | pyserial, mpremote |
+| `buddy-host-mcp` | `host/mcp/` | MCP server | mcp, host-link |
+| `buddy-host-tools` | `host/tools/` | デプロイ・provisioning・実測・ファーム取得 | mpy-cross, host-link (`flash` group に esptool) |
+
+**workspace は lockfile も `.venv` も 1 つしか作らない。** だから分離の実体は依存宣言と
+ツール設定が member ごとに分かれることであって、環境が物理的に分かれることではない。
+member 単体で足りることは `uv sync --package <name>` が示す — CI の `isolation` ジョブが
+MCP server について実際にそれを見ており、mpy-cross や esptool が漏れ込んだら落ちる。
+
+host の 3 つは `package = true` (hatchling, `src/` レイアウト) で editable install される。
+member 間の import を workspace の依存として宣言するには installable である必要があるため。
+`device` だけ `package = false` — MicroPython のコードで、CPython の site-packages に
+`main.py` や `apps/` を置く意味が無い。
+
 | パス | 中身 |
 | --- | --- |
 | `device/buddy_serial.py` | デバイス側のシリアル transport (`BuddyBLE` を duck-typing) |
@@ -54,16 +81,21 @@ Seatbelt はこれを拒否する。グローバル設定の `sandbox.excludedCo
 | `device/buddy_tts.py` | VOICEVOX の呼び出しと WAV ヘッダの解析。WiFi は扱わない |
 | `device/apps/claude_buddy.py` | upstream 派生。差分は transport 選択と chat / speak のルーティング |
 | `device/main.py` | upstream の launcher の置き換え。WiFi を上げて REPL に落ちるだけ。ソースのまま置く |
-| `host/buddy_bridge.py` | ホスト側クライアント。`BuddyLink` (単発) と `ResidentLink` (常駐) |
+| `device/tests/` | デバイス側のテスト。実機不要 |
+| `host/link/src/buddy_bridge.py` | ホスト側クライアント。`BuddyLink` (単発) と `ResidentLink` (常駐) |
+| `host/link/src/device_repl.py` | `mpremote` の SerialTransport を掴むところ。BtnRST 待ちのループもここ |
+| `host/link/src/fake_repl.py` | `Repl` protocol のテストダブル。host/tools のテストも使うので src 側にある |
+| `host/mcp/src/buddy_mcp.py` | MCP server |
+| `host/tools/src/buddy_deploy.py` | overlay を `.mpy` にして `/flash/` へ。upstream ピアの変換と launcher 差し替えもここ |
+| `host/tools/src/provision_wifi.py` | `/flash/wifi_event.py` の SSID/PASSWORD を書き換える。一度だけ |
+| `host/tools/src/probe_device.py` | 実機のフォント一覧・実測メトリクス・Speaker API を取る (read-only、JSON) |
+| `host/tools/src/fetch_firmware.py` | UIFlow 2.0 ファームウェアの取得 (Range レジューム付き) |
 | `compose.yaml` | VOICEVOX ENGINE。`docker compose up -d` |
-| `host/buddy_mcp.py` | MCP server |
-| `host/device_repl.py` | `mpremote` の SerialTransport を掴むところ。BtnRST 待ちのループもここ |
-| `host/buddy_deploy.py` | overlay を `.mpy` にして `/flash/` へ。upstream ピアの変換と launcher 差し替えもここ |
-| `host/provision_wifi.py` | `/flash/wifi_event.py` の SSID/PASSWORD を書き換える。一度だけ |
-| `host/probe_device.py` | 実機のフォント一覧・実測メトリクス・Speaker API を取る (read-only、JSON) |
 | `vendor/device/` | デバイスから吸い出した upstream ソース。git 管理外、削除しない (再配布しないので他に控えが無い) |
-| `host/fetch_firmware.py` | UIFlow 2.0 ファームウェアの取得 (Range レジューム付き) |
-| `host/tests/` | 全て実機不要 |
+
+テストは全て実機不要。`device/tests/test_chat.py` と `test_speak.py` だけは host-link を
+import する — ホストの分割上限とデバイスの表示能力が食い違っていないことを見る契約テスト
+なので、両側の定数が要る。それが `device` の dev グループに host-link が入っている理由。
 
 `buddy_protocol.py` / `buddy_ui_cp.py` / `buddy_state.py` / `buddy_chars.py` は upstream の
 ものがデバイスの `/flash/` に入っている。このリポジトリには置かない。`buddy_deploy.py` が
@@ -77,12 +109,12 @@ import のたびに構文木とバイトコードの両方を GC heap に作り�
 あっても `import buddy_ui_cp` が 776 バイト取れずに落ちる (総量ではなく連続領域)。
 `.mpy` 化で clean GC heap 55280 → 101120、ESP-IDF DATA の最大連続 17408 → 51200。
 
-だから転送の入口は `host/buddy_deploy.py` だけ。`.py` を push する経路はリポジトリに無い。
+だから転送の入口は `host/tools/src/buddy_deploy.py` だけ。`.py` を push する経路はリポジトリに無い。
 
 ```bash
-uv run python host/buddy_deploy.py --port $PORT       # 転送 (BtnRST 待ちを含む)
-uv run python host/buddy_deploy.py --port $PORT --no-speak   # 発話確認を省き REPL に残す
-uv run python host/buddy_deploy.py --compile-only     # 実機なし。CI の mpy-build と同じ
+uv run python host/tools/src/buddy_deploy.py --port $PORT       # 転送 (BtnRST 待ちを含む)
+uv run python host/tools/src/buddy_deploy.py --port $PORT --no-speak   # 発話確認を省き REPL に残す
+uv run python host/tools/src/buddy_deploy.py --compile-only     # 実機なし。CI の mpy-build と同じ
 ```
 
 - **転送の最後にアプリを起動して喋らせる。** ファイルが載ったことはバンドルが動くことを
@@ -96,7 +128,8 @@ uv run python host/buddy_deploy.py --compile-only     # 実機なし。CI の mp
 - **`mpy-cross` は `==1.27.0.post2` 固定。** バイトコードは同じ `.mpy` ABI の中でしか
   通用せず、デバイス (MicroPython 1.27) が読むのは v6。ずれたときの症状はデバイス側の
   素の ImportError だけになるので、転送前に `sys.implementation._mpy` と突き合わせている。
-  ピンは `pyproject.toml` と `buddy_deploy.MPY_CROSS_ABI` の 2 箇所で、テストが一致を見る
+  ピンは `host/tools/pyproject.toml` と `buddy_deploy.MPY_CROSS_ABI` の 2 箇所で、
+  テストが一致を見る
 - **消す前に必ず `vendor/device/` へ退避する。** upstream のピアは本リポジトリに無く
   (NOTICE のとおり再配布しない)、`.py` を消した後はそこが唯一の控えになる。
   `vendor/` は `.gitignore` に入っているが `tmp/` とは違って消してはいけない
@@ -126,7 +159,7 @@ uv run python host/buddy_deploy.py --compile-only     # 実機なし。CI の mp
   この実測値から来ているので、片方を変えたらもう片方も見る
 - `setFont` は sticky。計測も描画も `_push_font` / `_pop_font` で挟んで DejaVu9 に戻す。
   戻し忘れると `BuddyUI` の footer とヒント列まで 24px になる
-- 実測のやり直しは `uv run python host/probe_device.py` (REPL が要る)
+- 実測のやり直しは `uv run python host/tools/src/probe_device.py` (REPL が要る)
 
 ## 音声 (speak)
 
@@ -150,7 +183,7 @@ Espressif の `esp-tts` は中国語のみ。
 
 ### 実機の制約 (実測)
 
-`host/probe_device.py` と `tmp/probe_*.py` で採った値。設計はここから来ている。
+`host/tools/src/probe_device.py` と `tmp/probe_*.py` で採った値。設計はここから来ている。
 
 | 項目 | 実測 | 効いてくる場所 |
 | --- | --- | --- |
@@ -195,7 +228,7 @@ GIL 付きなので逃げ場がない。再生が始まってからは 1 tick 1 
 
 **デバイスもホストも、実行時には WiFi を一切扱わない。** `/flash/main.py` がブート時に
 `/flash/wifi_event.py` の認証情報で接続し、アプリはその link を継承するだけ。
-認証情報は `host/provision_wifi.py` が一度だけ書き込む。
+認証情報は `host/tools/src/provision_wifi.py` が一度だけ書き込む。
 
 なぜアプリ側で繋げないか (実測):
 
@@ -243,7 +276,7 @@ speech が radio を使う。なお `buddy_ble` はデバイスから外して�
 ## device/ は MicroPython
 
 CPython ではなく MicroPython 1.27 (ESP32-S3) で動く。以下は CPython でも ruff でも
-型検査でも通ってしまい、実機で初めて落ちる。`host/tests/test_device_constraints.py` が
+型検査でも通ってしまい、実機で初めて落ちる。`device/tests/test_device_constraints.py` が
 AST で機械的に弾いているので、追加するときはそちらも見る。
 
 - `typing` と `__future__` は存在しない。`from __future__ import annotations` を書くと
@@ -261,7 +294,7 @@ AST で機械的に弾いているので、追加するときはそちらも見�
 
 デバイスと REPL で喋る経路 (ファイル転送・コード実行・値の読み出し) は
 MicroPython 公式の `mpremote` を**ライブラリとして**使う。CLI は叩かない。
-入口は `host/device_repl.py` の `connect_repl()` だけで、`Repl` protocol が
+入口は `host/link/src/device_repl.py` の `connect_repl()` だけで、`Repl` protocol が
 使っている API の範囲を記述している。
 
 **paste mode (Ctrl-E / Ctrl-D) を自前で駆動しない。** 以前そうしていて踏んだこと:
@@ -312,7 +345,7 @@ raw-paste は自分の terminator を ack してから実行に入るので、�
   直しても走っているサーバには反映されない。実機検証は `uv run` の別プロセスで行うか、
   セッションを再起動する
 - **WiFi は provisioning 済みなら何もしなくてよい。** 繋がらないときは
-  `host/provision_wifi.py --verify` が どの層で切れているかを言う
+  `host/tools/src/provision_wifi.py --verify` が どの層で切れているかを言う
 - **アプリを起動し直すには実際に reboot する。** REPL から re-import すると
   `MemoryError: memory allocation failed` で落ちる。`enter_raw_repl(soft_reset=False)` を
   使っているため前のインスタンスが residual に残る

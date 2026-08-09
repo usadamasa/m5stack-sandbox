@@ -26,7 +26,7 @@ htmlcov/
 # the sandbox configuration is required to talk to the device at all.
 .claude/settings.local.json
 
-# Completed plan for the serial-transport work. Kept locally, not shipped.
+# 進行中のタスクのプラン。手元で使い回すもので、リポジトリには載せない。
 PLAN.md
 
 .DS_Store

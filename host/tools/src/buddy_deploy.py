@@ -84,7 +84,12 @@ from buddy_bridge import (
 )
 from device_repl import Repl, ReplError, connect_repl, run_and_release
 
-REPO = Path(__file__).resolve().parents[1]
+# host/tools/src/buddy_deploy.py から 3 つ上。デバイスへ載せるソースは
+# workspace member をまたいで device/ の下にあるので、member 単位ではなく
+# リポジトリのルートを起点にする必要がある。
+REPO = Path(__file__).resolve().parents[3]
+
+DEVICE_ROOT = REPO / "device"
 
 DEST_ROOT = "/flash"
 
@@ -302,7 +307,7 @@ def build_overlay(build_dir: Path, src_dir: Path | None = None) -> list[Job]:
     Runs before the port is opened. A syntax error in the overlay should
     not be discovered halfway through rewriting flash.
     """
-    src_dir = src_dir if src_dir is not None else REPO / "device"
+    src_dir = src_dir if src_dir is not None else DEVICE_ROOT
     jobs: list[Job] = []
     for rel in OVERLAY:
         src = src_dir / rel
@@ -321,7 +326,7 @@ def check_launcher(build_dir: Path, src_dir: Path | None = None) -> int:
     lands in a directory of its own rather than next to the modules that
     are, where a stray `main.mpy` would be an invitation.
     """
-    src_dir = src_dir if src_dir is not None else REPO / "device"
+    src_dir = src_dir if src_dir is not None else DEVICE_ROOT
     src = src_dir / LAUNCHER
     if not src.is_file():
         raise DeployError(f"missing launcher source: {src}")
@@ -442,7 +447,7 @@ def install_launcher(
     src_dir: Path | None = None,
 ) -> None:
     """Replace the launcher, keeping upstream's if this is the first run."""
-    src_dir = src_dir if src_dir is not None else REPO / "device"
+    src_dir = src_dir if src_dir is not None else DEVICE_ROOT
     deadline.check("installing the launcher")
     ours = (src_dir / LAUNCHER).read_bytes()
     target = f"{DEST_ROOT}/{LAUNCHER}"
