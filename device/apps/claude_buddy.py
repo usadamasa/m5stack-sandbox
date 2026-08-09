@@ -64,6 +64,7 @@ for _p in ("/flash", "/flash/apps"):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+import json
 import time
 
 import M5
@@ -72,6 +73,8 @@ from hardware import MatrixKeyboard
 
 import buddy_ble
 import buddy_chars
+import buddy_chat
+import buddy_speak
 import buddy_protocol
 import buddy_state
 import buddy_ui_cp as buddy_ui
@@ -89,6 +92,17 @@ import buddy_ui_cp as buddy_ui
 #
 # Flip this and re-push to switch.
 _TRANSPORT = "serial"
+
+
+# ---- chat routing
+#
+# buddy_protocol.py is upstream and unmodified on flash; its dispatcher
+# logs any verb it doesn't know as "unknown cmd". So the chat verbs are
+# peeled off in on_line() below, before the protocol layer sees them.
+# This substring test is a cheap pre-filter so ordinary traffic doesn't
+# pay for a second JSON parse — see buddy_chat.py for the commands.
+_CHAT_TAG = b'"chat.'
+_SPEAK_TAG = b'"speak.'
 
 
 def _make_transport(**kw):
@@ -221,6 +235,11 @@ def run():
 
     ui = buddy_ui.BuddyUI()
     print("claude_buddy: ui ready")
+    # Owns the main panel (y=22..110) whenever a transcript is up. The
+    # header and hint strip stay with BuddyUI, but its footer overlaps
+    # us, so update_footer is gated on `chat.active` in the loop below.
+    chat = buddy_chat.ChatPanel()
+    print("claude_buddy: chat ready", chat.info())
     state = buddy_state.BuddyState()
     print("claude_buddy: state ready")
     ui.update_identity(state.name, state.owner)
@@ -235,7 +254,30 @@ def run():
     # in a 1-slot dict that the callback reads at event time.
     proto_holder = {"p": None}
 
+    # Set when a chat command changed what should be on screen. Drawing
+    # happens in the main loop rather than here for the same reason the
+    # state/passkey mailboxes below exist: on the BLE transport this
+    # callback runs from micropython.schedule context and could land
+    # mid-way through someone else's SPI sequence. The ack is a plain
+    # write with no LCD involvement, so that goes out immediately.
+    chat_dirty = [False]  # type: list[bool]
+
     def on_line(raw):
+        if _CHAT_TAG in raw and ble is not None:
+            ack = chat.handle_raw(raw)
+            if ack is not None:
+                ble.send_line(json.dumps(ack, separators=(",", ":")).encode("utf-8"))
+                chat_dirty[0] = True
+                return
+        # speak.begin puts the transport into bulk mode and its ack is
+        # what releases the host to start writing the payload, so this
+        # has to answer synchronously — deferring it to the loop would
+        # leave the host waiting with the link already switched over.
+        if _SPEAK_TAG in raw and ble is not None and speech is not None:
+            ack = speech.handle_raw(raw)
+            if ack is not None:
+                ble.send_line(json.dumps(ack, separators=(",", ":")).encode("utf-8"))
+                return
         p = proto_holder["p"]
         if p is not None:
             p.on_line(raw)
@@ -266,6 +308,11 @@ def run():
     # first event during init won't get the pairing-aware remap, but
     # any subsequent event will — and the run loop stays alive.
     ble = None
+    # Needs the transport, which does not exist yet. Pre-bound for the
+    # same reason `ble` is: on_line resolves it at call time, and a
+    # callback that fires during transport init would otherwise raise
+    # NameError inside the IRQ.
+    speech = None
 
     def on_state_change(s):
         # The stripped UIFlow 2.0 BLE build doesn't fire
@@ -300,6 +347,12 @@ def run():
         on_state=on_state_change,
     )
     print("claude_buddy: transport ready")
+
+    # Only the serial transport has the bulk mode this needs; a BLE
+    # build simply has no speech path.
+    if hasattr(ble, "bulk_begin"):
+        speech = buddy_speak.SpeechPlayer(ble)
+        print("claude_buddy: speech ready")
 
     proto = buddy_protocol.BuddyProtocol(
         state=state,
@@ -336,6 +389,13 @@ def run():
             if pump is not None:
                 pump()
 
+            # Right behind the transport drain and ahead of everything
+            # that paints: one 2 KiB block is 64 ms of audio and takes
+            # ~11 ms to read, so the 40 ms tick stays ahead of playback
+            # only if nothing slow gets in front of it.
+            if speech is not None:
+                speech.pump()
+
             # Drain BLE-callback-deferred UI work in main-loop context
             # so LCD writes don't interleave with the periodic footer
             # paint or the prompt rendering kicked off by protocol
@@ -347,10 +407,34 @@ def run():
                 ui.set_connection(new_state)
                 if new_state == "encrypted":
                     ui.clear_passkey()
+                if chat.active:
+                    # set_connection repaints the main panel, which is
+                    # the chat's while a transcript is up.
+                    chat.render()
             new_pk = pending_passkey[0]
             if new_pk is not None:
                 pending_passkey[0] = None
                 ui.show_passkey(new_pk)
+
+            if chat_dirty[0]:
+                chat_dirty[0] = False
+                if chat.active:
+                    chat.render()
+                else:
+                    # A chat.clear handed the panel back. The chat covers
+                    # the header too, so the dashboard needs a full
+                    # chrome repaint and not just the main panel.
+                    # _redraw_chrome is upstream's own private helper for
+                    # exactly this; if a future bundle renames it, fall
+                    # back to the public calls that cover everything
+                    # except the header.
+                    redraw = getattr(ui, "_redraw_chrome", None)
+                    if redraw is not None:
+                        redraw()
+                    else:
+                        ui.update_heartbeat({})
+                        ui.restore_button_hints()
+                    ui.update_footer(state.stats(), _stub_battery())
 
             kb.tick()
             k = kb.get_key()
@@ -390,7 +474,14 @@ def run():
             now = time.ticks_ms()
             if time.ticks_diff(now, last_footer_ms) >= footer_interval:
                 state.tick_nap()
-                ui.update_footer(state.stats(), _stub_battery())
+                # The stats footer paints y=96..110, which is inside the
+                # chat's region. Skipping it is what keeps a transcript
+                # from being punched through every 3 seconds. It is also
+                # several SPI transactions long, and during playback the
+                # tick has no room to spare — an underrun is audible,
+                # a three-second-stale battery reading is not.
+                if not chat.active and (speech is None or not speech.active):
+                    ui.update_footer(state.stats(), _stub_battery())
                 last_footer_ms = now
             if last_toast_ms and time.ticks_diff(now, last_toast_ms) >= toast_dwell_ms:
                 ui.restore_button_hints()
@@ -407,6 +498,14 @@ def run():
         # async disconnect event can't repaint Buddy chrome on top of
         # the launcher (cf. the comment in BuddyBLE.deinit), then wipe
         # the screen to black, then hand control back to UIFlow.
+        # Before the transport goes: stop() drops the transfer through
+        # it, and it is the only thing that silences a speaker still
+        # working through a second of queued audio.
+        if speech is not None:
+            try:
+                speech.stop()
+            except Exception as e:
+                print("claude_buddy: speech stop warning:", e)
         try:
             ble.deinit()
         except Exception as e:

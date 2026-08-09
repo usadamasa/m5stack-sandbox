@@ -35,7 +35,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp.server.mcpserver import MCPServer
 
-from buddy_bridge import ResidentLink
+import buddy_speech
+from buddy_bridge import DEFAULT_PACE, ResidentLink, say, speak
 
 DEFAULT_PORT = os.environ.get("BUDDY_PORT", "/dev/cu.usbmodem101")
 
@@ -163,6 +164,79 @@ def buddy_set_name(name: str, timeout: float = 8.0) -> dict:
 def buddy_set_owner(owner: str, timeout: float = 8.0) -> dict:
     """Set the owner string shown on the device. Persisted in NVS."""
     return _get_link().request({"cmd": "owner", "owner": owner}, "owner", timeout=timeout)
+
+
+@server.tool()
+def buddy_say(
+    text: str,
+    role: str = "claude",
+    timeout: float = 8.0,
+    pace: float = DEFAULT_PACE,
+) -> dict:
+    """Show `text` on the device's chat panel.
+
+    Markdown is flattened (the panel cannot render it and every symbol
+    costs a character) and the result is split into panel-sized parts,
+    sent in order with `pace` seconds between them so a long message
+    stays readable as it scrolls. This call therefore blocks for roughly
+    `pace * (parts - 1)` seconds; pass `pace=0` if nobody is watching.
+
+    `role` picks the colour and prefix: "claude" (orange `>`), "user"
+    (cyan `<`) or "sys" (red `!`).
+
+    Each ack reports the font the panel resolved and whether the build
+    has Japanese glyphs at all (`cjk`). If `cjk` is false, non-Latin
+    text is on screen as blanks — a firmware font gap, not a transfer
+    failure.
+    """
+    acks = say(_get_link(), text, role=role, timeout=timeout, pace=pace)
+    return {"parts": len(acks), "acks": acks}
+
+
+@server.tool()
+def buddy_speak(
+    text: str,
+    voice: str = buddy_speech.DEFAULT_VOICE,
+    rate: int = buddy_speech.DEFAULT_RATE,
+    show: bool = True,
+    timeout: float = 10.0,
+) -> dict:
+    """Say `text` out loud on the device, and by default show it too.
+
+    Synthesis runs here, not on the device: the Cardputer-Adv is an
+    ESP32-S3 and has no Japanese TTS available to it. The audio is
+    streamed over the serial link as raw PCM and played through
+    M5.Speaker.
+
+    Blocks for about the duration of the audio — the device's speaker
+    queue holds a second, so the transfer paces itself against playback.
+    `voice` is any macOS voice name (`say -v '?'` lists them; Kyoko is
+    the Japanese default).
+
+    Returns the device's `speak.end` ack. A non-zero `stalls` means the
+    speaker ran ahead of the link and the audio may have stuttered.
+    """
+    pcm = buddy_speech.synthesize(text, voice=voice, rate=rate)
+    link = _get_link()
+    shown = say(link, text, timeout=timeout, pace=0) if show else []
+    ack = speak(link, pcm, rate=rate, timeout=timeout)
+    return {
+        "seconds": round(buddy_speech.duration_s(pcm, rate), 2),
+        "shown": len(shown),
+        "end": ack,
+    }
+
+
+@server.tool()
+def buddy_chat_clear(timeout: float = 8.0) -> dict:
+    """Wipe the chat panel and hand the screen back to the dashboard."""
+    return _get_link().request({"cmd": "chat.clear"}, "chat.clear", timeout=timeout)
+
+
+@server.tool()
+def buddy_chat_info(timeout: float = 8.0) -> dict:
+    """Report the chat panel's resolved font, CJK support and geometry."""
+    return _get_link().request({"cmd": "chat.info"}, "chat.info", timeout=timeout)
 
 
 @server.tool()

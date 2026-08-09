@@ -18,8 +18,21 @@ Claude Code ──Bash──> host/buddy_bridge.py ──USB CDC──> Cardpute
 
 `status` / `name` / `owner` のラウンドトリップと、デバイス発の `hello` の受信を実機で確認済み。
 
+ホストからデバイスへメッセージを送って画面に出す経路と、それを喋らせる経路が通っている。
+upstream の protocol を拡張せずに `chat.*` / `speak.*` という独自 verb を
+`claude_buddy.py` の `on_line` で横取りする方式で、upstream のファイルには手を入れていない。
+
+- `device/buddy_chat.py` が LCD 上に折り返し付きの会話ログを描く
+- `device/buddy_speak.py` がホストから流れてくる PCM を `M5.Speaker` へ流す。合成は
+  ホストの macOS `say`。実機で日本語の発話を確認済み (5.1 秒 / 81 ブロック / underrun 0)
+
 未解決:
 
+- **デバイスから返す口がない。** キーボード入力をセッションへ返す経路はまだ無く、
+  表示も発話も往路だけの片道通信になっている。
+- 日本語フォントは 24px 一択で、画面には 4 行 × 9 文字しか入らない。分割して送ると古い行から
+  流れて消える。スクロールバックを読む手段はまだ無い。
+- 発話中はキーボードが効かない。バルク転送とポンプがメインループを占める。
 - ファイル push (`char_begin` / `file` / `chunk` 系) は使えない。`buddy_chars.py:136-141` が
   transport によらず無条件で拒否する。
 
@@ -86,6 +99,17 @@ uv run python host/buddy_bridge.py --port $PORT --start --status
 
 # 走っているアプリへコマンドを送る
 uv run python host/buddy_bridge.py --port $PORT --name Mikawa --owner usadamasa --watch 5
+
+# 画面にメッセージを出す (--role user で相手側の色になる)
+uv run python host/buddy_bridge.py --port $PORT --say "テストが3件落ちとる。"
+uv run python host/buddy_bridge.py --port $PORT --chat-clear
+
+# 喋らせる (画面にも同じ文が出る。--no-show で音だけ)
+uv run python host/buddy_bridge.py --port $PORT --speak "直したのん。もう一回まわす?"
+uv run python host/buddy_bridge.py --port $PORT --speak "hello" --voice Samantha
+
+# 実機のフォント一覧と実測メトリクスを取る (REPL が要る、read-only)
+uv run python host/probe_device.py --port $PORT
 ```
 
 `--start` は片道。アプリは transport 起動時に `micropython.kbd_intr(-1)` で Ctrl-C を
@@ -105,7 +129,22 @@ REPL の応答を確認し、返らなければ 1 バイトも書かずに止ま
 | `buddy_start_app` | REPL 経由でアプリを起動。起動時のトレースバックも返る |
 | `buddy_status` | status ack を取得 |
 | `buddy_set_name` / `buddy_set_owner` | NVS に永続化される表示名とオーナー |
+| `buddy_say` | 画面にメッセージを出す。markdown は潰され、画面 1 枚ずつに分割して送られる |
+| `buddy_speak` | 喋らせる。ホストで合成して PCM を流す。既定では画面にも同じ文を出す |
+| `buddy_chat_clear` | 会話ログを消してダッシュボードへ戻す |
+| `buddy_chat_info` | パネルが選んだフォントと行数・幅 |
 | `buddy_events` | 前回の呼び出し以降にデバイスが発した全て (protocol + ログ) |
+
+`buddy_say` は分割したパートの間に既定で 2 秒空ける (`pace`)。画面は末尾 4 行しか映らないので、
+まとめて送ると読む前に流れていく。誰も見ていないなら `pace=0` でよい。
+
+日本語だと 1 画面 4 行 × 9 文字しか入らない。ホスト側の分割上限はこの実測値
+(`MAX_SAY_CHARS_WIDE = 32`) から来ていて、`device/buddy_chat.py` のフォント表と対になっている。
+ファームウェアを入れ替えたら `host/probe_device.py` で測り直す。
+
+`buddy_speak` は音声の長さぶんブロックする。合成は macOS の `say` で、声は
+`say -v '?'` に出るものなら何でも指定できる (既定は Kyoko)。**sandbox の中では `say` が
+無音のファイルを exit 0 で吐く**ので、MCP server 経由か `uv run` 経由でしか動かない。
 
 `ResidentLink` がバックグラウンドスレッドでポートを読み続けるため、ツール呼び出しの
 合間に届いたメッセージも `buddy_events` で回収できる。ポートは1プロセスしか掴めないので、
