@@ -16,17 +16,32 @@ MCP approach has to be replaced by a Bash-launched resident bridge.
 
 Run `probe_serial` first. Everything else depends on its answer.
 
+### One device, two callers
+
+`buddy_chatter` runs a worker thread in this process that speaks on its
+own while Claude works. That makes this the first place where two things
+want the link at once, and `ResidentLink.await_ack` matches acks by name
+and pops the first that fits — two overlapping requests of the same kind
+would hand each other's answers back. So every tool below holds
+`_device_lock` for the whole of its exchange with the device, and the
+chatter only ever takes that lock when it is already free.
+
 ### Configuration
 
 `BUDDY_PORT` selects the device (default `/dev/cu.usbmodem101`).
-Registered via `.mcp.json` at the repo root.
+`BUDDY_CHATTER=0` turns the chatter off. Registered via `.mcp.json` at
+the repo root.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import termios
+import threading
+from collections.abc import Iterator
+from dataclasses import replace
 
 # The server is launched by Claude Code from an arbitrary cwd, so make
 # the sibling module importable by absolute path rather than relying on
@@ -44,6 +59,7 @@ from buddy_bridge import (
     speak,
     voicevox_url,
 )
+from buddy_chatter import ChatterConfig, ChatterService
 from device_repl import ReplError
 
 DEFAULT_PORT = os.environ.get("BUDDY_PORT", "/dev/cu.usbmodem101")
@@ -63,6 +79,14 @@ server = MCPServer(
 
 _link: ResidentLink | None = None
 
+# Held for the whole of one exchange with the device — send and the ack
+# that answers it — by anything that talks to it. Not reentrant: no tool
+# here nests, and a plain lock is what `acquire(blocking=False)` on the
+# chatter's side needs to mean "somebody else is mid-request".
+_device_lock = threading.Lock()
+
+_chatter: ChatterService | None = None
+
 
 def _get_link(port: str | None = None) -> ResidentLink:
     global _link
@@ -74,6 +98,30 @@ def _get_link(port: str | None = None) -> ResidentLink:
         _link = ResidentLink(target)
         _link.connect()
     return _link
+
+
+@contextlib.contextmanager
+def _device(port: str | None = None) -> Iterator[ResidentLink]:
+    """Take the device for one tool call, opening the port if needed."""
+    with _device_lock:
+        yield _get_link(port)
+
+
+def _live_link() -> ResidentLink | None:
+    """The link if one is already up, else None. Never opens the port.
+
+    This is what the chatter is given. Handing it `_get_link` instead
+    would have it claim the port the moment the server starts, which is
+    exactly what `buddy_deploy.py` and `esptool` need it not to do.
+    """
+    return _link if _link is not None and _link.connected else None
+
+
+def _chatter_service() -> ChatterService:
+    global _chatter
+    if _chatter is None:
+        _chatter = ChatterService(ChatterConfig.from_env(), _live_link, _device_lock)
+    return _chatter
 
 
 def _decode_logs(logs: list[bytes]) -> list[str]:
@@ -127,18 +175,21 @@ def probe_serial(port: str = "") -> dict:
 @server.tool()
 def buddy_connect(port: str = "") -> dict:
     """Open the serial link and start buffering device output."""
-    link = _get_link(port)
-    return {"connected": link.connected, "port": link.port}
+    with _device(port) as link:
+        return {"connected": link.connected, "port": link.port}
 
 
 @server.tool()
 def buddy_disconnect() -> dict:
     """Release the serial port so other tools (push.py, esptool) can use it."""
     global _link
-    if _link is None:
-        return {"connected": False, "note": "was not connected"}
-    _link.disconnect()
-    _link = None
+    # Under the lock: closing the port while the chatter is mid-utterance
+    # would surface as an ENXIO on a write it is in the middle of.
+    with _device_lock:
+        if _link is None:
+            return {"connected": False, "note": "was not connected"}
+        _link.disconnect()
+        _link = None
     return {"connected": False}
 
 
@@ -153,31 +204,34 @@ def buddy_start_app(settle: float = 8.0, wait: float = 15.0) -> dict:
 
     Returns the startup output, which is where a launch traceback lands.
     """
-    link = _get_link()
-    try:
-        link.start_app(settle=settle, wait=wait)
-    except ReplError as e:
-        return {"started": False, "error": str(e)}
-    msgs, logs = link.events()
+    with _device() as link:
+        try:
+            link.start_app(settle=settle, wait=wait)
+        except ReplError as e:
+            return {"started": False, "error": str(e)}
+        msgs, logs = link.events()
     return {"started": True, "messages": msgs, "logs": _decode_logs(logs)}
 
 
 @server.tool()
 def buddy_status(timeout: float = 8.0) -> dict:
     """Ask the device for its status ack (name, owner, battery, heap, stats)."""
-    return _get_link().request({"cmd": "status"}, "status", timeout=timeout)
+    with _device() as link:
+        return link.request({"cmd": "status"}, "status", timeout=timeout)
 
 
 @server.tool()
 def buddy_set_name(name: str, timeout: float = 8.0) -> dict:
     """Set the device's display name. Persisted in NVS across reboots."""
-    return _get_link().request({"cmd": "name", "name": name}, "name", timeout=timeout)
+    with _device() as link:
+        return link.request({"cmd": "name", "name": name}, "name", timeout=timeout)
 
 
 @server.tool()
 def buddy_set_owner(owner: str, timeout: float = 8.0) -> dict:
     """Set the owner string shown on the device. Persisted in NVS."""
-    return _get_link().request({"cmd": "owner", "owner": owner}, "owner", timeout=timeout)
+    with _device() as link:
+        return link.request({"cmd": "owner", "owner": owner}, "owner", timeout=timeout)
 
 
 @server.tool()
@@ -203,7 +257,8 @@ def buddy_say(
     text is on screen as blanks — a firmware font gap, not a transfer
     failure.
     """
-    acks = say(_get_link(), text, role=role, timeout=timeout, pace=pace)
+    with _device() as link:
+        acks = say(link, text, role=role, timeout=timeout, pace=pace)
     return {"parts": len(acks), "acks": acks}
 
 
@@ -240,23 +295,25 @@ def buddy_speak(
     `speak.end` ack — a non-zero `stalls` means the device ran out of
     audio waiting on the network and the utterance gapped.
     """
-    link = _get_link()
     url = voicevox_url(engine or None)
-    shown = say(link, text, timeout=timeout, pace=0) if show else []
-    ack = speak(link, text, url=url, speaker=speaker, rate=rate, timeout=timeout)
+    with _device() as link:
+        shown = say(link, text, timeout=timeout, pace=0) if show else []
+        ack = speak(link, text, url=url, speaker=speaker, rate=rate, timeout=timeout)
     return {"engine": url, "shown": len(shown), "end": ack}
 
 
 @server.tool()
 def buddy_chat_clear(timeout: float = 8.0) -> dict:
     """Wipe the chat panel and hand the screen back to the dashboard."""
-    return _get_link().request({"cmd": "chat.clear"}, "chat.clear", timeout=timeout)
+    with _device() as link:
+        return link.request({"cmd": "chat.clear"}, "chat.clear", timeout=timeout)
 
 
 @server.tool()
 def buddy_chat_info(timeout: float = 8.0) -> dict:
     """Report the chat panel's resolved font, CJK support and geometry."""
-    return _get_link().request({"cmd": "chat.info"}, "chat.info", timeout=timeout)
+    with _device() as link:
+        return link.request({"cmd": "chat.info"}, "chat.info", timeout=timeout)
 
 
 @server.tool()
@@ -266,10 +323,81 @@ def buddy_events() -> dict:
     Covers both protocol messages the device sent on its own (the `hello`
     it emits on handshake) and plain print() logging from the app.
     """
-    link = _get_link()
-    msgs, logs = link.events()
-    return {"messages": msgs, "logs": _decode_logs(logs), "dropped": link.dropped}
+    with _device() as link:
+        msgs, logs = link.events()
+        dropped = link.dropped
+    return {"messages": msgs, "logs": _decode_logs(logs), "dropped": dropped}
+
+
+# ----- chatter
+#
+# The device muttering to itself while Claude works. Driven by Claude
+# Code's hooks over a datagram socket, not by tool calls — the whole
+# point is that it costs the work nothing. See `buddy_chatter`.
+
+
+@server.tool()
+def buddy_chatter_start(
+    gap_min: float = -1.0,
+    gap_max: float = -1.0,
+    voice_every: int = -1,
+) -> dict:
+    """Start the idle chatter, optionally retuning how often it talks.
+
+    Nothing is said until a link is up (`buddy_start_app` or
+    `buddy_connect`); the chatter never opens the port itself, so that
+    `buddy_deploy.py` and `esptool` can still have it.
+
+    Each interval is drawn fresh from `gap_min`..`gap_max` seconds rather
+    than being fixed, because a metronome is what makes this annoying.
+    `voice_every` speaks aloud on every Nth utterance and shows the rest
+    on the panel only — raise it when the room has other people in it.
+
+    Any argument left at -1 keeps its current value. Passing one while
+    the chatter is already running restarts it with the new setting.
+    """
+    global _chatter
+    service = _chatter_service()
+    overrides = {
+        name: value
+        for name, value in (
+            ("gap_min", gap_min),
+            ("gap_max", gap_max),
+            ("voice_every", voice_every),
+        )
+        if value >= 0
+    }
+    if overrides:
+        cfg = replace(service.cfg, **overrides)
+        service.stop()
+        _chatter = service = ChatterService(cfg, _live_link, _device_lock)
+    service.start()
+    return service.status()
+
+
+@server.tool()
+def buddy_chatter_stop() -> dict:
+    """Stop the idle chatter and release its socket."""
+    service = _chatter_service()
+    service.stop()
+    return service.status()
+
+
+@server.tool()
+def buddy_chatter_status() -> dict:
+    """Report what the chatter has been doing, and why it has not.
+
+    `skipped_offline` counts turns where no link was up, `skipped_busy`
+    counts turns where a real tool call held the device — both are
+    normal. `generation_failures` with a `generation_error` means it has
+    fallen back to canned lines: usually absent Vertex credentials.
+    """
+    return _chatter_service().status()
 
 
 if __name__ == "__main__":
+    # Started here rather than at import: importing this module must not
+    # bind a socket or spawn threads, or the tests (and any tooling that
+    # merely inspects the server) would race a live one.
+    _chatter_service().start()
     server.run("stdio")

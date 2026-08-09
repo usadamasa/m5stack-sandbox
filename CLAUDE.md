@@ -74,6 +74,9 @@ uv workspace の 4 member: `device/` (デバイスの上で動く overlay)、`ho
 - **アプリを起動し直すには実際に reboot する。** REPL から re-import すると
   `MemoryError: memory allocation failed` で落ちる。`enter_raw_repl(soft_reset=False)` を
   使っているため前のインスタンスが residual に残る
+- **chatter がデバイスを喋らせている。** MCP server の worker thread が hook 起点で独り言を
+  言う。デバイスに触る tool は全て `_device_lock` を握ること — 握らずに request を出すと
+  ack が入れ違う。詳細は `buddy-chatter` skill
 - `.mcp.json` と `.claude/settings.json` は絶対パスを持つ。別マシンでは書き換えが要る
 
 ## クレジット
