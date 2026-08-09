@@ -1,36 +1,36 @@
-"""The speech path: bulk framing, block sequencing, and synthesis guards.
+"""The speech path: block framing, playback sequencing, and giving up.
 
-Three separate things can go wrong here and only one of them is audible
-in an obvious way:
+The audio no longer arrives over the cable. The device fetches it from a
+VOICEVOX engine over WiFi, which changes what can go wrong: the host
+used to declare a length and write padded whole blocks, and now a socket
+delivers bytes when it feels like it, ends the last block short, and can
+stop altogether.
 
-* the transport's bulk mode can lose or steal bytes at the seam where
-  line parsing stops — the symptom is a transfer that ends short and a
-  device parked inside a blocking read, recoverable only by BtnRST;
-* the device-side player can starve the speaker or run ahead of it;
-* `say` can exit 0 having written no audio, which is what it does
-  inside the sandbox, and silence is indistinguishable from a link
-  problem once it reaches the device.
+Three failures matter and only one is obvious from the far end:
 
-All three are covered here without a board or a speaker.
+* a block handed to `playRaw` that is not exactly the block size — an
+  audible click, or a shifted stream for everything after it;
+* a source that waits forever on a socket that has died, which freezes
+  the app's 40 ms tick with no way back but BtnRST;
+* a stream cut short being reported as a successful utterance.
+
+All three are covered here without a board, a speaker or an engine.
 """
 
+import json
+import os
 import unittest
 from typing import Any
 from unittest import mock
 
-import buddy_speech
-from buddy_bridge import BLOCK_BYTES, Message, pad_to_blocks, speak
-from buddy_serial import BuddySerial
-from buddy_speak import SpeechPlayer
-
-
-def _blk(ch: bytes) -> bytes:
-    """One block of a single repeated byte, at the real block size."""
-    return ch * BLOCK_BYTES
+import buddy_bridge
+import buddy_speak
+from buddy_speak import _BLOCK, SpeechPlayer, _StreamSource
+from fake_repl import FakeRepl, Sequenced
 
 
 class _FakeTime:
-    """MicroPython's ticks API, frozen. buddy_serial's bulk path uses it."""
+    """MicroPython's ticks API, frozen and driven by the test."""
 
     now = 0
 
@@ -47,128 +47,147 @@ class _FakeTime:
         return a - b
 
 
-class _FakeStdin:
-    """A byte source that hands out whatever has been fed to it.
+class _FakeStream:
+    """A byte source that hands out only what has been fed to it.
 
-    `readinto` mirrors the device's real behaviour as measured: it
-    fills the buffer completely, and there is deliberately no way to
-    make it return short. A test that relies on a short read would be
-    testing something the hardware does not do.
+    `read` returns None rather than blocking when it is empty, which is
+    what a socket with a timeout does from this layer's point of view.
     """
 
-    def __init__(self) -> None:
-        self.buf = bytearray()
+    def __init__(self, data: bytes = b"") -> None:
+        self.buf = bytearray(data)
+        self.timeout: float | None = None
+        self.closed = False
+        self.ended = False
 
     def feed(self, data: bytes) -> None:
         self.buf.extend(data)
 
-    def readinto(self, target: bytearray) -> int:
-        want = len(target)
-        if len(self.buf) < want:
-            return 0  # stands in for "would block"; the caller retries
-        target[:want] = self.buf[:want]
-        self.buf = self.buf[want:]
-        return want
+    def end(self) -> None:
+        """Mark end of stream: further reads return b"" once drained."""
+        self.ended = True
+
+    def read(self, n: int) -> bytes | None:
+        if not self.buf:
+            return b"" if self.ended else None
+        take = bytes(self.buf[:n])
+        del self.buf[:n]
+        return take
+
+    def settimeout(self, seconds: float) -> None:
+        self.timeout = seconds
+
+    def close(self) -> None:
+        self.closed = True
 
 
-class _FakePoller:
-    def __init__(self, stdin: _FakeStdin) -> None:
-        self._stdin = stdin
-
-    def poll(self, _timeout: int = 0) -> list:
-        return [(self._stdin, 1)] if self._stdin.buf else []
-
-    def register(self, *_a: object) -> None: ...
-
-    def unregister(self, *_a: object) -> None: ...
+def _blk(ch: bytes) -> bytes:
+    return ch * _BLOCK
 
 
-def _transport() -> tuple[Any, _FakeStdin]:
-    """A BuddySerial wired to fakes, bypassing __init__.
+class TimeFrozen(unittest.TestCase):
+    """Base: every test here drives buddy_speak's clock by hand."""
 
-    The real one registers stdin with a poller and turns Ctrl-C off,
-    neither of which belongs in a unit test. Typed `Any` on the way out
-    because the injection is a deliberate contract violation — the fake
-    poller and the recording `send_line` do not match the real
-    signatures, and pretending otherwise would need wrappers that add
-    nothing.
-    """
-    t: Any = BuddySerial.__new__(BuddySerial)
-    stdin = _FakeStdin()
-    t._stdin = stdin
-    t._poller = _FakePoller(stdin)
-    t._rx_buf = bytearray()
-    t._shutting_down = False
-    t._host_seen = True
-    t._last_rx_ms = 0
-    t._bulk_left = 0
-    t._bulk_acc = bytearray()
-    t._bulk_deadline = 0
-    return t, stdin
-
-
-class BulkTransportTest(unittest.TestCase):
     def setUp(self) -> None:
-        import buddy_serial
-
-        self._real_time = buddy_serial.time
-        buddy_serial.time = _FakeTime()
-        self.addCleanup(setattr, buddy_serial, "time", self._real_time)
+        self._real_time = buddy_speak.time
+        buddy_speak.time = _FakeTime()
+        self.addCleanup(setattr, buddy_speak, "time", self._real_time)
         _FakeTime.now = 0
-        self.t, self.stdin = _transport()
 
-    def test_reads_whole_blocks_in_order(self) -> None:
-        self.t.bulk_begin(8)
-        self.stdin.feed(b"abcdefgh")
-        self.assertEqual(self.t.bulk_read(4), b"abcd")
-        self.assertEqual(self.t.bulk_read(4), b"efgh")
-        self.assertFalse(self.t.bulk_active)
+
+class StreamSourceTest(TimeFrozen):
+    def test_stops_the_socket_blocking_the_ui(self) -> None:
+        # A socket left at its default waits for the bytes it was asked
+        # for, and the app's 40 ms tick waits with it.
+        stream = _FakeStream()
+        _StreamSource(stream, 4096)
+        self.assertEqual(stream.timeout, buddy_speak._READ_TIMEOUT_S)
+
+    def test_hands_back_whole_blocks_in_order(self) -> None:
+        stream = _FakeStream(_blk(b"a") + _blk(b"b"))
+        src = _StreamSource(stream, 2 * _BLOCK)
+        self.assertEqual(src.read_block(_BLOCK), _blk(b"a"))
+        self.assertEqual(src.read_block(_BLOCK), _blk(b"b"))
+        self.assertEqual(src.left, 0)
 
     def test_a_block_split_across_calls_is_not_lost(self) -> None:
-        # The host writes at 182 KiB/s and the device polls at 40 ms, so
-        # a block genuinely can arrive in pieces. Dropping the first
-        # piece would shift every following block by that many bytes.
-        self.t.bulk_begin(4)
-        self.stdin.feed(b"ab")
-        self.assertIsNone(self.t.bulk_read(4))
-        self.stdin.feed(b"cd")
-        self.assertEqual(self.t.bulk_read(4), b"abcd")
+        # WiFi delivers a block in pieces routinely. Dropping the first
+        # piece would shift every sample after it.
+        stream = _FakeStream(b"a" * 100)
+        src = _StreamSource(stream, _BLOCK)
+        self.assertIsNone(src.read_block(_BLOCK))
+        stream.feed(b"a" * (_BLOCK - 100))
+        self.assertEqual(src.read_block(_BLOCK), _blk(b"a"))
 
-    def test_bytes_the_line_drain_already_took_are_used_first(self) -> None:
-        # bulk_begin runs inside the handler for the line that precedes
-        # the payload, so the rx buffer can legitimately already hold
-        # its first bytes.
-        self.t._rx_buf = bytearray(b"ab")
-        self.t.bulk_begin(4)
-        self.t._rx_buf = bytearray(b"ab")
-        self.stdin.feed(b"cd")
-        self.assertEqual(self.t.bulk_read(4), b"abcd")
+    def test_pads_the_final_short_block_with_silence(self) -> None:
+        # playRaw is handed exactly one block. The last one almost never
+        # divides evenly, and this is the job the host's pad_to_blocks
+        # used to do before the audio came off a socket.
+        stream = _FakeStream(b"x" * 500)
+        src = _StreamSource(stream, 500)
+        block = src.read_block(_BLOCK)
+        assert block is not None
+        self.assertEqual(len(block), _BLOCK)
+        self.assertEqual(block[:500], b"x" * 500)
+        self.assertEqual(block[500:], b"\x00" * (_BLOCK - 500))
+
+    def test_the_pad_is_not_counted_as_audio(self) -> None:
+        # `left` is what tells the player the utterance is over. Counting
+        # the padding would end it a block early on every short tail.
+        src = _StreamSource(_FakeStream(b"x" * 500), 500)
+        src.read_block(_BLOCK)
+        self.assertEqual(src.left, 0)
 
     def test_never_reads_past_the_declared_length(self) -> None:
-        # Whatever follows the payload is a command, not a sample.
-        self.t.bulk_begin(4)
-        self.stdin.feed(b"abcd")
-        self.assertEqual(self.t.bulk_read(8), b"abcd")
-        self.assertFalse(self.t.bulk_active)
+        # Whatever follows the payload on a keep-alive socket belongs to
+        # the next response, not to this utterance.
+        stream = _FakeStream(b"x" * 500 + b"NEXT")
+        src = _StreamSource(stream, 500)
+        src.read_block(_BLOCK)
+        self.assertEqual(bytes(stream.buf), b"NEXT")
 
-    def test_a_stalled_transfer_gives_the_link_back(self) -> None:
-        self.t.bulk_begin(4)
-        self.assertIsNone(self.t.bulk_read(4))
-        self.assertTrue(self.t.bulk_active)
-        _FakeTime.now = 10_000
-        self.assertIsNone(self.t.bulk_read(4))
-        self.assertFalse(self.t.bulk_active)
+    def test_waiting_is_not_failing(self) -> None:
+        # An empty read is the normal case on a 40 ms tick. Treating it
+        # as an error would kill an utterance on the first jitter.
+        src = _StreamSource(_FakeStream(), _BLOCK)
+        self.assertIsNone(src.read_block(_BLOCK))
+        self.assertFalse(src.dead)
 
-    def test_poll_does_not_touch_the_payload(self) -> None:
-        # The whole seam: if the line drain kept running it would eat
-        # samples and the transfer would end short.
-        lines: list[bytes] = []
-        self.t._on_line = lines.append
-        self.t.bulk_begin(4)
-        self.stdin.feed(b"ab\ncd")
-        self.t.poll()
-        self.assertEqual(lines, [])
-        self.assertEqual(self.t.bulk_read(4), b"ab\ncd"[:4])
+    def test_gives_up_once_nothing_has_arrived_for_the_stall_window(self) -> None:
+        src = _StreamSource(_FakeStream(), _BLOCK)
+        _FakeTime.now = buddy_speak._STALL_MS + 1
+        self.assertIsNone(src.read_block(_BLOCK))
+        self.assertTrue(src.dead)
+
+    def test_progress_resets_the_stall_deadline(self) -> None:
+        # A slow stream that is still alive must not be killed by the
+        # clock. Any byte at all counts as progress.
+        stream = _FakeStream(b"a" * 100)
+        src = _StreamSource(stream, _BLOCK)
+        _FakeTime.now = buddy_speak._STALL_MS - 1
+        self.assertIsNone(src.read_block(_BLOCK))
+        _FakeTime.now = buddy_speak._STALL_MS + 1
+        self.assertIsNone(src.read_block(_BLOCK))
+        self.assertFalse(src.dead)
+
+    def test_a_stream_that_ends_short_is_a_failure_not_a_short_utterance(self) -> None:
+        # Content-Length declared the length up front, so a stream that
+        # stops early was cut off. Padding the gap and reporting success
+        # would hide it.
+        stream = _FakeStream(b"x" * 100)
+        stream.end()
+        src = _StreamSource(stream, _BLOCK)
+        self.assertIsNone(src.read_block(_BLOCK))
+        self.assertTrue(src.dead)
+
+    def test_close_releases_the_socket_and_the_response(self) -> None:
+        stream = _FakeStream()
+        response = _FakeStream()
+        src = _StreamSource(stream, _BLOCK, response)
+        src.close()
+        self.assertTrue(stream.closed)
+        self.assertTrue(response.closed)
+        src.close()  # idempotent
 
 
 class _FakeSpeaker:
@@ -201,60 +220,95 @@ class _FakeSpeaker:
         self.queued = []
 
 
-class SpeechPlayerTest(unittest.TestCase):
-    def setUp(self) -> None:
-        import buddy_serial
-
-        self._real_time = buddy_serial.time
-        buddy_serial.time = _FakeTime()
-        self.addCleanup(setattr, buddy_serial, "time", self._real_time)
-        _FakeTime.now = 0
-
-        self.t, self.stdin = _transport()
+class _RecordingTransport:
+    def __init__(self) -> None:
         self.sent: list[bytes] = []
-        self.t.send_line = self.sent.append
-        self.spk = _FakeSpeaker()
-        self.player = SpeechPlayer(self.t, speaker=self.spk)
 
-    def begin(self, blocks: int = 3, block: int = BLOCK_BYTES) -> Message:
-        ack = self.player.handle(
-            {"cmd": "speak.begin", "rate": 16000, "block": block, "blocks": blocks}
-        )
+    def send_line(self, payload: bytes) -> bool:
+        self.sent.append(payload)
+        return True
+
+
+class SpeechPlayerTest(TimeFrozen):
+    def setUp(self) -> None:
+        super().setUp()
+        self.t = _RecordingTransport()
+        self.spk = _FakeSpeaker()
+        self.stream = _FakeStream()
+        self.fetched: list[tuple] = []
+        self.player = SpeechPlayer(self.t, speaker=self.spk, fetch=self._fetch)
+        self._rate = 16000
+        self._bytes = 2 * _BLOCK
+        self._error: Exception | None = None
+
+    def _fetch(self, url: str, text: str, speaker: int, rate: int) -> dict[str, Any]:
+        self.fetched.append((url, text, speaker, rate))
+        if self._error is not None:
+            raise self._error
+        return {
+            "stream": self.stream,
+            "bytes": self._bytes,
+            "rate": self._rate,
+            "response": None,
+        }
+
+    def say(self, **over: object) -> dict[str, Any]:
+        msg: dict[str, object] = {
+            "cmd": "speak.say",
+            "text": "ずんだもんなのだ",
+            "url": "http://192.168.0.156:50021",
+            "speaker": 3,
+            "rate": 16000,
+        }
+        msg.update(over)
+        ack = self.player.handle(msg)
         assert ack is not None
         return ack
 
-    def test_begin_declares_the_length_and_arms_the_transport(self) -> None:
-        ack = self.begin(blocks=3)
+    def test_say_fetches_and_starts_playing(self) -> None:
+        ack = self.say()
         self.assertTrue(ack["ok"])
-        self.assertEqual(ack["bytes"], 3 * BLOCK_BYTES)
-        self.assertTrue(self.t.bulk_active)
+        self.assertEqual(ack["bytes"], 2 * _BLOCK)
+        self.assertTrue(self.player.active)
+        self.assertEqual(
+            self.fetched, [("http://192.168.0.156:50021", "ずんだもんなのだ", 3, 16000)]
+        )
+
+    def test_reports_the_rate_the_engine_used(self) -> None:
+        # The engine may decline outputSamplingRate, and playRaw has to
+        # be told the truth or the whole line comes out at the wrong
+        # pitch.
+        self._rate = 24000
+        self.assertEqual(self.say()["rate"], 24000)
 
     def test_one_block_per_pump(self) -> None:
         # Draining in a loop here would freeze the UI for the length of
-        # the utterance, so the pump deliberately takes one bite a tick.
-        self.begin(blocks=3)
-        self.stdin.feed(_blk(b"a") + _blk(b"b") + _blk(b"c"))
+        # the utterance, so the pump takes one bite a tick.
+        self.say()
+        self.stream.feed(_blk(b"a") + _blk(b"b"))
         self.player.pump()
         self.assertEqual(self.spk.queued, [_blk(b"a")])
         self.player.pump()
         self.assertEqual(self.spk.queued, [_blk(b"a"), _blk(b"b")])
 
     def test_finishes_and_acks_when_the_payload_runs_out(self) -> None:
-        self.begin(blocks=2)
-        self.stdin.feed(_blk(b"a") + _blk(b"b"))
+        self.say()
+        self.stream.feed(_blk(b"a") + _blk(b"b"))
         for _ in range(4):
             self.player.pump()
         self.assertFalse(self.player.active)
-        self.assertEqual(len(self.sent), 1)
-        self.assertIn(b'"ack":"speak.end"', self.sent[0])
-        self.assertIn(b'"ok":true', self.sent[0])
+        self.assertEqual(len(self.t.sent), 1)
+        sent = json.loads(self.t.sent[0])
+        self.assertEqual(sent["ack"], "speak.end")
+        self.assertTrue(sent["ok"])
+        self.assertEqual(sent["blocks"], 2)
 
     def test_holds_a_block_the_speaker_refused(self) -> None:
         # playRaw returns False rather than blocking once its queue is
         # full. A block dropped here is a gap in the audio.
         self.spk.depth = 1
-        self.begin(blocks=2)
-        self.stdin.feed(_blk(b"a") + _blk(b"b"))
+        self.say()
+        self.stream.feed(_blk(b"a") + _blk(b"b"))
         self.player.pump()
         self.player.pump()
         self.assertEqual(self.spk.queued, [_blk(b"a")])
@@ -262,148 +316,319 @@ class SpeechPlayerTest(unittest.TestCase):
         self.player.pump()
         self.assertEqual(self.spk.queued, [_blk(b"b")])
 
-    def test_a_stalled_transfer_ends_not_ok(self) -> None:
-        self.begin(blocks=2)
+    def test_a_stalled_stream_ends_not_ok(self) -> None:
+        self.say()
         self.player.pump()
-        _FakeTime.now = 10_000
+        _FakeTime.now = buddy_speak._STALL_MS + 1
         self.player.pump()
         self.assertFalse(self.player.active)
-        self.assertIn(b'"ok":false', self.sent[0])
+        sent = json.loads(self.t.sent[0])
+        self.assertFalse(sent["ok"])
+
+    def test_waiting_for_bytes_counts_as_a_stall_not_an_end(self) -> None:
+        # The stalls counter is the diagnostic for "the supply could not
+        # keep up", and it is the only signal the host gets about it.
+        self.say()
+        self.player.pump()
+        self.player.pump()
+        self.assertTrue(self.player.active)
+        self.stream.feed(_blk(b"a") + _blk(b"b"))
+        for _ in range(4):
+            self.player.pump()
+        self.assertGreater(json.loads(self.t.sent[0])["stalls"], 0)
+
+    def test_a_failed_fetch_is_answered_not_raised(self) -> None:
+        # The app's on_line calls this synchronously. An exception here
+        # would take the transport down with it.
+        self._error = OSError("ECONNREFUSED")
+        ack = self.say()
+        self.assertFalse(ack["ok"])
+        self.assertIn("ECONNREFUSED", ack["err"])
+        self.assertFalse(self.player.active)
+
+    def test_refuses_to_start_without_an_engine_url(self) -> None:
+        ack = self.say(url="")
+        self.assertFalse(ack["ok"])
+        self.assertEqual(self.fetched, [])
+
+    def test_rejects_a_length_that_would_wedge_the_device(self) -> None:
+        for bad in (0, 99_000_000):
+            self._bytes = bad
+            ack = self.say()
+            self.assertFalse(ack["ok"], bad)
+            self.assertFalse(self.player.active, bad)
 
     def test_stop_silences_and_releases(self) -> None:
-        self.begin(blocks=2)
+        self.say()
         before = self.spk.stopped
         ack = self.player.handle({"cmd": "speak.stop"})
         assert ack is not None
         self.assertTrue(ack["ok"])
         self.assertFalse(self.player.active)
-        self.assertFalse(self.t.bulk_active)
         self.assertEqual(self.spk.stopped, before + 1)
+        self.assertTrue(self.stream.closed)
 
-    def test_begin_silences_whatever_was_already_playing(self) -> None:
+    def test_say_silences_whatever_was_already_playing(self) -> None:
         # The speaker queue holds about a second. Without this, a new
-        # utterance would be heard behind the tail of the last one.
+        # utterance would be heard behind the tail of the last one — and
+        # synthesis takes seconds, so the overlap would be long.
         self.assertEqual(self.spk.stopped, 0)
-        self.begin(blocks=2)
+        self.say()
         self.assertEqual(self.spk.stopped, 1)
-
-    def test_rejects_a_length_that_would_wedge_the_device(self) -> None:
-        for bad in (
-            {"blocks": 0},
-            {"blocks": 10_000_000},
-            {"block": 2049},
-            {"rate": 100},
-        ):
-            payload = {"cmd": "speak.begin", "rate": 16000, "block": 2048, "blocks": 4}
-            payload.update(bad)
-            ack = self.player.handle(payload)
-            assert ack is not None
-            self.assertFalse(ack["ok"], bad)
-            self.assertFalse(self.t.bulk_active, bad)
 
     def test_other_commands_fall_through(self) -> None:
         self.assertIsNone(self.player.handle({"cmd": "status"}))
         self.assertIsNone(self.player.handle_raw(b"not json"))
 
-
-class PadTest(unittest.TestCase):
-    def test_pads_up_to_a_whole_block(self) -> None:
-        self.assertEqual(len(pad_to_blocks(b"x" * 10, block=4)), 12)
-
-    def test_leaves_an_exact_multiple_alone(self) -> None:
-        self.assertEqual(pad_to_blocks(b"x" * 8, block=4), b"x" * 8)
-
-    def test_pads_with_silence_not_noise(self) -> None:
-        self.assertEqual(pad_to_blocks(b"ab", block=4), b"ab\x00\x00")
-
-    def test_rejects_an_odd_block(self) -> None:
-        # A 16-bit sample split across two blocks would be played as two
-        # unrelated samples, which is a click.
-        with self.assertRaises(ValueError):
-            pad_to_blocks(b"ab", block=3)
+    def test_handles_a_raw_wire_line(self) -> None:
+        ack = self.player.handle_raw(
+            json.dumps({"cmd": "speak.say", "text": "あ", "url": "http://h:50021"}).encode("utf-8")
+        )
+        assert ack is not None
+        self.assertTrue(ack["ok"])
+        # Defaults matter: the host may send only text and url.
+        self.assertEqual(self.fetched[0][2], 3)
 
 
-class _FakeBulkLink:
-    def __init__(self, ok: bool = True) -> None:
-        self.ok = ok
-        self.requests: list[Message] = []
-        self.raw: list[bytes] = []
-        self.waited: list[str] = []
+class _FakeLink:
+    """A link that records requests and answers with canned acks."""
 
-    def request(self, obj: Message, expect: str, timeout: float = 5.0) -> Message:
-        self.requests.append(obj)
-        return {"ack": expect, "ok": self.ok, "err": "nope", "timeout": timeout}
+    def __init__(
+        self, ack: dict[str, Any] | None = None, end: dict[str, Any] | None = None
+    ) -> None:
+        self.ack = ack if ack is not None else {"ok": True, "bytes": 81920, "rate": 16000}
+        self.end = end if end is not None else {"ok": True, "blocks": 40, "stalls": 0}
+        self.requests: list[tuple[dict[str, Any], str, float]] = []
+        self.waited: list[tuple[str, float]] = []
 
-    def write_raw(self, data: bytes) -> None:
-        self.raw.append(data)
+    def request(self, obj: dict[str, Any], expect: str, timeout: float = 5.0) -> dict[str, Any]:
+        self.requests.append((obj, expect, timeout))
+        out = dict(self.ack)
+        out["ack"] = expect
+        return out
 
-    def await_ack(self, expect: str, timeout: float = 5.0) -> Message:
-        self.waited.append(expect)
-        return {"ack": expect, "ok": True, "timeout": timeout}
+    def await_ack(self, expect: str, timeout: float = 5.0) -> dict[str, Any]:
+        self.waited.append((expect, timeout))
+        out = dict(self.end)
+        out["ack"] = expect
+        return out
 
 
 class SpeakSenderTest(unittest.TestCase):
-    def test_declares_then_writes_then_waits(self) -> None:
-        link = _FakeBulkLink()
-        speak(link, b"\x01\x02" * 3000, rate=16000)
-        begin = link.requests[0]
-        self.assertEqual(begin["cmd"], "speak.begin")
-        self.assertEqual(begin["block"], BLOCK_BYTES)
-        self.assertEqual(begin["blocks"] * BLOCK_BYTES, len(link.raw[0]))
-        self.assertEqual(link.waited, ["speak.end"])
+    def test_asks_the_device_to_fetch_and_then_waits_for_the_end(self) -> None:
+        link = _FakeLink()
+        end = buddy_bridge.speak(link, "ずんだもんなのだ", url="http://h:50021")
+        sent, expect, _timeout = link.requests[0]
+        self.assertEqual(sent["cmd"], "speak.say")
+        self.assertEqual(sent["text"], "ずんだもんなのだ")
+        self.assertEqual(sent["url"], "http://h:50021")
+        self.assertEqual(expect, "speak.say")
+        self.assertEqual([w[0] for w in link.waited], ["speak.end"])
+        self.assertEqual(end["blocks"], 40)
 
-    def test_payload_is_padded_to_whole_blocks(self) -> None:
-        link = _FakeBulkLink()
-        speak(link, b"\x01" * (BLOCK_BYTES + 10))
-        self.assertEqual(len(link.raw[0]) % BLOCK_BYTES, 0)
+    def test_defaults_to_zundamon(self) -> None:
+        link = _FakeLink()
+        buddy_bridge.speak(link, "あ", url="http://h:50021")
+        self.assertEqual(link.requests[0][0]["speaker"], buddy_bridge.ZUNDAMON)
 
-    def test_nothing_is_written_when_the_device_refuses(self) -> None:
-        # Writing anyway would push a payload at a device that never
-        # entered bulk mode, and every byte of it would be parsed as a
-        # malformed line.
-        link = _FakeBulkLink(ok=False)
-        with self.assertRaises(RuntimeError):
-            speak(link, b"\x01" * 4096)
-        self.assertEqual(link.raw, [])
+    def test_allows_time_for_synthesis_before_the_first_ack(self) -> None:
+        # The device does not answer speak.say until the engine has
+        # produced the whole WAV. A chat-sized timeout would give up
+        # while synthesis was still running and leave the link out of
+        # step with a device that is about to start playing.
+        link = _FakeLink()
+        buddy_bridge.speak(link, "あ", url="http://h:50021")
+        self.assertGreaterEqual(link.requests[0][2], 30.0)
 
-    def test_empty_audio_is_rejected(self) -> None:
+    def test_waits_out_the_playback_before_giving_up_on_the_end_ack(self) -> None:
+        # speak.end arrives when the last block has been played, which
+        # is 5.12 s after the start for this payload.
+        link = _FakeLink(ack={"ok": True, "bytes": 163840, "rate": 16000})
+        buddy_bridge.speak(link, "あ", url="http://h:50021", timeout=10.0)
+        self.assertGreaterEqual(link.waited[0][1], 5.12 + 10.0)
+
+    def test_a_refusal_is_raised_not_returned(self) -> None:
+        # Waiting for speak.end after a refusal would block until the
+        # timeout for an utterance that never started.
+        link = _FakeLink(ack={"ok": False, "err": "no engine url"})
+        with self.assertRaises(RuntimeError) as caught:
+            buddy_bridge.speak(link, "あ", url="http://h:50021")
+        self.assertIn("no engine url", str(caught.exception))
+        self.assertEqual(link.waited, [])
+
+    def test_empty_text_never_reaches_the_device(self) -> None:
+        link = _FakeLink()
         with self.assertRaises(ValueError):
-            speak(_FakeBulkLink(), b"")
+            buddy_bridge.speak(link, "   ", url="http://h:50021")
+        self.assertEqual(link.requests, [])
 
 
-class SynthesisTest(unittest.TestCase):
-    def test_blank_text_is_rejected(self) -> None:
-        with self.assertRaises(buddy_speech.SynthesisError):
-            buddy_speech.synthesize("   ")
+class NetConfigSenderTest(unittest.TestCase):
+    def test_sends_the_credentials_and_returns_the_ack(self) -> None:
+        link = _FakeLink(ack={"ok": True, "ip": "192.168.0.42", "rssi": -52})
+        got = buddy_bridge.net_config(link, "home", "hunter2")
+        sent, expect, _timeout = link.requests[0]
+        self.assertEqual(sent["cmd"], "net.config")
+        self.assertEqual(sent["ssid"], "home")
+        self.assertEqual(sent["psk"], "hunter2")
+        self.assertEqual(expect, "net.config")
+        self.assertEqual(got["ip"], "192.168.0.42")
 
-    def test_a_header_only_file_is_reported_as_a_sandbox_problem(self) -> None:
-        # This is exactly what `say` does inside the sandbox: exit 0,
-        # 4096 bytes, no audio. Passing that on would put silence on the
-        # wire and look like a link failure from the device end.
-        with (
-            mock.patch.object(buddy_speech, "available", return_value=True),
-            mock.patch.object(buddy_speech.subprocess, "run") as run,
-            mock.patch.object(buddy_speech.Path, "exists", return_value=True),
-            mock.patch.object(buddy_speech.Path, "stat") as stat,
-        ):
-            run.return_value = mock.Mock(returncode=0, stderr="")
-            stat.return_value = mock.Mock(st_size=4096)
-            with self.assertRaises(buddy_speech.SynthesisError) as caught:
-                buddy_speech.synthesize("テスト")
-        self.assertIn("uv run", str(caught.exception))
+    def test_allows_time_for_the_association(self) -> None:
+        # The device polls for up to 15 s before answering.
+        link = _FakeLink(ack={"ok": True, "ip": "192.168.0.42"})
+        buddy_bridge.net_config(link, "home", "hunter2")
+        self.assertGreater(link.requests[0][2], 15.0)
 
-    def test_a_failing_say_is_reported_with_its_stderr(self) -> None:
-        with (
-            mock.patch.object(buddy_speech, "available", return_value=True),
-            mock.patch.object(buddy_speech.subprocess, "run") as run,
-        ):
-            run.return_value = mock.Mock(returncode=1, stderr="Voice not found")
-            with self.assertRaises(buddy_speech.SynthesisError) as caught:
-                buddy_speech.synthesize("テスト", voice="Nonexistent")
-        self.assertIn("Voice not found", str(caught.exception))
+    def test_a_failure_is_raised_with_the_reason(self) -> None:
+        link = _FakeLink(ack={"ok": False, "ssid": "home", "err": "timeout after 15000ms"})
+        with self.assertRaises(RuntimeError) as caught:
+            buddy_bridge.net_config(link, "home", "hunter2")
+        self.assertIn("timeout", str(caught.exception))
 
-    def test_duration_matches_the_sample_count(self) -> None:
-        self.assertAlmostEqual(buddy_speech.duration_s(b"\x00" * 32000, 16000), 1.0)
+
+class JoinWifiTest(unittest.TestCase):
+    """Associating happens from the REPL, before the app is loaded.
+
+    Measured on hardware: the device associates in under a second from
+    the REPL and then cannot once the app is up — `connect` is accepted
+    and the association never completes, timing out after 15 s. The
+    ESP-IDF heap has about 12 KB free in its largest region before the
+    app has even loaded, and bringing a link up wants DRAM, so the radio
+    goes up first and the app inherits it.
+    """
+
+    _READBACK = "(_w.isconnected(), _w.ifconfig()[0], _w.status())"
+
+    def _repl(
+        self, *, connected: bool = True, ip: str = "192.168.0.227", code: int = 1010
+    ) -> FakeRepl:
+        return FakeRepl(
+            {
+                "_w.isconnected()": connected,
+                self._READBACK: (connected, ip, code),
+            }
+        )
+
+    def test_reports_a_successful_association(self) -> None:
+        repl = self._repl()
+        got = buddy_bridge.join_wifi(repl, "home", "hunter2")
+        self.assertTrue(got["ok"])
+        self.assertEqual(got["ip"], "192.168.0.227")
+        self.assertEqual(got["status"], "got ip")
+
+    def test_never_puts_the_password_in_the_result(self) -> None:
+        # The passphrase comes from tmp/wifi.env and travels over USB.
+        # The result is printed and logged; the passphrase must not be
+        # anywhere in it.
+        repl = self._repl(connected=False, ip="0.0.0.0", code=202)
+        got = buddy_bridge.join_wifi(repl, "home", "hunter2", timeout_s=0)
+        self.assertNotIn("hunter2", json.dumps(got))
+        self.assertEqual(got["status"], "wrong password")
+
+    def test_carries_the_credentials_safely_quoted(self) -> None:
+        # The block is Python source compiled on the device. An
+        # apostrophe in a passphrase would end the literal and the rest
+        # would be executed as code.
+        repl = self._repl()
+        buddy_bridge.join_wifi(repl, "my net", "it's a secret")
+        self.assertIn(repr("my net"), repl.source)
+        self.assertIn(repr("it's a secret"), repl.source)
+
+    def test_ends_the_launchers_attempt_before_starting_its_own(self) -> None:
+        # main.py connects to the event SSID at boot and the default
+        # forever-retry keeps that attempt alive. A second connect()
+        # into it is refused with "Wifi Internal State Error".
+        repl = self._repl()
+        buddy_bridge.join_wifi(repl, "net", "pw")
+        # `_w.connect(`, not `connect(` — `disconnect()` sits above and
+        # would match first, making this pass whatever the order was.
+        self.assertLess(repl.source.index("disconnect()"), repl.source.index("_w.connect("))
+
+    def test_bounds_the_reconnects(self) -> None:
+        # Without this the driver retries forever, status() never leaves
+        # STAT_CONNECTING, and the poll loop runs to its full length on
+        # a typo'd password with nothing to report.
+        repl = self._repl()
+        buddy_bridge.join_wifi(repl, "net", "pw")
+        self.assertIn(f"reconnects={buddy_bridge._WIFI_RECONNECTS}", repl.source)
+        self.assertLess(repl.source.index("reconnects="), repl.source.index("_w.connect("))
+
+    def test_never_takes_the_interface_down(self) -> None:
+        # A down/up cycle is in neither the MicroPython docs nor
+        # M5Stack's example. It was invented here to work around a
+        # symptom and removed once the docs were read.
+        repl = self._repl()
+        buddy_bridge.join_wifi(repl, "net", "pw")
+        self.assertNotIn("active(False)", repl.source)
+
+    def test_the_connect_call_does_not_block_on_the_device(self) -> None:
+        # The wait is a host-side poll of isconnected(), one round trip
+        # each. A device-side sleep loop would have to be reconciled
+        # with the transport's own exec timeout.
+        repl = self._repl()
+        buddy_bridge.join_wifi(repl, "net", "pw")
+        self.assertNotIn("sleep", repl.source)
+        self.assertIn("_w.isconnected()", repl.evals)
+
+    def test_polls_until_the_association_comes_up(self) -> None:
+        repl = FakeRepl(
+            {
+                "_w.isconnected()": Sequenced(False, False, True),
+                self._READBACK: (True, "192.168.0.9", 1010),
+            }
+        )
+        with mock.patch.object(buddy_bridge.time, "sleep"):
+            got = buddy_bridge.join_wifi(repl, "net", "pw")
+        self.assertTrue(got["ok"])
+        self.assertEqual(repl.evals.count("_w.isconnected()"), 3)
+
+    def test_a_refused_connect_is_reported_not_raised(self) -> None:
+        # The caller prints the result and exits non-zero. A traceback
+        # here would bury the reason.
+        def boom(_command: str) -> None:
+            raise RuntimeError("Wifi Internal State Error")
+
+        repl = FakeRepl({}, on_exec=boom)
+        got = buddy_bridge.join_wifi(repl, "net", "pw")
+        self.assertFalse(got["ok"])
+        self.assertIn("Wifi Internal State Error", got["err"])
+        self.assertNotIn("pw", got["err"])
+
+    def test_an_empty_ssid_is_refused_before_anything_is_sent(self) -> None:
+        repl = self._repl()
+        with self.assertRaises(ValueError):
+            buddy_bridge.join_wifi(repl, "", "pw")
+        self.assertEqual(repl.execs, [])
+
+
+class VoicevoxUrlTest(unittest.TestCase):
+    def test_an_explicit_url_wins(self) -> None:
+        self.assertEqual(
+            buddy_bridge.voicevox_url("http://10.0.0.5:50021"), "http://10.0.0.5:50021"
+        )
+
+    def test_falls_back_to_the_environment(self) -> None:
+        with mock.patch.dict(os.environ, {"VOICEVOX_URL": "http://env:50021"}):
+            self.assertEqual(buddy_bridge.voicevox_url(), "http://env:50021")
+
+    def test_a_bare_address_is_given_a_scheme_and_a_port(self) -> None:
+        # The device does no URL parsing; it concatenates paths onto
+        # whatever it is handed. A bare host would produce
+        # "192.168.0.156/audio_query" and fail at the socket.
+        self.assertEqual(buddy_bridge.voicevox_url("192.168.0.156"), "http://192.168.0.156:50021")
+
+    def test_a_trailing_slash_is_dropped(self) -> None:
+        self.assertEqual(buddy_bridge.voicevox_url("http://h:50021/"), "http://h:50021")
+
+    def test_localhost_is_refused(self) -> None:
+        # The engine runs on this Mac, but the device is not on this
+        # Mac. A loopback address is the single most likely mistake
+        # here and it fails as a connection timeout on the device,
+        # seconds later and nowhere near the cause.
+        for bad in ("http://127.0.0.1:50021", "http://localhost:50021"):
+            with self.assertRaises(ValueError, msg=bad):
+                buddy_bridge.voicevox_url(bad)
 
 
 if __name__ == "__main__":

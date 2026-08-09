@@ -86,6 +86,22 @@ class DeviceSourceTest(unittest.TestCase):
                         "bytearray has no item deletion — rebind to the tail instead",
                     )
 
+    def test_no_exception_chaining(self) -> None:
+        # MicroPython has no `__cause__`, so `raise X from e` is not the
+        # cheap extra context it is on CPython. Ruff's B904 asks for it
+        # by default and is switched off for this tree in pyproject;
+        # this is the other half of that decision, so the rule is
+        # enforced rather than merely unenforced. Fold the cause into
+        # the message instead: `raise FetchError("...: " + str(e))`.
+        for path in self.sources:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Raise) and node.cause is not None:
+                    self.fail(
+                        f"{path.name}:{node.lineno} chains an exception with `from`, "
+                        "which MicroPython does not support"
+                    )
+
     def test_annotations_name_only_builtins(self) -> None:
         # Annotations are parsed by MicroPython and then discarded, so
         # they are free as long as every name in them is a builtin. A

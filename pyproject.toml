@@ -14,6 +14,11 @@ dependencies = [
 [dependency-groups]
 dev = [
     "basedpyright>=1.31.0",
+    # MicroPython's own remote-control tool. Used as a library, not a CLI:
+    # `mpremote.transport_serial.SerialTransport` is the raw-paste REPL
+    # transport that host/buddy_push.py drives. Development-time only —
+    # nothing at runtime pushes files.
+    "mpremote>=1.28.0",
     "pytest>=8.4.0",
     "pytest-cov>=6.2.0",
     "ruff>=0.14.0",
@@ -55,9 +60,11 @@ select = [
 [tool.ruff.lint.per-file-ignores]
 # MicroPython is not CPython 3.13. pyupgrade would happily rewrite this code
 # into syntax the device cannot parse, full annotation coverage is not
-# reachable without `typing` (see test_device_constraints.py), and
-# `contextlib` is not in the firmware at all, so SIM105 has no fix available.
-"device/**/*.py" = ["ANN", "UP", "SIM105"]
+# reachable without `typing` (see test_device_constraints.py),
+# `contextlib` is not in the firmware at all so SIM105 has no fix available,
+# and there is no exception chaining, which leaves B904 with nothing to
+# suggest — test_device_constraints.py enforces its absence instead.
+"device/**/*.py" = ["ANN", "UP", "SIM105", "B904"]
 # Derived from upstream (see NOTICE). Imports sit below a sys.path fixup by
 # necessity, and holding the order to upstream's keeps the diff readable.
 "device/apps/*.py" = ["ANN", "UP", "SIM105", "E402", "I001"]
@@ -70,7 +77,9 @@ known-first-party = [
     "buddy_push",
     "buddy_serial",
     "buddy_speak",
-    "buddy_speech",
+    "buddy_tts",
+    "device_repl",
+    "fake_repl",
     "probe_device",
 ]
 

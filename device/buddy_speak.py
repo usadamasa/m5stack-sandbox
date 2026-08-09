@@ -1,74 +1,98 @@
-"""Play PCM the host streams over the serial link.
+"""Play speech the device fetched for itself.
 
-There is no speech synthesis here and there could not be: the ESP32-S3
-has neither the flash for a Japanese voice nor the cycles to run one.
-The host synthesises (`host/buddy_speech.py`) and this end is a pipe
-into `M5.Speaker`.
+There is no synthesis here and there could not be: the ESP32-S3 has
+neither the flash for a Japanese voice nor the cycles to run one. What
+changed is where the audio comes from. It used to arrive over the USB
+cable as PCM the Mac had already synthesised; it now comes off WiFi from
+a VOICEVOX engine the device calls itself (`buddy_tts.py`). This module
+is the part that turns that stream into sound.
 
 ### Protocol
 
-    host -> {"cmd":"speak.begin","rate":16000,"block":2048,"blocks":29,
-             "text":"..."}
-    dev  <- {"ack":"speak.begin","ok":true,"bytes":59392}
-    host -> 59392 raw bytes, no framing, in whole blocks
-    dev  <- {"ack":"speak.end","ok":true,"blocks":29,"stalls":0}
+    host -> {"cmd":"speak.say","text":"...","url":"http://host:50021",
+             "speaker":3,"rate":16000}
+    dev  <- {"ack":"speak.say","ok":true,"bytes":81920,"rate":16000}
+    dev  <- {"ack":"speak.end","ok":true,"blocks":40,"stalls":0}
 
-The payload carries no sentinel and is not JSON. That is the point:
-base64 inside a JSON line would cost a third of the bandwidth and a
-parse per block, and the transport has a mode for exactly this — see
-the bulk-mode note in `buddy_serial.py`. The host declares the length
-first so the blocking read is safe, and pads to a whole block so the
-device is never left waiting inside one.
+The `speak.say` ack goes out once synthesis is done and playback has
+begun, not when the request was accepted — the two POSTs to the engine
+block for seconds and the app's loop stops for that time. Everything
+after that ack runs a block per tick, so the UI comes back.
 
-`speak.stop` cannot arrive mid-transfer, because line parsing is
-suspended while the payload is in flight. A transfer that dies takes
-`_BULK_STALL_MS` to give up and then releases the link on its own.
+`speak.stop` abandons whatever is in flight.
 
 ### Timing
 
-Measured: the link carries 182 KiB/s and 16 kHz 16-bit mono consumes
-32 KB/s, so the host is about five times faster than playback. The
-brake is `M5.Speaker`'s own queue — eight buffers, roughly a second of
-audio, and `playRaw` returns False rather than blocking once it is
-full. So `pump()` reads at most one block per call and stops feeding
-when the queue refuses; the host's write() blocks on a full USB buffer
-in turn, which is the whole of the flow control.
+Measured: 16 kHz 16-bit mono consumes 32 KB/s. The brake is
+`M5.Speaker`'s own queue — eight buffers, roughly a second of audio, and
+`playRaw` returns False rather than blocking once it is full. So
+`pump()` reads at most one block per call and stops feeding when the
+queue refuses.
 
-One block is 2048 bytes = 64 ms of audio and takes ~11 ms to read. The
-app's loop runs every 40 ms. Playback stays ahead as long as `pump()`
-is called from that loop, which is why this deliberately does not drain
-in a `while` — a loop here would freeze the UI for the length of the
-utterance.
+One block is 2048 bytes = 64 ms of audio. The app's loop runs every
+40 ms. Playback stays ahead as long as `pump()` is called from that
+loop, which is why this deliberately does not drain in a `while` — a
+loop here would freeze the UI for the length of the utterance.
+
+### Why the source is separate
+
+WiFi is not the USB cable. The old path had the host declare a length
+and write whole blocks, padded, and a short block would park the device
+inside a blocking read. A socket has no such contract: bytes arrive when
+they arrive, the last block of an utterance is almost never whole, and
+the far end can simply stop. `_StreamSource` is where all of that is
+dealt with, so `pump()` below stays the same loop it always was.
 
 ### MicroPython
 
-No `typing`, no `__future__`, no slice deletion. The speaker and the
-transport are both injectable so the sequencing is testable on the host
-without a board — see `host/tests/test_speak.py`.
+No `typing`, no `__future__`, no slice deletion, no exception chaining.
+The speaker, the transport and the fetch are all injectable so the
+sequencing is testable on the host without a board — see
+`host/tests/test_speak.py`.
 """
 
 import json
+import time
 
 # Refuse anything longer than this in one utterance. At 16 kHz 16-bit
 # it is 30 seconds, which is far more than a notification and far less
-# than enough to wedge the device for a noticeable time.
+# than enough to wedge the device for a noticeable time. `buddy_tts`
+# carries the same number for the same reason.
 _MAX_BYTES = 960000
 
-# Blocks held between `bulk_read` and `playRaw`. The speaker's own queue
+# Blocks held between `read_block` and `playRaw`. The speaker's own queue
 # is the real buffer; this only covers the case where it fills between
 # one tick and the next.
 _MAX_HELD = 2
 
 _DEFAULT_RATE = 16000
 _DEFAULT_BLOCK = 2048
+_DEFAULT_SPEAKER = 3
 
 # `pump()` moves one block per tick and the app's loop runs every 40 ms,
 # so a block has to hold more than 40 ms of audio or playback starves no
 # matter how fast the link is. At 16 kHz 16-bit that is 1280 bytes;
-# round up to a power of two and reject anything smaller, because the
-# symptom — audio that stutters on some phrases and not others — is a
-# miserable thing to debug from the other end of a cable.
-_MIN_BLOCK = 2048
+# round up to a power of two, because the symptom — audio that stutters
+# on some phrases and not others — is a miserable thing to debug from
+# the other end of a cable.
+_BLOCK = 2048
+
+# Silence, for padding a final block that came up short.
+_PAD = b"\x00"
+
+# How long one `read_block` call may block waiting on the socket. Half a
+# tick: long enough to ride out ordinary WiFi jitter inside a single
+# call, short enough that a tick which spends its whole budget here
+# still lands before the next one is due. A socket left at its default
+# blocks until it has the bytes, which would freeze the UI for as long
+# as the network felt like it.
+_READ_TIMEOUT_S = 0.02
+
+# How long a stream may make no progress at all before we stop waiting.
+# Matches the patience the old bulk transport had for a stalled USB
+# transfer. Past this the AP is gone, the engine has died, or the laptop
+# went to sleep, and none of those get better by waiting.
+_STALL_MS = 3000
 
 # M5.Speaker.playRaw(data, rate, stereo, repeat, channel, stop_current).
 # Named here rather than inline so the call sites read as prose.
@@ -84,19 +108,151 @@ def _default_speaker():
     return M5.Speaker
 
 
-class SpeechPlayer:
-    """Streams one utterance at a time from the link into the speaker."""
+def _default_fetch():
+    """The real fetch. Lazy for the same reason as the speaker."""
+    import buddy_tts
 
-    def __init__(self, transport, speaker=None) -> None:
+    return buddy_tts.fetch_speech
+
+
+class _StreamSource:
+    """Turns a byte stream into whole blocks for the player.
+
+    The player wants blocks of exactly `size` and wants them without
+    waiting. A socket offers neither, so the difference is absorbed
+    here: partial reads accumulate across calls, the last block of the
+    utterance is padded with silence, and a stream that has stopped
+    producing sets `dead` rather than leaving the player to spin.
+
+    `left` counts bytes of PCM still owed by the stream — it reaches
+    zero when the last of the declared payload has been handed over.
+    """
+
+    def __init__(self, stream, total, response=None) -> None:
+        self._stream = stream
+        self._response = response
+        self._acc = b""
+        self.left = total
+        self.dead = False
+        self._last_progress = time.ticks_ms()
+
+        # Without this the socket blocks until it has what was asked
+        # for, and the UI loop stops with it. Absent on the test
+        # doubles, and on any stream that is already a buffer.
+        setter = getattr(stream, "settimeout", None)
+        if setter is not None:
+            try:
+                setter(_READ_TIMEOUT_S)
+            except Exception as e:
+                print("buddy_speak: settimeout failed:", e)
+
+    def read_block(self, size):
+        """One complete block of `size` bytes, or None if not here yet.
+
+        Never short: `pump()` hands the result straight to `playRaw`,
+        and a short block there is an audible click. The final block of
+        an utterance is padded with silence to make that true — the
+        measured 81920 bytes happens to divide by 2048, but that is
+        luck, and the padding used to be the host's job before the audio
+        started coming off a socket.
+
+        Returns None when the bytes are not here yet. That is not an
+        error; the next tick tries again. It becomes one after
+        `_STALL_MS` without a single byte of progress, at which point
+        `dead` is set and `pump()` ends the utterance as not-ok. An
+        early end of stream is the same kind of failure and is treated
+        the same way: the length was declared up front by
+        Content-Length, so a stream that stops short has been cut off,
+        and padding the gap with silence would report success for an
+        utterance the listener never heard the end of.
+        """
+        if self.left <= 0:
+            return None
+
+        stream = self._stream
+        if stream is None:
+            # close() ran while an utterance was in flight. Nothing more
+            # is coming, and left > 0 means it ended early.
+            self.dead = True
+            return None
+
+        # The last block is short by definition. Ask only for what is
+        # still owed, then pad — asking for a full block would read
+        # into whatever the server sends next, or hang waiting for
+        # bytes that are not coming.
+        want = size if size < self.left else self.left
+
+        had = len(self._acc)
+        ended = False
+        while len(self._acc) < want:
+            try:
+                chunk = stream.read(want - len(self._acc))
+            except OSError:
+                # Timed out, or would block. Indistinguishable from a
+                # slow AP at this layer, and both want the same answer:
+                # come back next tick. A genuine connection error looks
+                # the same here and is caught by the stall deadline.
+                chunk = None
+            if chunk is None:
+                break
+            if not chunk:
+                ended = True
+                break
+            self._acc += chunk
+
+        if len(self._acc) > had:
+            self._last_progress = time.ticks_ms()
+
+        if len(self._acc) >= want:
+            block = self._acc[:want]
+            # Rebind rather than slice-delete: MicroPython's bytes are
+            # immutable and its bytearray has no `del b[:n]`.
+            self._acc = self._acc[want:]
+            # By the real bytes, not the padding — this is what tells
+            # `pump()` the utterance is over.
+            self.left -= want
+            if len(block) < size:
+                block = block + _PAD * (size - len(block))
+            return block
+
+        if ended:
+            print("buddy_speak: stream ended", self.left, "bytes short")
+            self.dead = True
+        elif time.ticks_diff(time.ticks_ms(), self._last_progress) > _STALL_MS:
+            print("buddy_speak: stream stalled with", self.left, "bytes left")
+            self.dead = True
+        return None
+
+    def close(self) -> None:
+        """Let go of the socket. Safe to call twice."""
+        self.left = 0
+        self._acc = b""
+        for obj in (self._stream, self._response):
+            if obj is None:
+                continue
+            try:
+                obj.close()
+            except Exception as e:
+                print("buddy_speak: close failed:", e)
+        self._stream = None
+        self._response = None
+
+
+class SpeechPlayer:
+    """Fetches one utterance at a time and streams it into the speaker."""
+
+    def __init__(self, transport, speaker=None, fetch=None) -> None:
         self._t = transport
         self._spk = speaker if speaker is not None else _default_speaker()
+        self._fetch = fetch if fetch is not None else None
 
         self.active = False
         self.text = ""
         self._rate = _DEFAULT_RATE
         self._block = _DEFAULT_BLOCK
-        self._blocks_left = 0
+        self._source = None
         self._blocks_total = 0
+        self._blocks_done = 0
         self._held = []  # type: list[bytes]
         self._stalls = 0
 
@@ -115,50 +271,63 @@ class SpeechPlayer:
     def handle(self, msg):
         """Dispatch one parsed command. None if the cmd is not ours."""
         cmd = msg.get("cmd")
-        if cmd == "speak.begin":
-            return self._begin(msg)
+        if cmd == "speak.say":
+            return self._say(msg)
         if cmd == "speak.stop":
             self.stop()
             return {"ack": "speak.stop", "ok": True}
         return None
 
-    def _begin(self, msg) -> dict:
-        rate = int(msg.get("rate", _DEFAULT_RATE))
-        block = int(msg.get("block", _DEFAULT_BLOCK))
-        blocks = int(msg.get("blocks", 0))
-        total = block * blocks
+    def _say(self, msg) -> dict:
+        text = msg.get("text", "")
+        url = msg.get("url", "")
+        if not url:
+            return {"ack": "speak.say", "ok": False, "err": "no engine url"}
 
-        if rate < 4000 or rate > 48000:
-            return {"ack": "speak.begin", "ok": False, "err": "rate out of range"}
-        if block < _MIN_BLOCK or block % 2:
-            # Odd sizes would split a 16-bit sample across two blocks;
-            # small ones starve playback. See _MIN_BLOCK.
-            return {"ack": "speak.begin", "ok": False, "err": "bad block size"}
-        if blocks < 1 or total > _MAX_BYTES:
-            return {"ack": "speak.begin", "ok": False, "err": "length out of range"}
+        fetch = self._fetch if self._fetch is not None else _default_fetch()
 
         # Whatever was playing loses; the host asked for something new.
+        # Done before the fetch so the speaker is not still working
+        # through a second of the last line while this one synthesises.
         self.stop()
 
-        self._rate = rate
-        self._block = block
-        self._blocks_left = blocks
-        self._blocks_total = blocks
+        try:
+            got = fetch(
+                url,
+                text,
+                msg.get("speaker", _DEFAULT_SPEAKER),
+                int(msg.get("rate", _DEFAULT_RATE)),
+            )
+        except Exception as e:
+            return {"ack": "speak.say", "ok": False, "err": str(e)}
+
+        total = got["bytes"]
+        if total < 1 or total > _MAX_BYTES:
+            try:
+                got["response"].close()
+            except Exception:
+                pass
+            return {"ack": "speak.say", "ok": False, "err": "length out of range"}
+
+        self._rate = got["rate"]
+        self._block = _BLOCK
+        self._source = _StreamSource(got["stream"], total, got.get("response"))
+        # Rounded up: the last block is padded rather than dropped.
+        self._blocks_total = (total + self._block - 1) // self._block
+        self._blocks_done = 0
         self._stalls = 0
-        self.text = msg.get("text", "")
+        self.text = text
         self.active = True
-        # Ordered last: the ack is what releases the host to start
-        # writing, and it must not go out before we can receive.
-        self._t.bulk_begin(total)
-        return {"ack": "speak.begin", "ok": True, "bytes": total}
+
+        return {"ack": "speak.say", "ok": True, "bytes": total, "rate": self._rate}
 
     def stop(self) -> None:
         """Silence the speaker and abandon any transfer in flight."""
-        if self.active:
-            self._t.bulk_end()
+        if self._source is not None:
+            self._source.close()
+            self._source = None
         self.active = False
         self._held = []
-        self._blocks_left = 0
         self.text = ""
         try:
             self._spk.stop()
@@ -168,45 +337,44 @@ class SpeechPlayer:
     # ----- main-loop pump
 
     def pump(self) -> None:
-        """Move at most one block from the link into the speaker.
+        """Move at most one block from the stream into the speaker.
 
         Called every tick. One block per call on purpose: see the timing
         note in the module docstring.
         """
-        if not self.active:
+        if not self.active or self._source is None:
             return
 
         self._drain_held()
 
         if len(self._held) >= _MAX_HELD:
-            # Speaker is behind. Leave the bytes on the wire — the
-            # host's write blocks once the USB buffer fills, which is
-            # the backpressure we want.
+            # Speaker is behind. Leave the bytes on the socket — TCP's
+            # window closes in turn, which is the backpressure we want.
             self._stalls += 1
             return
 
-        if self._blocks_left > 0:
-            block = self._t.bulk_read(self._block)
+        if self._source.left > 0:
+            block = self._source.read_block(self._block)
             if block is None:
-                if not self._t.bulk_active:
-                    # The transport gave up on a stalled transfer.
+                if self._source.dead:
                     self._finish(False)
+                else:
+                    self._stalls += 1
                 return
-            self._blocks_left -= 1
+            self._blocks_done += 1
             self._held.append(block)
             self._drain_held()
 
-        if self._blocks_left <= 0 and not self._held:
+        if self._source is not None and self._source.left <= 0 and not self._held:
             self._finish(True)
 
     def _drain_held(self) -> None:
         while self._held:
             if not self._play(self._held[0]):
                 return
-            # Rebind rather than pop(0): MicroPython's list has pop, but
-            # the transcript-length lists elsewhere in this bundle use
-            # the same idiom and consistency is worth more than the
-            # allocation here.
+            # Rebind rather than pop(0): consistency with the bytearray
+            # idiom this bundle uses everywhere, since MicroPython has
+            # no slice deletion and mixing the two reads badly.
             self._held = self._held[1:]
 
     def _play(self, block) -> bool:
@@ -217,12 +385,13 @@ class SpeechPlayer:
             return True  # drop it rather than wedge the queue
 
     def _finish(self, ok) -> None:
-        blocks = self._blocks_total
+        blocks = self._blocks_done
         stalls = self._stalls
         self.active = False
         self._held = []
-        self._blocks_left = 0
-        self._t.bulk_end()
+        if self._source is not None:
+            self._source.close()
+            self._source = None
         self._t.send_line(
             json.dumps(
                 {

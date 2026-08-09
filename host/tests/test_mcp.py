@@ -43,8 +43,9 @@ class StubLink:
         self.queued_messages, self.queued_logs = [], []
         return msgs, logs
 
-    def start_app(self, settle: float = 8.0) -> None:
+    def start_app(self, settle: float = 8.0, wait: float = 15.0) -> None:
         self.started = True
+        self.start_wait = wait
 
 
 class _McpTestCase(unittest.TestCase):
