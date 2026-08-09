@@ -1,10 +1,5 @@
-# uv workspace のルート。それ自体はパッケージではなく、member の列挙と、
-# 全 member に共通するツール設定だけを持つ。
-#
-# workspace は lockfile を 1 つ、`.venv` を 1 つしか作らない。だから
-# 「分離」の実体は依存宣言とツール設定が member ごとに分かれることであって、
-# 環境が物理的に分かれることではない。member 単体の依存で足りることは
-# `uv sync --package <name>` で確かめられる (CI の isolation ジョブがそれを見る)。
+# uv workspace のルート。パッケージではなく、member の列挙と共通のツール設定だけ。
+# 分離の効き方は CLAUDE.md の「構成」にある。
 
 [tool.uv.workspace]
 members = [

@@ -63,15 +63,12 @@ uv workspace で 4 つの member に分かれている。ルートの `pyproject
 | `buddy-host-mcp` | `host/mcp/` | MCP server | mcp, host-link |
 | `buddy-host-tools` | `host/tools/` | デプロイ・provisioning・実測・ファーム取得 | mpy-cross, host-link (`flash` group に esptool) |
 
-**workspace は lockfile も `.venv` も 1 つしか作らない。** だから分離の実体は依存宣言と
-ツール設定が member ごとに分かれることであって、環境が物理的に分かれることではない。
-member 単体で足りることは `uv sync --package <name>` が示す — CI の `isolation` ジョブが
-MCP server について実際にそれを見ており、mpy-cross や esptool が漏れ込んだら落ちる。
+**lockfile も `.venv` も 1 つ。** 分かれるのは依存宣言とツール設定であって環境ではない。
+member 単体で足りることは CI の `isolation` ジョブが見る。
 
-host の 3 つは `package = true` (hatchling, `src/` レイアウト) で editable install される。
-member 間の import を workspace の依存として宣言するには installable である必要があるため。
-`device` だけ `package = false` — MicroPython のコードで、CPython の site-packages に
-`main.py` や `apps/` を置く意味が無い。
+host の 3 つは `package = true` (hatchling, `src/` レイアウト)。member 間の import を
+workspace の依存として宣言するには installable である必要があるため。`device` だけ
+`package = false` — site-packages に `main.py` や `apps/` を置く意味が無い。
 
 | パス | 中身 |
 | --- | --- |

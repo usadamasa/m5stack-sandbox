@@ -1,13 +1,6 @@
-# デバイスの上で動くコード。MicroPython 1.27 (ESP32-S3) 用で、CPython の
-# distribution ではないので package = false。ディレクトリの形はデバイスの
-# /flash/ をそのまま写している (apps/claude_buddy.py -> /flash/apps/)。
-#
-# ここにあるファイルは host/tools の buddy_deploy が .mpy にして転送する。
-# main.py だけは例外で、ソースのまま載る — MicroPython は /flash/main.py を
-# 実行し、main.mpy を探さないため。
-#
-# 中を overlay と app に割ることも考えたが、デバイスの上では同じ /flash/ に
-# 平たく並び、実行時の依存も無い。分ける実益が無いので 1 member にしてある。
+# デバイスの上で動くコード。MicroPython 1.27 (ESP32-S3) 用の distribution では
+# ないので package = false。ディレクトリの形はデバイスの /flash/ をそのまま写す。
+# 転送のしかたは CLAUDE.md の「デバイスへ載るのは .mpy」にある。
 
 [project]
 name = "buddy-device"
@@ -21,9 +14,8 @@ dependencies = []
 package = false
 
 [dependency-groups]
-# テストだけがホスト側を要る。tests/test_chat.py と tests/test_speak.py は
-# ホストの分割上限 (MAX_SAY_CHARS) とデバイスの表示能力が食い違っていない
-# ことを見る契約テストで、両側の定数を突き合わせる必要がある。
+# tests/test_chat.py と tests/test_speak.py がホスト側の定数と突き合わせる
+# 契約テストなので、テストだけがホストを要る。
 dev = ["buddy-host-link"]
 
 [tool.uv.sources]
