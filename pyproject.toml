@@ -1,0 +1,126 @@
+[project]
+name = "m5stack-sandbox"
+version = "0.1.0"
+description = "Drive an M5Stack Cardputer-Adv from Claude Code over the USB serial console."
+requires-python = ">=3.13"
+
+# Host-side runtime only. Nothing here reaches the device: device/ runs on
+# MicroPython, whose modules ship with the firmware.
+dependencies = [
+    "mcp==2.0.0",
+    "pyserial==3.5",
+]
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.31.0",
+    "pytest>=8.4.0",
+    "pytest-cov>=6.2.0",
+    "ruff>=0.14.0",
+    "types-pyserial>=3.5.0.20250822",
+]
+# Only needed to reflash firmware, which is a provisioning task rather than a
+# development one. Install with `uv sync --group flash`.
+flash = [
+    "esptool==5.3.1",
+]
+
+[tool.uv]
+# Scripts and a device overlay, not an installable distribution.
+package = false
+
+# ---------------------------------------------------------------- ruff
+
+[tool.ruff]
+line-length = 100
+# host/ target. device/ is MicroPython and gets the modernisation rules
+# switched off below rather than a separate ruff invocation.
+target-version = "py313"
+extend-exclude = ["tmp"]
+
+[tool.ruff.lint]
+select = [
+    "ANN", # annotations must be present
+    "B",   # bugbear
+    "C4",  # comprehensions
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # import order
+    "RUF",
+    "SIM",
+    "UP",  # pyupgrade
+    "W",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# MicroPython is not CPython 3.13. pyupgrade would happily rewrite this code
+# into syntax the device cannot parse, full annotation coverage is not
+# reachable without `typing` (see test_device_constraints.py), and
+# `contextlib` is not in the firmware at all, so SIM105 has no fix available.
+"device/**/*.py" = ["ANN", "UP", "SIM105"]
+# Derived from upstream (see NOTICE). Imports sit below a sys.path fixup by
+# necessity, and holding the order to upstream's keeps the diff readable.
+"device/apps/*.py" = ["ANN", "UP", "SIM105", "E402", "I001"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["buddy_bridge", "buddy_mcp", "buddy_push", "buddy_serial"]
+
+[tool.ruff.format]
+# Left byte-identical to upstream apart from the transport hook, so that a
+# diff against the clone still shows only the intentional change.
+exclude = ["device/apps/*.py"]
+
+# ---------------------------------------------------------- basedpyright
+
+[tool.basedpyright]
+pythonVersion = "3.13"
+include = ["host", "device"]
+exclude = ["**/__pycache__", ".venv", "tmp"]
+# The two trees are flat module namespaces pushed onto sys.path rather than
+# packages, so the checker needs the same search path the runtime gets.
+extraPaths = ["host", "device"]
+typeCheckingMode = "standard"
+
+[[tool.basedpyright.executionEnvironments]]
+# device/ imports firmware-provided modules (M5, hardware, micropython) and
+# upstream peers that live on the device's flash, none of which exist here.
+# Their absence is the expected state, not a finding.
+root = "device"
+reportMissingImports = "none"
+reportMissingModuleSource = "none"
+reportAttributeAccessIssue = "none"
+
+[[tool.basedpyright.executionEnvironments]]
+root = "host"
+
+# ---------------------------------------------------------------- pytest
+
+[tool.pytest.ini_options]
+testpaths = ["host/tests"]
+# Replaces the sys.path.insert prologue the tests used to carry.
+pythonpath = ["host", "device"]
+addopts = "--strict-markers --strict-config"
+
+# -------------------------------------------------------------- coverage
+
+[tool.coverage.run]
+branch = true
+source = ["host", "device"]
+omit = [
+    # Calls run() at import time and needs M5 hardware modules; importing it
+    # here would launch the app, not measure it.
+    "device/apps/*",
+    "host/tests/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+# A regression bar, not a target. Everything that needs a serial port
+# attached is out of reach here, so the ceiling is well under 100%.
+fail_under = 55
+exclude_also = [
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

@@ -24,16 +24,16 @@ once the app is running the only way back to the REPL is BtnRST.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
+from typing import Any, Protocol
 
-try:
-    import serial
-except ImportError:  # pragma: no cover - exercised only without pyserial
-    serial = None
+import serial
 
 # Keep in sync with _SENTINEL in device/buddy_serial.py.
 SENTINEL = b"\x1eBUDDY1 "
@@ -43,16 +43,51 @@ SENTINEL = b"\x1eBUDDY1 "
 # meaningful in both directions.
 _JSON_SEPARATORS = (",", ":")
 
+# Protocol payloads are whatever the device chose to send, so the values
+# stay Any; naming the alias at least keeps the intent legible.
+Message = dict[str, Any]
 
-def encode(obj: dict) -> bytes:
+# What the demux hands back: ("protocol", json body) or ("log", raw line).
+Item = tuple[str, bytes]
+
+
+class SerialPort(Protocol):
+    """The slice of `serial.Serial` this module actually uses.
+
+    Narrow on purpose: it is what lets the tests drive a fake port
+    without pulling in pyserial's full surface, and it documents the
+    contract a replacement transport would have to meet.
+    """
+
+    @property
+    def in_waiting(self) -> int: ...
+
+    def read(self, size: int = 1, /) -> bytes: ...
+
+    def write(self, data: bytes, /) -> int | None: ...
+
+    def flush(self) -> None: ...
+
+    def close(self) -> None: ...
+
+    def reset_input_buffer(self) -> None: ...
+
+
+SerialFactory = Callable[..., SerialPort]
+
+
+def encode(obj: Message) -> bytes:
     """Frame one message for the device."""
     body = json.dumps(obj, separators=_JSON_SEPARATORS).encode("utf-8")
     return SENTINEL + body + b"\n"
 
 
-def decode(payload: bytes) -> dict:
+def decode(payload: bytes) -> Message:
     """Parse one protocol payload (sentinel already stripped)."""
-    return json.loads(payload.decode("utf-8"))
+    parsed: Any = json.loads(payload.decode("utf-8"))
+    if not isinstance(parsed, dict):
+        raise ValueError(f"protocol payload is not an object: {parsed!r}")
+    return parsed
 
 
 class LineDemux:
@@ -65,14 +100,14 @@ class LineDemux:
     def __init__(self) -> None:
         self._buf = bytearray()
 
-    def feed(self, chunk: bytes) -> list[tuple[str, bytes]]:
+    def feed(self, chunk: bytes) -> list[Item]:
         """Absorb a read and return whatever it completed.
 
         Returns a list of ``(kind, payload)`` where kind is "protocol"
         (payload is the JSON body) or "log" (payload is the raw line).
         """
         self._buf.extend(chunk)
-        out: list[tuple[str, bytes]] = []
+        out: list[Item] = []
         while True:
             nl = self._buf.find(b"\n")
             if nl < 0:
@@ -103,22 +138,27 @@ class BuddyLink:
         "import claude_buddy\n"
     )
 
-    def __init__(self, port: str, baud: int = 115200, read_timeout: float = 0.05):
+    def __init__(self, port: str, baud: int = 115200, read_timeout: float = 0.05) -> None:
         self.port = port
         self.baud = baud
         self.read_timeout = read_timeout
-        self._ser = None
+        self._ser: SerialPort | None = None
         self._demux = LineDemux()
-        self._msgs: list[dict] = []
+        self._msgs: list[Message] = []
         self._logs: list[bytes] = []
         # Set when the port goes away mid-session (device reset).
         self.dropped = False
 
     # ----- lifecycle
 
-    def open(self) -> "BuddyLink":
-        if serial is None:
-            raise RuntimeError("pyserial is required; install it in the venv")
+    @property
+    def _io(self) -> SerialPort:
+        """The open port, or a readable error instead of an AttributeError."""
+        if self._ser is None:
+            raise RuntimeError("link is not open; use `with BuddyLink(port)` or call open()")
+        return self._ser
+
+    def open(self) -> BuddyLink:
         self._ser = serial.Serial(self.port, self.baud, timeout=self.read_timeout)
         return self
 
@@ -129,10 +169,10 @@ class BuddyLink:
             finally:
                 self._ser = None
 
-    def __enter__(self) -> "BuddyLink":
+    def __enter__(self) -> BuddyLink:
         return self.open()
 
-    def __exit__(self, *_exc) -> None:
+    def __exit__(self, *_exc: object) -> None:
         self.close()
 
     # ----- app launch
@@ -143,7 +183,7 @@ class BuddyLink:
         One-way: the app disables Ctrl-C once its transport is up, so a
         second call will not find a REPL to talk to.
         """
-        s = self._ser
+        s = self._io
         for _ in range(5):
             s.write(b"\x03")
             time.sleep(0.05)
@@ -170,9 +210,9 @@ class BuddyLink:
 
     # ----- traffic
 
-    def send(self, obj: dict) -> None:
-        self._ser.write(encode(obj))
-        self._ser.flush()
+    def send(self, obj: Message) -> None:
+        self._io.write(encode(obj))
+        self._io.flush()
 
     def _read_available(self) -> None:
         # The device resets itself on app exit (claude_buddy.py's finally
@@ -181,8 +221,8 @@ class BuddyLink:
         # — losing the buffered logs at that moment would throw away the
         # traceback that explains an unexpected reset.
         try:
-            waiting = self._ser.in_waiting
-            data = self._ser.read(waiting if waiting else 1)
+            waiting = self._io.in_waiting
+            data = self._io.read(waiting if waiting else 1)
         except OSError:
             self.dropped = True
             return
@@ -197,7 +237,7 @@ class BuddyLink:
             else:
                 self._logs.append(payload)
 
-    def pump(self, duration: float = 0.0) -> tuple[list[dict], list[bytes]]:
+    def pump(self, duration: float = 0.0) -> tuple[list[Message], list[bytes]]:
         """Read for `duration` seconds, then hand back what arrived."""
         deadline = time.monotonic() + duration
         while True:
@@ -206,12 +246,12 @@ class BuddyLink:
                 break
         return self.drain()
 
-    def drain(self) -> tuple[list[dict], list[bytes]]:
+    def drain(self) -> tuple[list[Message], list[bytes]]:
         msgs, logs = self._msgs, self._logs
         self._msgs, self._logs = [], []
         return msgs, logs
 
-    def request(self, obj: dict, expect: str, timeout: float = 5.0) -> dict:
+    def request(self, obj: Message, expect: str, timeout: float = 5.0) -> Message:
         """Send `obj` and return the first reply whose `ack` is `expect`.
 
         Unrelated traffic that arrives meanwhile — the `hello` the device
@@ -224,13 +264,9 @@ class BuddyLink:
                 if msg.get("ack") == expect:
                     return self._msgs.pop(i)
             if self.dropped:
-                raise ConnectionError(
-                    "device dropped off USB while waiting for {!r}".format(expect)
-                )
+                raise ConnectionError(f"device dropped off USB while waiting for {expect!r}")
             if time.monotonic() >= deadline:
-                raise TimeoutError(
-                    "no {!r} ack within {:.1f}s".format(expect, timeout)
-                )
+                raise TimeoutError(f"no {expect!r} ack within {timeout:.1f}s")
             self._read_available()
 
 
@@ -253,8 +289,8 @@ class ResidentLink:
         baud: int = 115200,
         read_timeout: float = 0.05,
         log_history: int = 500,
-        serial_factory=None,
-    ):
+        serial_factory: SerialFactory | None = None,
+    ) -> None:
         self.port = port
         self.baud = baud
         self.read_timeout = read_timeout
@@ -262,13 +298,13 @@ class ResidentLink:
         # without limit across a long-lived server. Protocol messages are
         # kept in full — losing an ack would be a correctness bug.
         self._logs: deque[bytes] = deque(maxlen=log_history)
-        self._msgs: deque[dict] = deque()
+        self._msgs: deque[Message] = deque()
         self._demux = LineDemux()
         self._cv = threading.Condition()
         self._write_lock = threading.Lock()
         self._stop = threading.Event()
         self._reader: threading.Thread | None = None
-        self._ser = None
+        self._ser: SerialPort | None = None
         self._serial_factory = serial_factory
         self.dropped = False
 
@@ -278,19 +314,25 @@ class ResidentLink:
     def connected(self) -> bool:
         return self._ser is not None
 
+    @property
+    def _io(self) -> SerialPort:
+        if self._ser is None:
+            raise RuntimeError("link is not connected; call connect() first")
+        return self._ser
+
     def connect(self) -> None:
         if self._ser is not None:
             return
-        factory = self._serial_factory
-        if factory is None:
-            if serial is None:
-                raise RuntimeError("pyserial is required; install it in the venv")
-            factory = serial.Serial
-        self._ser = factory(self.port, self.baud, timeout=self.read_timeout)
+        factory: SerialFactory = self._serial_factory or serial.Serial
+        ser = factory(self.port, self.baud, timeout=self.read_timeout)
+        self._ser = ser
         self.dropped = False
         self._stop.clear()
+        # The port is handed to the thread rather than read off `self`:
+        # disconnect() clears the attribute after a bounded join, so a
+        # reader still blocked in read() would otherwise wake up to None.
         self._reader = threading.Thread(
-            target=self._read_loop, name="buddy-reader", daemon=True
+            target=self._read_loop, args=(ser,), name="buddy-reader", daemon=True
         )
         self._reader.start()
 
@@ -301,18 +343,17 @@ class ResidentLink:
             reader.join(timeout=2.0)
         ser, self._ser = self._ser, None
         if ser is not None:
-            try:
+            # Closing a port that already went away is not news.
+            with contextlib.suppress(Exception):
                 ser.close()
-            except Exception:  # noqa: BLE001 - closing a dead port is not news
-                pass
 
     # ----- reader thread
 
-    def _read_loop(self) -> None:
+    def _read_loop(self, ser: SerialPort) -> None:
         while not self._stop.is_set():
             try:
-                waiting = self._ser.in_waiting
-                data = self._ser.read(waiting if waiting else 1)
+                waiting = ser.in_waiting
+                data = ser.read(waiting if waiting else 1)
             except OSError:
                 # SerialException subclasses OSError, so this covers both
                 # a closed port and the ENXIO of a device that reset.
@@ -338,12 +379,12 @@ class ResidentLink:
 
     # ----- traffic
 
-    def send(self, obj: dict) -> None:
+    def send(self, obj: Message) -> None:
         with self._write_lock:
-            self._ser.write(encode(obj))
-            self._ser.flush()
+            self._io.write(encode(obj))
+            self._io.flush()
 
-    def request(self, obj: dict, expect: str, timeout: float = 5.0) -> dict:
+    def request(self, obj: Message, expect: str, timeout: float = 5.0) -> Message:
         """Send `obj` and wait for the reader to surface a matching ack."""
         self.send(obj)
         deadline = time.monotonic() + timeout
@@ -354,17 +395,13 @@ class ResidentLink:
                         del self._msgs[i]
                         return msg
                 if self.dropped:
-                    raise ConnectionError(
-                        "device dropped off USB while waiting for {!r}".format(expect)
-                    )
+                    raise ConnectionError(f"device dropped off USB while waiting for {expect!r}")
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise TimeoutError(
-                        "no {!r} ack within {:.1f}s".format(expect, timeout)
-                    )
+                    raise TimeoutError(f"no {expect!r} ack within {timeout:.1f}s")
                 self._cv.wait(remaining)
 
-    def events(self) -> tuple[list[dict], list[bytes]]:
+    def events(self) -> tuple[list[Message], list[bytes]]:
         """Drain everything buffered since the last call."""
         with self._cv:
             msgs = list(self._msgs)
@@ -380,30 +417,31 @@ class ResidentLink:
         thread is already collecting, and the paste-mode echo plus any
         startup traceback land in the log buffer for `events()`.
         """
+        io = self._io
         with self._write_lock:
             for _ in range(5):
-                self._ser.write(b"\x03")
+                io.write(b"\x03")
                 time.sleep(0.05)
-            self._ser.write(b"\r\n")
+            io.write(b"\r\n")
             time.sleep(0.3)
-            self._ser.write(b"\x05")
+            io.write(b"\x05")
             time.sleep(0.1)
             for line in BuddyLink._LAUNCH.splitlines():
-                self._ser.write(line.encode("utf-8") + b"\r\n")
+                io.write(line.encode("utf-8") + b"\r\n")
                 time.sleep(0.005)
-            self._ser.write(b"\x04")
+            io.write(b"\x04")
             # Terminate the line. 0x04 carries no newline, so without
             # this it sits unconsumed in the device's rx buffer and gets
             # prepended to the next frame — whose sentinel is then not at
             # the start of the line, so the transport drops it. The
             # symptom is a launch that looks fine followed by exactly one
             # timed-out request.
-            self._ser.write(b"\r\n")
-            self._ser.flush()
+            io.write(b"\r\n")
+            io.flush()
         time.sleep(settle)
 
 
-def _dump(msgs: list[dict], logs: list[bytes]) -> None:
+def _dump(msgs: list[Message], logs: list[bytes]) -> None:
     for line in logs:
         print("  log |", line.decode("utf-8", errors="replace"))
     for msg in msgs:
@@ -411,7 +449,7 @@ def _dump(msgs: list[dict], logs: list[bytes]) -> None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
     ap.add_argument("--port", required=True)
     ap.add_argument("--start", action="store_true", help="Launch the app over the REPL first.")
     ap.add_argument("--status", action="store_true", help="Request a status ack.")
@@ -436,9 +474,7 @@ def main() -> int:
                 print("status:", json.dumps(ack, ensure_ascii=False))
 
             if args.name is not None:
-                ack = link.request(
-                    {"cmd": "name", "name": args.name}, "name", timeout=args.timeout
-                )
+                ack = link.request({"cmd": "name", "name": args.name}, "name", timeout=args.timeout)
                 print("name:", json.dumps(ack, ensure_ascii=False))
 
             if args.owner is not None:
@@ -448,7 +484,7 @@ def main() -> int:
                 print("owner:", json.dumps(ack, ensure_ascii=False))
 
             if args.watch:
-                print("watching for {:.1f}s...".format(args.watch))
+                print(f"watching for {args.watch:.1f}s...")
                 link.pump(args.watch)
         finally:
             _dump(*link.drain())

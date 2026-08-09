@@ -1,0 +1,27 @@
+m5stack-sandbox
+===============
+
+Portions of this repository derive from moremas/build-with-claude, which is
+licensed under the Apache License, Version 2.0.
+
+    https://github.com/moremas/build-with-claude
+    Upstream revision referenced during development:
+    b3b588879d2429ba9587a868b3d4749e55dca068
+
+Derived files
+-------------
+
+device/apps/claude_buddy.py
+    Adapted from buddy/device/apps/claude_buddy.py. The local change is
+    transport selection: the BLE peripheral can be swapped for the USB-serial
+    link in device/buddy_serial.py.
+
+host/buddy_push.py
+    Reimplementation of buddy/scripts/push.py. The paste-mode plus base64
+    transfer mechanism is upstream's; the prompt check, the post-transfer
+    stat, and the removal of the DTR/RTS reset are local.
+
+The peer modules the device imports at runtime (buddy_protocol.py,
+buddy_ui_cp.py, buddy_state.py, buddy_chars.py, main.py) are used unmodified
+and are not redistributed here — they are installed onto the device's flash by
+the m5-onboard skill from the upstream clone.

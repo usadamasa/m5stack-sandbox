@@ -33,9 +33,9 @@ import termios
 # the working directory.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from buddy_bridge import ResidentLink  # noqa: E402
+from mcp.server.mcpserver import MCPServer
 
-from mcp.server.mcpserver import MCPServer  # noqa: E402
+from buddy_bridge import ResidentLink
 
 DEFAULT_PORT = os.environ.get("BUDDY_PORT", "/dev/cu.usbmodem101")
 
@@ -90,7 +90,7 @@ def probe_serial(port: str = "") -> dict:
     try:
         fd = os.open(target, os.O_RDWR | os.O_NONBLOCK)
     except OSError as e:
-        result["error"] = "open failed: {} (errno {})".format(e.strerror, e.errno)
+        result["error"] = f"open failed: {e.strerror} (errno {e.errno})"
         result["verdict"] = "device node unavailable — is it plugged in and powered?"
         return result
 
@@ -101,7 +101,7 @@ def probe_serial(port: str = "") -> dict:
         termios.tcsetattr(fd, termios.TCSANOW, attrs)
         result["tcsetattr"] = True
     except (OSError, termios.error) as e:
-        result["error"] = "{}: {}".format(type(e).__name__, e)
+        result["error"] = f"{type(e).__name__}: {e}"
     finally:
         os.close(fd)
 
@@ -162,9 +162,7 @@ def buddy_set_name(name: str, timeout: float = 8.0) -> dict:
 @server.tool()
 def buddy_set_owner(owner: str, timeout: float = 8.0) -> dict:
     """Set the owner string shown on the device. Persisted in NVS."""
-    return _get_link().request(
-        {"cmd": "owner", "owner": owner}, "owner", timeout=timeout
-    )
+    return _get_link().request({"cmd": "owner", "owner": owner}, "owner", timeout=timeout)
 
 
 @server.tool()

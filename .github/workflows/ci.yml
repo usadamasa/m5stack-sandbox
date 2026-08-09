@@ -1,0 +1,73 @@
+name: CI
+
+# Everything here runs without a board attached. The device-side tree is
+# checked too: its framing logic and its MicroPython constraints are both
+# exercised on CPython, which is the point — those are the failures that
+# would otherwise only surface on the bench.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+      # --locked fails rather than silently re-resolving, so a
+      # pyproject.toml edit that never made it into uv.lock is caught
+      # here instead of drifting.
+      - run: uv sync --locked
+      - run: uv run ruff check --output-format=github
+      - run: uv run ruff format --check
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run basedpyright
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run pytest --cov --cov-report=term-missing --cov-report=xml
+      - name: Coverage summary
+        if: always()
+        run: uv run coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+
+  # The single required status check. Branch protection points at this
+  # job and nothing else, so adding or renaming a job above only means
+  # editing `needs` here — no repository-settings change, and no way to
+  # merge past a job that was never registered as required.
+  #
+  # `if: failure()` is what makes that work: when everything upstream
+  # passes this job is skipped, and GitHub counts a skipped required
+  # check as satisfied. Any upstream failure (or cancellation) flips the
+  # condition and the job fails on purpose.
+  ci-status-check:
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck, test]
+    permissions: {}
+    if: failure() || cancelled()
+    steps:
+      - run: exit 1

@@ -1,15 +1,22 @@
 # Scratch. Everything transient goes here (see CLAUDE.md).
 tmp/
 
-# Upstream clone of moremas/build-with-claude, not a submodule.
-# Cloned separately — see README.md "前提環境".
-build-with-claude/
+.venv/
 
 __pycache__/
 *.py[cod]
 
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
 # Machine-local Claude Code overrides. settings.json is tracked because
 # the sandbox configuration is required to talk to the device at all.
 .claude/settings.local.json
+
+# Completed plan for the serial-transport work. Kept locally, not shipped.
+PLAN.md
 
 .DS_Store

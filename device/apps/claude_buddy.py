@@ -248,8 +248,11 @@ def run():
     # that by having callbacks only mutate plain Python state and
     # letting the main loop drain it into UI calls. send_hello stays
     # in the callback because it's BLE-only — no LCD bus contention.
-    pending_state = [None]
-    pending_passkey = [None]
+    # PEP 484 type comments rather than annotations: MicroPython has no
+    # `typing`, and these one-slot mailboxes would otherwise be inferred
+    # as list[None] and reject every store.
+    pending_state = [None]  # type: list[str | None]
+    pending_passkey = [None]  # type: list[int | None]
 
     def on_passkey(pk):
         pending_passkey[0] = pk

@@ -7,14 +7,8 @@ Hardware Buddy を経由せずに Claude Code (Vertex AI backend) からデバ�
 
 ## 現在の状況
 
-| フェーズ | 状態 |
-| --- | --- |
-| デバイスのプロビジョニング (UIFlow2.0 + buddy バンドル) | 完了 |
-| Phase 1 — device 側 serial transport | 完了 |
-| Phase 2 — host 側ブリッジ (MCP 非依存) | 完了 |
-| Phase 3 — MCP server 化 | 実装完了、**実測待ち** |
-
-動作確認済みの経路:
+デバイスのプロビジョニングから device / host 両側の transport、MCP server 化まで
+一通り動いている。動作確認済みの経路:
 
 ```
 Claude Code ──Bash──> host/buddy_bridge.py ──USB CDC──> Cardputer-Adv
@@ -26,93 +20,78 @@ Claude Code ──Bash──> host/buddy_bridge.py ──USB CDC──> Cardpute
 
 未解決:
 
-- **MCP server が Claude Code の sandbox 内で起動するかは未実測。** 公式ドキュメントは
-  sandbox を Bash tool のものとしてのみ記述しており、MCP への言及がない。内側だった場合は
-  `tcsetattr` が `EPERM` で落ちる。`.mcp.json` を読み込んだ新しいセッションで
-  `probe_serial` を呼べば判定できる。外なら `"verdict": "outside the sandbox"` が返る。
 - ファイル push (`char_begin` / `file` / `chunk` 系) は使えない。`buddy_chars.py:136-141` が
   transport によらず無条件で拒否する。
 
 ## 構成
 
-```
-device/                     デバイスへ push する overlay
-├── buddy_serial.py         シリアル transport (BuddyBLE を duck-typing)
-└── apps/claude_buddy.py    upstream からの派生。差分は transport 選択のみ (46 行)
-host/
-├── buddy_bridge.py         ホスト側クライアント + CLI
-│                           BuddyLink (単発) と ResidentLink (常駐・読み取りスレッド付き)
-├── buddy_mcp.py            MCP server (8 tools)
-└── tests/                  フレーミングと ResidentLink の単体テスト (21 件)
-.mcp.json                   MCP server の登録
-PLAN.md                     フェーズ管理と、実装中に踏んだ罠の記録
-```
+`device/` と `host/` の 2 つに分かれている。
 
-`buddy_protocol.py` / `buddy_ui_cp.py` / `buddy_state.py` / `buddy_chars.py` は無改造で
-upstream のものをそのまま使う。
+- **`device/`** — デバイスの `/flash/` へ流し込む overlay。MicroPython で動く。
+  BLE transport と同じインタフェースを持つシリアル transport と、そこへ差し替えた
+  アプリ本体。protocol / UI / 永続状態のレイヤは upstream のものが既にデバイスに
+  入っており、本リポジトリでは触らない。
+- **`host/`** — ホスト側。フレーミングを解いてコマンドを送るクライアント、それを
+  MCP tool として公開するサーバ、overlay の転送、ファームウェアの取得。
+  テストは `host/tests/` にあり、全て実機なしで走る。
 
 ## 前提環境
-
-### upstream クローン
-
-`build-with-claude/` に [moremas/build-with-claude](https://github.com/moremas/build-with-claude)
-をクローンする。gitignore 済みで、submodule ではない。
-
-```bash
-git clone https://github.com/moremas/build-with-claude.git
-```
-
-このクローンには `buddy/scripts/push.py` (デバイスへの転送) と m5-onboard スキルが入っている。
-
-> `.claude/skills/m5-onboard/scripts/fetch_firmware.py` にローカルパッチ (+112/-27) が
-> 当たっている。sandbox の CONNECT proxy が大きな転送を切るため、`Range: bytes=N-` で
-> レジュームするようにしたもの。`git pull` すると失われる。
 
 ### Python
 
 ```bash
-uv venv tmp/m5venv
-uv pip install --python tmp/m5venv/bin/python -r requirements.txt
+uv sync
 ```
 
-`pip` は使わないこと。sandbox 内では truststore が `trustd` に到達できず
-`SSLCertVerificationError OSStatus -26276` で失敗する。`uv` は `excludedCommands` に
-入っているので動く。
+`.venv` が作られる。以降のコマンドは `uv run` を通す。
 
-### sandbox 設定
+### デバイスのプロビジョニング
 
-`.claude/settings.json` を追跡しているのは、この設定がないとデバイスに触れないため。
+初期化 (ファームウェア書き込みと upstream バンドルの配置) は `cwc-makers` プラグインの
+`m5-onboard` スキルが行う。スキルは
+[moremas/build-with-claude](https://github.com/moremas/build-with-claude) のローカル
+クローンを要求するので、`/maker-setup` で作る。本リポジトリはそのクローンに依存しない
+(overlay の転送は `host/buddy_push.py` が行う)。
 
-| キー | 用途 |
-| --- | --- |
-| `sandbox.excludedCommands` | venv の python を sandbox 外で実行する。`tcsetattr` (ioctl) が Seatbelt で拒否されるため必須 |
-| `sandbox.filesystem.allowWrite` | シリアルデバイスノードとファームウェアキャッシュ |
-| `sandbox.network.allowedDomains` | M5Burner のマニフェストと CDN |
+> ファームウェアの取得がプロキシに切られて `IncompleteRead` や MD5 不一致で
+> 落ちるときは、`host/fetch_firmware.py` を先に走らせる。`Range: bytes=N-` で
+> レジュームし、スキルが読むのと同じキャッシュに置くので、その後は
+> スキルの書き込み手順がキャッシュヒットで進む。
+>
+> ```bash
+> uv run python host/fetch_firmware.py --device cardputer-adv
+> ```
 
-パスが絶対パスで書かれているため、別のマシンでは書き換えが要る。
+### 品質チェック
+
+```bash
+uv run ruff check      # lint
+uv run ruff format     # format
+uv run basedpyright    # 型検査
+uv run pytest --cov    # テスト + カバレッジ
+```
+
+同じものが GitHub Actions で回る。デバイスは要らない。
 
 ## 使い方
 
 ```bash
-PY=tmp/m5venv/bin/python
 PORT=/dev/cu.usbmodem101
 
-# デバイスへ overlay を転送
-$PY build-with-claude/buddy/scripts/push.py --port $PORT \
-    --src device --files buddy_serial.py apps/claude_buddy.py --no-reset
+# デバイスへ overlay を転送 (REPL に居ることが前提。居なければ止まる)
+uv run python host/buddy_push.py --port $PORT
 
 # アプリを起動して状態を取得
-$PY host/buddy_bridge.py --port $PORT --start --status
+uv run python host/buddy_bridge.py --port $PORT --start --status
 
 # 走っているアプリへコマンドを送る
-$PY host/buddy_bridge.py --port $PORT --name Mikawa --owner usadamasa --watch 5
-
-# テスト
-$PY -m unittest discover -s host/tests
+uv run python host/buddy_bridge.py --port $PORT --name Mikawa --owner usadamasa --watch 5
 ```
 
 `--start` は片道。アプリは transport 起動時に `micropython.kbd_intr(-1)` で Ctrl-C を
-無効化するため、REPL に戻るには本体背面の BtnRST を押す。
+無効化するため、REPL に戻るには本体背面の BtnRST を押す。`buddy_push.py` は転送前に
+REPL の応答を確認し、返らなければ 1 バイトも書かずに止まる (無反応の相手に書き込んで
+「成功したのに何も入っていない」状態になるのを防ぐため)。
 
 ### MCP 経由
 
@@ -122,7 +101,7 @@ $PY -m unittest discover -s host/tests
 | tool | 用途 |
 | --- | --- |
 | `probe_serial` | `tcsetattr` が通るかの判定。**最初にこれを呼ぶ** |
-| `buddy_connect` / `buddy_disconnect` | シリアルの掴み直し。push.py を使う前は disconnect する |
+| `buddy_connect` / `buddy_disconnect` | シリアルの掴み直し。`buddy_push.py` を使う前は disconnect する |
 | `buddy_start_app` | REPL 経由でアプリを起動。起動時のトレースバックも返る |
 | `buddy_status` | status ack を取得 |
 | `buddy_set_name` / `buddy_set_owner` | NVS に永続化される表示名とオーナー |
@@ -130,7 +109,7 @@ $PY -m unittest discover -s host/tests
 
 `ResidentLink` がバックグラウンドスレッドでポートを読み続けるため、ツール呼び出しの
 合間に届いたメッセージも `buddy_events` で回収できる。ポートは1プロセスしか掴めないので、
-`push.py` や `esptool` を使う前には `buddy_disconnect` する。
+`buddy_push.py` や `esptool` を使う前には `buddy_disconnect` する。
 
 ## 既知の制約
 
