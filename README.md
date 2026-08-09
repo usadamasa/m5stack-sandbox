@@ -38,6 +38,27 @@ Claude Code ──USB CDC──> Cardputer-Adv ──WiFi──> VOICEVOX ENGINE
 ので、WAV 全体をメモリに載せる経路 (`Response.content`、`M5.Speaker.playWav`) はどれも
 使えず、ソケットから 2048 バイトずつ読んで鳴らしながら受ける形になっている。
 
+### WiFi はデバイスもホストも扱わない
+
+図の `──WiFi──>` は「デバイスが繋ぎに行く」という意味ではない。**link はブート時に
+出来上がっていて、アプリはそれを継承するだけ**。
+
+そうせざるを得ない。アプリ稼働中に `connect()` を呼ぶと受理はされるが association が
+完了せず、15 秒待っても `status()` は "connecting" のまま返る。ランチャーだけ載った時点で
+ESP-IDF heap の最大領域が ~12 KB しかなく、link を上げる DRAM が足りない。
+**アプリは link を継承できるが、作れない。**
+
+そこで認証情報を `/flash/wifi_event.py` (バンドルが持っているブート時接続) へ一度だけ
+書き込む。`host/provision_wifi.py` がそれをやる。以降は電源を入れるだけでネットワークに
+居るので、実行時のコマンドにも MCP ツールにも WiFi は出てこない。
+
+一時期は逆で、ホストが毎ブート REPL 経由で繋ぎ、デバイス側にも `net.config` verb が
+あった。後者は実機では成功しえない (上記) のに残っていて、成功する経路と重複していた。
+両方消してある。
+
+代償は 2 つ。PSK が flash に平文で残ること、そしてブート時から radio が上がる分、
+アプリ読み込み時点の空き heap が 61248 → **41040** に減ること。
+
 未解決:
 
 - **デバイスから返す口がない。** キーボード入力をセッションへ返す経路はまだ無く、
@@ -46,7 +67,8 @@ Claude Code ──USB CDC──> Cardputer-Adv ──WiFi──> VOICEVOX ENGINE
   流れて消える。スクロールバックを読む手段はまだ無い。
 - **合成中は UI が数秒止まる。** `audio_query` / `synthesis` の POST がメインループを
   ブロックする。`_thread` は GIL 付きなので逃げ場がない。
-- WiFi 設定はブートごとに `net.config` で入れ直す必要がある。デバイスには保存しない。
+- **アプリを起動し直すには実際に reboot が要る。** REPL から re-import すると
+  `MemoryError` で落ちる。前のインスタンスが residual に残るため。
 - ファイル push (`char_begin` / `file` / `chunk` 系) は使えない。`buddy_chars.py:136-141` が
   transport によらず無条件で拒否する。
 
@@ -143,9 +165,9 @@ uv run python host/buddy_bridge.py --port $PORT --name Mikawa --owner usadamasa 
 uv run python host/buddy_bridge.py --port $PORT --say "テストが3件落ちとる。"
 uv run python host/buddy_bridge.py --port $PORT --chat-clear
 
-# WiFi に繋ぐ (ブートごとに要る。パスワードは $BUDDY_WIFI_PSK から)
+# WiFi を焼く (一度だけ。パスワードは $BUDDY_WIFI_PSK から。--verify は reboot して確認する)
 export BUDDY_WIFI_PSK=...
-uv run python host/buddy_bridge.py --port $PORT --wifi MyNetwork
+uv run python host/provision_wifi.py --port $PORT --ssid MyNetwork --verify
 
 # 喋らせる (画面にも同じ文が出る。--no-show で音だけ)
 uv run python host/buddy_bridge.py --port $PORT --speak "直したのん。もう一回まわす?"
@@ -158,7 +180,7 @@ uv run python host/probe_device.py --port $PORT
 `--start` は片道。アプリは transport 起動時に `micropython.kbd_intr(-1)` で Ctrl-C を
 無効化するため、REPL に戻るには本体背面の BtnRST を押す。
 
-REPL を要求するもの (`buddy_push.py`、`buddy_bridge.py --start` / `--wifi`、
+REPL を要求するもの (`buddy_push.py`、`provision_wifi.py`、`buddy_bridge.py --start`、
 `probe_device.py`) は BtnRST が押されるまでポーリングして待つ。「押してから実行し直す」を
 求めない。待ち時間は `--wait` 秒 (既定 180、0 で待たない)。MCP の `buddy_start_app` だけは
 ツール呼び出しを長時間ブロックしないよう既定 15 秒。
@@ -176,7 +198,6 @@ REPL を要求するもの (`buddy_push.py`、`buddy_bridge.py --start` / `--wif
 | `buddy_status` | status ack を取得 |
 | `buddy_set_name` / `buddy_set_owner` | NVS に永続化される表示名とオーナー |
 | `buddy_say` | 画面にメッセージを出す。markdown は潰され、画面 1 枚ずつに分割して送られる |
-| `buddy_net_config` | WiFi に繋ぐ。`buddy_speak` の前にブートごとに一度 |
 | `buddy_speak` | 喋らせる。デバイスが VOICEVOX を叩く。既定では画面にも同じ文を出す |
 | `buddy_chat_clear` | 会話ログを消してダッシュボードへ戻す |
 | `buddy_chat_info` | パネルが選んだフォントと行数・幅 |
@@ -191,7 +212,7 @@ REPL を要求するもの (`buddy_push.py`、`buddy_bridge.py --start` / `--wif
 
 `buddy_speak` は合成と再生の長さぶんブロックする。合成はデバイス自身が VOICEVOX ENGINE
 を叩いて行う (声はずんだもん、`speaker=3`)。ホストからはテキストとエンジンの URL しか
-渡らない。事前に `docker compose up -d` と `buddy_net_config` が要る。
+渡らない。事前に `docker compose up -d` と、一度だけ `host/provision_wifi.py` が要る。
 
 `ResidentLink` がバックグラウンドスレッドでポートを読み続けるため、ツール呼び出しの
 合間に届いたメッセージも `buddy_events` で回収できる。ポートは1プロセスしか掴めないので、

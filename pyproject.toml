@@ -81,6 +81,7 @@ known-first-party = [
     "device_repl",
     "fake_repl",
     "probe_device",
+    "provision_wifi",
 ]
 
 [tool.ruff.format]

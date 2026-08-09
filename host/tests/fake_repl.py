@@ -153,6 +153,21 @@ class FakeRepl:
         if progress_callback is not None:
             progress_callback(len(data), len(data))
 
+    def fs_readfile(
+        self,
+        src: str,
+        chunk_size: int = 256,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> bytearray:
+        if src not in self.files:
+            raise OSError(errno.ENOENT, "No such file or directory", src)
+        data = self.files[src]
+        if progress_callback is not None:
+            progress_callback(len(data), len(data))
+        # mpremote returns a bytearray. Matching it means a caller that
+        # assumes `bytes` fails here rather than on hardware.
+        return bytearray(data)
+
     def fs_stat(self, src: str) -> FakeStat:
         if src in self.dirs:
             return FakeStat(0)
