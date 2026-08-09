@@ -71,7 +71,6 @@ import M5
 import machine
 from hardware import MatrixKeyboard
 
-import buddy_ble
 import buddy_chars
 import buddy_chat
 import buddy_speak
@@ -86,11 +85,12 @@ import buddy_ui_cp as buddy_ui
 # this module only touches pairing_supported/advertised_name/deinit, so
 # the two transports are interchangeable behind one factory.
 #
-#   "ble"    — pair with Claude Desktop's Hardware Buddy (upstream default)
+#   "ble"    — pair with Claude Desktop's Hardware Buddy (upstream
+#              default). No longer installable: buddy_ble is not on the
+#              device. The `_TRANSPORT == "ble"` branches below are kept
+#              so the diff against upstream stays readable.
 #   "serial" — same wire format over the USB CDC console, which is what
 #              lets Claude Code drive the device (see buddy_serial.py)
-#
-# Flip this and re-push to switch.
 _TRANSPORT = "serial"
 
 
@@ -111,15 +111,21 @@ _SPEAK_TAG = b'"speak.'
 
 
 def _make_transport(**kw):
+    # Serial only. buddy_ble was the largest module in the bundle and
+    # pulled the NimBLE stack in behind it; both are off the device now,
+    # because the ESP-IDF heap they reserved is what the speech path
+    # needs for its socket. Going back to BLE means installing
+    # buddy_ble.mpy again first.
+    #
     # Imported lazily so a bundle that never selects serial still loads
     # when buddy_serial.py is absent — the module docstring's point
     # about import failures leaving the launcher no way to report them
     # applies to this file's peers too.
-    if _TRANSPORT == "serial":
-        import buddy_serial
+    if _TRANSPORT != "serial":
+        raise RuntimeError("buddy_ble is not installed; _TRANSPORT must be 'serial'")
+    import buddy_serial
 
-        return buddy_serial.BuddySerial(**kw)
-    return buddy_ble.BuddyBLE(**kw)
+    return buddy_serial.BuddySerial(**kw)
 
 
 # ---- battery stub
