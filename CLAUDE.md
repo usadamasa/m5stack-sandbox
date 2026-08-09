@@ -33,15 +33,69 @@ Seatbelt はこれを拒否する。グローバル設定の `sandbox.excludedCo
 | パス | 中身 |
 | --- | --- |
 | `device/buddy_serial.py` | デバイス側のシリアル transport (`BuddyBLE` を duck-typing) |
-| `device/apps/claude_buddy.py` | upstream 派生。差分は transport 選択のみ |
+| `device/buddy_chat.py` | LCD 上のチャットパネル。`chat.*` コマンドを処理する |
+| `device/buddy_speak.py` | ホストから流れてくる PCM を `M5.Speaker` へ流す。`speak.*` |
+| `device/apps/claude_buddy.py` | upstream 派生。差分は transport 選択と chat / speak のルーティング |
 | `host/buddy_bridge.py` | ホスト側クライアント。`BuddyLink` (単発) と `ResidentLink` (常駐) |
-| `host/buddy_mcp.py` | MCP server (8 tools) |
+| `host/buddy_speech.py` | macOS `say` で 16kHz 16bit mono PCM を作る |
+| `host/buddy_mcp.py` | MCP server (12 tools) |
 | `host/buddy_push.py` | paste-mode REPL 経由で overlay を転送 |
+| `host/probe_device.py` | 実機のフォント一覧・実測メトリクス・Speaker API を取る (read-only) |
 | `host/fetch_firmware.py` | UIFlow 2.0 ファームウェアの取得 (Range レジューム付き) |
 | `host/tests/` | 全て実機不要 |
 
 `buddy_protocol.py` / `buddy_ui_cp.py` / `buddy_state.py` / `buddy_chars.py` は upstream の
 ものがデバイスの `/flash/` に入っている。このリポジトリには置かない。
+
+## チャットパネル
+
+`chat.say` / `chat.clear` / `chat.info` は upstream の `buddy_protocol.py` が知らない verb で、
+知らない `cmd` は "unknown cmd" と印字して捨てられる。だから `claude_buddy.py` の `on_line`
+で先に横取りしてから proto へ流す。ここが upstream ファイルを触らずに protocol を拡張できる
+唯一の場所。
+
+画面まわりで踏みやすい点:
+
+- 表示中は `y=0..110` を chat が占有する。`BuddyUI.update_footer()` は `y=96..110` を塗るので
+  `chat.active` の間は呼ばない。`set_connection()` は main panel も塗るので、呼んだら
+  `chat.render()` で描き直す
+- **日本語フォントは 24px しかない** (`EFontJA24` / `AlibabaSansJA24`、`fontHeight()` は 27)。
+  中身に幅広文字があるかでフォントを切り替えており、日本語だと 4 行 × 9 文字、ASCII だけなら
+  `DejaVu12` で 6 行 × 17 文字。ホスト側の分割上限 (`MAX_SAY_CHARS_WIDE` / `MAX_SAY_CHARS`) は
+  この実測値から来ているので、片方を変えたらもう片方も見る
+- `setFont` は sticky。計測も描画も `_push_font` / `_pop_font` で挟んで DejaVu9 に戻す。
+  戻し忘れると `BuddyUI` の footer とヒント列まで 24px になる
+- 実測のやり直しは `uv run python host/probe_device.py` (REPL が要る)
+
+## 音声 (speak)
+
+合成はホストの macOS `say` が行う。デバイス側は PCM を鳴らすだけ。Cardputer-Adv は
+ESP32-S3 で、M5Stack の on-device TTS (StackFlow の MeloTTS) は別基板の Module LLM
+(AX630C, Linux) が要る。Espressif の `esp-tts` は中国語のみ。
+
+**`say` は sandbox の中では無音のファイル (4096 バイトのヘッダのみ) を exit 0 で吐く。**
+`uv run` 経由なら sandbox の外なので通る。`buddy_speech.synthesize` はこのサイズを見て
+エラーにしている (無音をそのまま流すと転送失敗と区別がつかなくなるため)。
+
+### バルクモード
+
+音声は JSON に乗せない。`speak.begin` で長さを宣言 → transport が bulk モードへ →
+生バイトを流す、という経路になっている。理由:
+
+- `poll()` の行読みは **1 バイトずつ**。実測 24.5 KiB/s で、16kHz 16bit の 32 KB/s に
+  届かない。速くできない理由は、行は長さが分からないから
+- `readinto` は **バッファが埋まるまでブロックする** (1024 バイトのバッファに 100 バイト
+  だけ送ったら 41 秒待った)。長さが既知のときだけ安全に使える。実測 182 KiB/s
+
+そのため送信側の制約が2つある。破ると BtnRST でしか戻れない:
+
+- **必ずブロック単位で送る。** 端数はホスト側 (`pad_to_blocks`) が無音で埋める。
+  半端なブロックはデバイスを `readinto` の中で待たせたまま固める
+- **`speak.begin` の ack を待ってから書く。** ack がバルクモードへの切り替えそのもの
+
+ブロックは 2048 バイト固定。40ms の tick で 1 ブロックずつしか読まないので、これより
+小さいと再生が追いつかない (`_MIN_BLOCK`)。`speak.end` の `stalls` が 0 以外なら
+供給が間に合っていない。
 
 ## device/ は MicroPython
 

@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import re
 import sys
 import threading
 import time
@@ -34,6 +35,8 @@ from collections.abc import Callable
 from typing import Any, Protocol
 
 import serial
+
+import buddy_speech
 
 # Keep in sync with _SENTINEL in device/buddy_serial.py.
 SENTINEL = b"\x1eBUDDY1 "
@@ -88,6 +91,308 @@ def decode(payload: bytes) -> Message:
     if not isinstance(parsed, dict):
         raise ValueError(f"protocol payload is not an object: {parsed!r}")
     return parsed
+
+
+class Requester(Protocol):
+    """The one method the chat helpers need from a link.
+
+    `BuddyLink` and `ResidentLink` both satisfy it, which is what lets
+    the CLI and the MCP server share `say`.
+    """
+
+    def request(self, obj: Message, expect: str, timeout: float = 5.0) -> Message: ...
+
+
+class BulkLink(Requester, Protocol):
+    """A link that can also push an unframed payload and wait for a reply.
+
+    Audio does not travel as JSON: the device declares a length, drops
+    into bulk mode, and reads raw bytes. That needs two things a request
+    cannot express — a write with no framing, and a wait for an ack that
+    arrives long after the command that caused it.
+    """
+
+    def write_raw(self, data: bytes) -> None: ...
+
+    def await_ack(self, expect: str, timeout: float = 5.0) -> Message: ...
+
+
+# ----- chat
+#
+# The device renders a transcript in a 232x88 px panel — five rows of a
+# 16 px CJK font. Text arrives here as whatever Claude wrote, which is
+# prose with markdown in it, so it gets flattened and split before it
+# goes on the wire.
+
+# Roughly one panel's worth of text, which is the unit that matters:
+# the device renders the *tail* of its transcript, so a message longer
+# than the screen loses its opening before anyone can read it.
+#
+# Both numbers come from the metrics measured in device/buddy_chat.py
+# and have to move with them. The panel picks its font from the content,
+# and so does `_limit_for` below:
+#
+#   EFontJA24  27 px tall, 23 px/glyph -> 4 rows x  9 chars
+#   DejaVu12   16 px tall, 12 px/glyph -> 6 rows x 17 chars
+#
+# Rounded down, because wrapping leaves a ragged right edge and a part
+# that overflows by one row is a part whose first line is already gone.
+MAX_SAY_CHARS_WIDE = 32
+MAX_SAY_CHARS = 88
+
+# Keep in step with `_WIDE_FROM` in device/buddy_chat.py: the host has to
+# predict which font the panel will choose, and it chooses on this.
+_WIDE_FROM = 0x1100
+
+# Seconds between parts of a split message. The panel shows only its
+# last rows, so a burst would scroll past unread.
+DEFAULT_PACE = 2.0
+
+# Characters after which a split reads as a pause rather than a cut. The
+# fullwidth forms are deliberate, not a paste accident: this text is
+# mostly Japanese, where they are the sentence ends that actually occur.
+_SENTENCE_ENDS = "。！？!?."  # noqa: RUF001
+
+
+# Markdown that the panel has no way to render. Five rows of about
+# fourteen Japanese characters is the whole budget, so every character
+# spent on syntax is one the reader does not get: there is no bold to
+# show, a `##` costs a fifth of a row, and a code block is unreadable at
+# this size anyway. All of it is flattened away here.
+_LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+_HEADING = re.compile(r"^#{1,6}\s+")
+_QUOTE = re.compile(r"^>\s?")
+_BULLET = re.compile(r"^[-*+]\s+")
+_ORDERED = re.compile(r"^\d+[.)]\s+")
+_RULE = re.compile(r"^(?:[-*_]\s*){3,}$")
+_STRONG = re.compile(r"\*\*([^*]+)\*\*")
+_EMPHASIS = re.compile(r"\*([^*\n]+)\*")
+# Underscore emphasis, but only where both delimiters sit outside a
+# word. Without the boundary guards this rewrites `buddy_chat` to
+# `buddychat`, which is worse than leaving the markup in. The body is
+# allowed to contain underscores — `_buddy_chat.py_` is emphasis around
+# an identifier — which is why the match is non-greedy: it stops at the
+# first `_` that is itself at a word boundary.
+_STRONG_UNDER = re.compile(r"(?<![^\W_])__([^\n]+?)__(?![^\W_])")
+_UNDERLINE = re.compile(r"(?<![^\W_])_([^\n]+?)_(?![^\W_])")
+_CODE_SPAN = re.compile(r"`+")
+
+_FENCE = "```"
+_CODE_MARKER = "[code]"
+
+
+def _strip_markup(line: str) -> str:
+    """Reduce one line of markdown to something the panel can show.
+
+    Structure that survives at this size is kept: a list is still a list
+    (every bullet style collapses to a compact ``- ``), and link text
+    outlives its URL. Everything that only exists to be styled — bold,
+    emphasis, code spans, heading hashes, blockquote markers, horizontal
+    rules — is dropped.
+    """
+    line = _QUOTE.sub("", line)
+    if _RULE.match(line):
+        return ""
+    line = _HEADING.sub("", line)
+    if _BULLET.match(line) or _ORDERED.match(line):
+        line = "- " + _BULLET.sub("", _ORDERED.sub("", line))
+    line = _LINK.sub(r"\1", line)
+    line = _STRONG.sub(r"\1", line)
+    line = _STRONG_UNDER.sub(r"\1", line)
+    line = _EMPHASIS.sub(r"\1", line)
+    line = _UNDERLINE.sub(r"\1", line)
+    line = _CODE_SPAN.sub("", line)
+    return line.strip()
+
+
+def normalize_for_device(text: str) -> str:
+    """Flatten `text` into what should appear on the panel.
+
+    Blank lines are dropped rather than preserved: they cost a row out
+    of five and separate nothing the reader cannot already see from the
+    colour change between messages.
+
+    Fenced code is replaced by a single `[code]` marker. The marker is
+    emitted on the opening fence, so a block whose fence is never closed
+    still announces itself rather than vanishing — but everything after
+    an unclosed fence is treated as code and dropped, which is the same
+    thing every other markdown reader does with it.
+    """
+    lines: list[str] = []
+    in_fence = False
+    for raw in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if raw.strip().startswith(_FENCE):
+            in_fence = not in_fence
+            if in_fence:
+                lines.append(_CODE_MARKER)
+            continue
+        if in_fence:
+            continue
+        line = _strip_markup(" ".join(raw.split()))
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def _split_paragraph(para: str, limit: int) -> list[str]:
+    """Break one over-long paragraph at the latest decent boundary."""
+    out: list[str] = []
+    while len(para) > limit:
+        window = para[:limit]
+        cut = max(window.rfind(c) for c in _SENTENCE_ENDS) + 1
+        if cut <= 0:
+            # No sentence end in reach. A space is the next best seam;
+            # Japanese has none, so fall through to a hard cut rather
+            # than emitting a message the device would have to clip.
+            cut = window.rfind(" ") + 1
+        if cut <= 0:
+            cut = limit
+        out.append(para[:cut].strip())
+        para = para[cut:].lstrip()
+    if para:
+        out.append(para)
+    return out
+
+
+def _limit_for(text: str) -> int:
+    """How much of `text` fits on one panel.
+
+    Mirrors the font choice in `device/buddy_chat.py`: one wide glyph
+    anywhere in the transcript pulls the whole panel onto the 27 px CJK
+    face, so a single Japanese character in an otherwise ASCII message
+    costs two rows and eight characters per row.
+    """
+    for ch in text:
+        if ord(ch) >= _WIDE_FROM:
+            return MAX_SAY_CHARS_WIDE
+    return MAX_SAY_CHARS
+
+
+def split_for_device(text: str, limit: int | None = None) -> list[str]:
+    """Break normalized `text` into messages, in order.
+
+    Paragraphs are packed together while they fit so a short exchange
+    stays one bubble on screen, and only a paragraph that cannot fit on
+    its own gets cut mid-sentence. `limit` defaults to whatever the
+    panel can hold for this text; pass one to override.
+    """
+    if limit is None:
+        limit = _limit_for(text)
+    if limit < 1:
+        raise ValueError(f"limit must be positive, got {limit}")
+    parts: list[str] = []
+    current = ""
+    for para in text.split("\n"):
+        for piece in _split_paragraph(para, limit) or [""]:
+            if not piece:
+                continue
+            candidate = piece if not current else current + "\n" + piece
+            if len(candidate) <= limit:
+                current = candidate
+            else:
+                if current:
+                    parts.append(current)
+                current = piece
+    if current:
+        parts.append(current)
+    return parts
+
+
+def say(
+    link: Requester,
+    text: str,
+    role: str = "claude",
+    timeout: float = 5.0,
+    pace: float = DEFAULT_PACE,
+) -> list[Message]:
+    """Put `text` on the device's chat panel. Returns one ack per part.
+
+    Sends synchronously, one part at a time: waiting for each ack means
+    a failure names the part that failed instead of leaving the
+    transcript half-written.
+
+    `pace` is the pause between parts. The panel only shows its last
+    rows, so without it a split message scrolls past faster than anyone
+    can read; pass 0 when nobody is watching the screen.
+    """
+    parts = split_for_device(normalize_for_device(text))
+    acks: list[Message] = []
+    for i, part in enumerate(parts):
+        if i and pace > 0:
+            time.sleep(pace)
+        acks.append(
+            link.request(
+                {"cmd": "chat.say", "role": role, "text": part, "id": f"say-{i}"},
+                "chat.say",
+                timeout=timeout,
+            )
+        )
+    return acks
+
+
+# ----- speech
+#
+# PCM does not travel as JSON. The device declares a length, switches
+# its transport into bulk mode, and reads raw bytes; see the bulk-mode
+# note in device/buddy_serial.py for why the length has to come first.
+
+# Bytes the device reads in one go. Must be even — a 16-bit sample may
+# not straddle two blocks — and must match `block` in speak.begin. 2048
+# is 64 ms of 16 kHz audio, read in about 11 ms, which leaves the
+# device's 40 ms tick comfortably ahead of playback.
+BLOCK_BYTES = 2048
+
+
+def pad_to_blocks(pcm: bytes, block: int = BLOCK_BYTES) -> bytes:
+    """Round `pcm` up to a whole number of blocks with silence.
+
+    Not cosmetic. The device reads fixed-size blocks with a call that
+    blocks until the block is full, so a short tail does not truncate
+    the sound — it parks the device inside a read waiting for bytes that
+    are never coming, with Ctrl-C disabled. The cost is up to 64 ms of
+    silence at the end.
+    """
+    if block <= 0 or block % 2:
+        raise ValueError(f"block must be a positive even number, got {block}")
+    remainder = len(pcm) % block
+    if not remainder:
+        return pcm
+    return pcm + b"\x00" * (block - remainder)
+
+
+def speak(
+    link: BulkLink,
+    pcm: bytes,
+    rate: int = 16000,
+    block: int = BLOCK_BYTES,
+    timeout: float = 10.0,
+) -> Message:
+    """Stream `pcm` to the device's speaker and wait for it to finish.
+
+    `pcm` is signed 16-bit little-endian mono at `rate` — what
+    `buddy_speech.synthesize` returns. Blocks for roughly the duration
+    of the audio: the device's speaker queue holds about a second, so
+    the write paces itself against playback rather than the link.
+    """
+    if not pcm:
+        raise ValueError("nothing to play")
+    payload = pad_to_blocks(pcm, block)
+    blocks = len(payload) // block
+
+    ack = link.request(
+        {"cmd": "speak.begin", "rate": rate, "block": block, "blocks": blocks},
+        "speak.begin",
+        timeout=timeout,
+    )
+    if not ack.get("ok"):
+        raise RuntimeError(f"device refused speak.begin: {ack.get('err', ack)}")
+
+    # Only after the ack: the ack is what put the device into bulk mode,
+    # and bytes sent before it would be parsed as a line and dropped.
+    link.write_raw(payload)
+
+    playback_s = len(payload) / 2 / rate
+    return link.await_ack("speak.end", timeout=playback_s + timeout)
 
 
 class LineDemux:
@@ -214,6 +519,11 @@ class BuddyLink:
         self._io.write(encode(obj))
         self._io.flush()
 
+    def write_raw(self, data: bytes) -> None:
+        """Push unframed bytes. Only valid while the device is in bulk mode."""
+        self._io.write(data)
+        self._io.flush()
+
     def _read_available(self) -> None:
         # The device resets itself on app exit (claude_buddy.py's finally
         # block) and re-enumerates, which surfaces here as ENXIO. That is
@@ -251,13 +561,12 @@ class BuddyLink:
         self._msgs, self._logs = [], []
         return msgs, logs
 
-    def request(self, obj: Message, expect: str, timeout: float = 5.0) -> Message:
-        """Send `obj` and return the first reply whose `ack` is `expect`.
+    def await_ack(self, expect: str, timeout: float = 5.0) -> Message:
+        """Wait for the first reply whose `ack` is `expect`.
 
         Unrelated traffic that arrives meanwhile — the `hello` the device
         emits on handshake, for instance — stays queued for `drain()`.
         """
-        self.send(obj)
         deadline = time.monotonic() + timeout
         while True:
             for i, msg in enumerate(self._msgs):
@@ -268,6 +577,11 @@ class BuddyLink:
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"no {expect!r} ack within {timeout:.1f}s")
             self._read_available()
+
+    def request(self, obj: Message, expect: str, timeout: float = 5.0) -> Message:
+        """Send `obj` and return the first reply whose `ack` is `expect`."""
+        self.send(obj)
+        return self.await_ack(expect, timeout)
 
 
 class ResidentLink:
@@ -384,9 +698,20 @@ class ResidentLink:
             self._io.write(encode(obj))
             self._io.flush()
 
-    def request(self, obj: Message, expect: str, timeout: float = 5.0) -> Message:
-        """Send `obj` and wait for the reader to surface a matching ack."""
-        self.send(obj)
+    def write_raw(self, data: bytes) -> None:
+        """Push unframed bytes. Only valid while the device is in bulk mode.
+
+        Held under the write lock for the whole payload: a JSON command
+        interleaved into an audio stream would be consumed as samples,
+        and the transfer would end up as many bytes short as the command
+        was long.
+        """
+        with self._write_lock:
+            self._io.write(data)
+            self._io.flush()
+
+    def await_ack(self, expect: str, timeout: float = 5.0) -> Message:
+        """Wait for the reader thread to surface a matching ack."""
         deadline = time.monotonic() + timeout
         with self._cv:
             while True:
@@ -400,6 +725,11 @@ class ResidentLink:
                 if remaining <= 0:
                     raise TimeoutError(f"no {expect!r} ack within {timeout:.1f}s")
                 self._cv.wait(remaining)
+
+    def request(self, obj: Message, expect: str, timeout: float = 5.0) -> Message:
+        """Send `obj` and wait for the reader to surface a matching ack."""
+        self.send(obj)
+        return self.await_ack(expect, timeout)
 
     def events(self) -> tuple[list[Message], list[bytes]]:
         """Drain everything buffered since the last call."""
@@ -455,6 +785,36 @@ def main() -> int:
     ap.add_argument("--status", action="store_true", help="Request a status ack.")
     ap.add_argument("--name", help="Set the device name.")
     ap.add_argument("--owner", help="Set the owner string.")
+    ap.add_argument(
+        "--say",
+        action="append",
+        default=[],
+        metavar="TEXT",
+        help="Put TEXT on the device's chat panel. Repeatable.",
+    )
+    ap.add_argument("--role", default="claude", choices=("claude", "user", "sys"))
+    ap.add_argument(
+        "--pace",
+        type=float,
+        default=DEFAULT_PACE,
+        help="Seconds between the parts of a split --say. 0 sends flat out.",
+    )
+    ap.add_argument("--chat-clear", action="store_true", help="Wipe the chat panel.")
+    ap.add_argument("--chat-info", action="store_true", help="Report the panel's font/geometry.")
+    ap.add_argument(
+        "--speak",
+        action="append",
+        default=[],
+        metavar="TEXT",
+        help="Synthesize TEXT on this machine and play it on the device. Repeatable.",
+    )
+    ap.add_argument("--voice", default=buddy_speech.DEFAULT_VOICE)
+    ap.add_argument("--rate", type=int, default=buddy_speech.DEFAULT_RATE)
+    ap.add_argument(
+        "--no-show",
+        action="store_true",
+        help="Do not also put spoken text on the chat panel.",
+    )
     ap.add_argument("--watch", type=float, default=0.0, help="Read traffic for N seconds and exit.")
     ap.add_argument("--timeout", type=float, default=5.0)
     ap.add_argument("--settle", type=float, default=4.0, help="Seconds to wait after --start.")
@@ -482,6 +842,29 @@ def main() -> int:
                     {"cmd": "owner", "owner": args.owner}, "owner", timeout=args.timeout
                 )
                 print("owner:", json.dumps(ack, ensure_ascii=False))
+
+            if args.chat_info:
+                ack = link.request({"cmd": "chat.info"}, "chat.info", timeout=args.timeout)
+                print("chat.info:", json.dumps(ack, ensure_ascii=False))
+
+            if args.chat_clear:
+                ack = link.request({"cmd": "chat.clear"}, "chat.clear", timeout=args.timeout)
+                print("chat.clear:", json.dumps(ack, ensure_ascii=False))
+
+            for text in args.say:
+                for ack in say(link, text, role=args.role, timeout=args.timeout, pace=args.pace):
+                    print("chat.say:", json.dumps(ack, ensure_ascii=False))
+
+            for text in args.speak:
+                pcm = buddy_speech.synthesize(text, voice=args.voice, rate=args.rate)
+                print(f"speaking {buddy_speech.duration_s(pcm, args.rate):.1f}s...")
+                if not args.no_show:
+                    # Sent first so the words are on screen before the
+                    # audio starts, not after it has finished.
+                    for ack in say(link, text, timeout=args.timeout, pace=0):
+                        print("chat.say:", json.dumps(ack, ensure_ascii=False))
+                ack = speak(link, pcm, rate=args.rate, timeout=args.timeout)
+                print("speak.end:", json.dumps(ack, ensure_ascii=False))
 
             if args.watch:
                 print(f"watching for {args.watch:.1f}s...")

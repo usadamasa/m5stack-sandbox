@@ -45,6 +45,26 @@ that byte would kill the app mid-loop, so ``__init__`` disables the
 interrupt with ``micropython.kbd_intr(-1)`` and ``deinit`` restores it.
 While a session is up there is no Ctrl-C escape hatch — recovery is
 BtnRST.
+
+### Bulk mode
+
+``poll()`` drains one byte per ``poll(0)``, which measures at about
+24 KiB/s on this board and is capped at ``_MAX_DRAIN`` per tick on top
+of that. That is plenty for JSON commands and nowhere near enough for
+PCM audio, which needs 32 KB/s sustained.
+
+The fix is not to make the line drain faster. It cannot be: a line has
+no declared length, so the only safe read is one byte at a time —
+``readinto`` on this port **blocks until its buffer is full**, measured
+at 41 s for a 1024-byte buffer against a 100-byte burst. Anything that
+guesses how much to read will eventually freeze the UI loop.
+
+So bulk transfers declare their length up front. ``bulk_begin(n)``
+suspends line parsing, and ``bulk_read(size)`` then uses the blocking
+read safely, because the caller knows exactly how many bytes are
+coming. That path measures 182 KiB/s. The sender must write whole
+blocks: a short final block leaves us inside ``readinto`` with no
+deadline able to fire, and BtnRST is the only way out.
 """
 
 import select
@@ -69,6 +89,11 @@ _MAX_DRAIN = 512
 # and resetting. Status acks are well under 512 B; 4 KiB is generous
 # without letting a runaway peer exhaust the heap.
 _MAX_LINE = 4096
+
+# How long a bulk transfer may stall before we give up on it. Only
+# checked between blocks — once inside the blocking read we are
+# committed, which is why the sender has to pad to a whole block.
+_BULK_STALL_MS = 3000
 
 
 def _binary_streams() -> tuple:
@@ -102,6 +127,12 @@ class BuddySerial:
         self._shutting_down = False
         self._host_seen = False
         self._last_rx_ms = 0
+
+        # Bulk transfer state. _bulk_left > 0 means line parsing is
+        # suspended and every inbound byte belongs to the payload.
+        self._bulk_left = 0
+        self._bulk_acc = bytearray()
+        self._bulk_deadline = 0
 
         self._stdin, self._stdout = _binary_streams()
         self._poller = select.poll()
@@ -166,6 +197,7 @@ class BuddySerial:
 
     def deinit(self) -> None:
         self._shutting_down = True
+        self.bulk_end()
         try:
             self._poller.unregister(self._stdin)
         except (OSError, KeyError):
@@ -187,7 +219,9 @@ class BuddySerial:
         the UI-safety dance in claude_buddy.py is unnecessary here (but
         harmless, and we keep the call sites identical).
         """
-        if self._shutting_down:
+        if self._shutting_down or self._bulk_left > 0:
+            # Bulk mode owns the stream. Draining here would eat the
+            # payload and leave the transfer short by whatever we stole.
             return
         drained = 0
         while drained < _MAX_DRAIN and self._poller.poll(0):
@@ -199,7 +233,10 @@ class BuddySerial:
             drained += len(chunk)
             self._rx_buf.extend(chunk)
 
-        while True:
+        # Stops as soon as a handler enters bulk mode: everything still
+        # in the buffer past that point is payload, not lines, and
+        # bulk_read is what has to consume it.
+        while self._bulk_left <= 0:
             nl = self._rx_buf.find(b"\n")
             if nl < 0:
                 break
@@ -214,6 +251,67 @@ class BuddySerial:
         if len(self._rx_buf) > _MAX_LINE:
             print("buddy_serial: rx overflow, resyncing")
             self._rx_buf = bytearray()
+
+    # ----- bulk transfer
+
+    @property
+    def bulk_active(self) -> bool:
+        return self._bulk_left > 0
+
+    def bulk_begin(self, total) -> None:
+        """Suspend line parsing and expect `total` raw bytes."""
+        self._bulk_left = total
+        self._bulk_acc = bytearray()
+        self._bulk_deadline = time.ticks_add(time.ticks_ms(), _BULK_STALL_MS)
+
+    def bulk_end(self) -> None:
+        """Abandon whatever is left and go back to parsing lines."""
+        self._bulk_left = 0
+        self._bulk_acc = bytearray()
+
+    def bulk_read(self, size):
+        """One complete block of `size` bytes, or None if not here yet.
+
+        Non-blocking in the sense that matters: it returns None rather
+        than waiting when the host has sent nothing. Once the host has
+        started a block it does block, for as long as the rest of that
+        block takes to arrive — about 11 ms for 2 KiB at the measured
+        rate. Partial blocks accumulate across calls, so a caller that
+        polls this from a UI loop never loses bytes.
+        """
+        if self._bulk_left <= 0:
+            return None
+        if size > self._bulk_left:
+            size = self._bulk_left
+
+        acc = self._bulk_acc
+        # Whatever the line drain scooped up before bulk_begin. Normally
+        # empty — the host waits for the ack before sending — but a byte
+        # lost here would desynchronise the whole transfer.
+        if self._rx_buf:
+            take = size - len(acc)
+            if take > len(self._rx_buf):
+                take = len(self._rx_buf)
+            acc.extend(self._rx_buf[:take])
+            self._rx_buf = self._rx_buf[take:]
+
+        while len(acc) < size and self._poller.poll(0):
+            buf = bytearray(size - len(acc))
+            got = self._stdin.readinto(buf)
+            if not got:
+                break
+            acc.extend(buf[:got])
+
+        if len(acc) < size:
+            if time.ticks_diff(self._bulk_deadline, time.ticks_ms()) < 0:
+                print("buddy_serial: bulk stalled at", len(acc), "of", size)
+                self.bulk_end()
+            return None
+
+        self._bulk_acc = bytearray()
+        self._bulk_left -= size
+        self._bulk_deadline = time.ticks_add(time.ticks_ms(), _BULK_STALL_MS)
+        return bytes(acc)
 
     # ----- internals
 

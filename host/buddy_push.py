@@ -43,7 +43,12 @@ from buddy_bridge import SerialPort
 # The overlay this repository owns. Everything else on the device
 # (buddy_protocol, buddy_ui_cp, buddy_state, buddy_chars, main.py) comes
 # from upstream and is installed by the m5-onboard skill.
-DEFAULT_FILES: tuple[str, ...] = ("buddy_serial.py", "apps/claude_buddy.py")
+DEFAULT_FILES: tuple[str, ...] = (
+    "buddy_serial.py",
+    "buddy_chat.py",
+    "buddy_speak.py",
+    "apps/claude_buddy.py",
+)
 
 DEST_ROOT = "/flash"
 

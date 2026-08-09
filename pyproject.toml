@@ -63,7 +63,16 @@ select = [
 "device/apps/*.py" = ["ANN", "UP", "SIM105", "E402", "I001"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["buddy_bridge", "buddy_mcp", "buddy_push", "buddy_serial"]
+known-first-party = [
+    "buddy_bridge",
+    "buddy_chat",
+    "buddy_mcp",
+    "buddy_push",
+    "buddy_serial",
+    "buddy_speak",
+    "buddy_speech",
+    "probe_device",
+]
 
 [tool.ruff.format]
 # Left byte-identical to upstream apart from the transport hook, so that a
