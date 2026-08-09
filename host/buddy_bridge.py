@@ -26,7 +26,9 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import os
 import re
+import socket
 import sys
 import threading
 import time
@@ -36,7 +38,7 @@ from typing import Any, Protocol
 
 import serial
 
-import buddy_speech
+from device_repl import Repl, ReplError, connect_repl, run_and_release
 
 # Keep in sync with _SENTINEL in device/buddy_serial.py.
 SENTINEL = b"\x1eBUDDY1 "
@@ -73,8 +75,6 @@ class SerialPort(Protocol):
 
     def close(self) -> None: ...
 
-    def reset_input_buffer(self) -> None: ...
-
 
 SerialFactory = Callable[..., SerialPort]
 
@@ -101,20 +101,6 @@ class Requester(Protocol):
     """
 
     def request(self, obj: Message, expect: str, timeout: float = 5.0) -> Message: ...
-
-
-class BulkLink(Requester, Protocol):
-    """A link that can also push an unframed payload and wait for a reply.
-
-    Audio does not travel as JSON: the device declares a length, drops
-    into bulk mode, and reads raw bytes. That needs two things a request
-    cannot express — a write with no framing, and a wait for an ack that
-    arrives long after the command that caused it.
-    """
-
-    def write_raw(self, data: bytes) -> None: ...
-
-    def await_ack(self, expect: str, timeout: float = 5.0) -> Message: ...
 
 
 # ----- chat
@@ -330,68 +316,255 @@ def say(
     return acks
 
 
+# ----- network
+#
+# The device has no usable WiFi credentials of its own: its NVS keys are
+# empty and the only SSID in the bundle belongs to an event venue. So
+# they come down the cable, which also means they are never written to
+# flash.
+#
+# They go in before the app does. Measured on hardware: the device
+# associates in well under a second from the REPL and cannot once the
+# app is running — `connect` is accepted, the association never
+# completes, and 15 s later the driver still says "connecting". The
+# ESP-IDF heap has ~12 KB free in its largest region with nothing but
+# the launcher loaded, and bringing a link up wants DRAM, so the radio
+# goes up first and the app inherits it. `buddy_tts.connect_wifi`
+# reports an association that is already up without touching the radio,
+# which makes a later `net.config` a read-back rather than a reconnect.
+
+# Names for the esp32 port's WLAN.status() codes. The number reaches a
+# human through a log line and nothing else, and 201 and 202 are very
+# different problems.
+_WIFI_STATUS = {
+    200: "beacon timeout",
+    201: "no ap found",
+    202: "wrong password",
+    203: "assoc fail",
+    204: "handshake timeout",
+    1000: "idle",
+    1001: "connecting",
+    1010: "got ip",
+}
+
+# Between polls of isconnected(). The poll runs on the host, one raw-REPL
+# round trip each, rather than as a loop inside a single long-running
+# block: a block that blocks for half a minute has to be reconciled with
+# the transport's own exec timeout, and there is nothing to reconcile if
+# every call returns immediately.
+_WIFI_POLL_S = 0.5
+
+# Association attempts before the driver gives up. `connect()` on the
+# esp32 port retries forever by default, and while it does `status()`
+# reads STAT_CONNECTING regardless of the reason — so a deadline here
+# would expire while the driver carried on, and nothing would say why.
+# Three is what M5Stack's own WLAN STA example uses.
+_WIFI_RECONNECTS = 3
+
+# Associating from the REPL has been measured at well under a second.
+# The budget is for a retry or two, not for a link that is coming up
+# slowly.
+_WIFI_TIMEOUT_S = 25.0
+
+
+def _wifi_connect_source(ssid: str, psk: str) -> str:
+    """The statements that start an association. Returns immediately.
+
+    The credentials are embedded with `repr`, not concatenated: this is
+    Python source about to be compiled on the device, and an apostrophe
+    in a passphrase would close the literal and run the remainder as
+    code.
+    """
+    return (
+        "import network\n"
+        "_w = network.WLAN(network.STA_IF)\n"
+        "_w.active(True)\n"
+        # End the launcher's boot-time attempt on the event SSID. Its
+        # forever-retry keeps that attempt alive, and a second connect()
+        # into it is refused with "Wifi Internal State Error".
+        "try:\n"
+        "    _w.disconnect()\n"
+        "except Exception:\n"
+        "    pass\n"
+        f"_w.config(reconnects={_WIFI_RECONNECTS})\n"
+        f"_w.connect({ssid!r}, {psk!r})\n"
+    )
+
+
+def join_wifi(repl: Repl, ssid: str, psk: str, timeout_s: float = _WIFI_TIMEOUT_S) -> Message:
+    """Associate from the raw REPL and report what happened.
+
+    Runs before the app starts; see the note above. Never returns the
+    passphrase, which is the one value in this exchange that must not
+    end up in a log line.
+    """
+    if not ssid:
+        raise ValueError("no ssid")
+    try:
+        repl.exec(_wifi_connect_source(ssid, psk))
+    except Exception as exc:
+        # The device's own traceback, minus anything we sent it. `exec`
+        # raises TransportExecError carrying only stderr, so the source
+        # — and the passphrase in it — is not in the message.
+        return {"ok": False, "err": f"connect refused: {exc}"}
+
+    deadline = time.monotonic() + timeout_s
+    while not repl.eval("_w.isconnected()"):
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(_WIFI_POLL_S)
+
+    connected, ip, code = repl.eval("(_w.isconnected(), _w.ifconfig()[0], _w.status())")
+    return {"ok": bool(connected), "ip": ip, "status": _WIFI_STATUS.get(code, str(code))}
+
+
+# The device polls for an association for up to 15 s before answering.
+_NET_TIMEOUT_S = 25.0
+
+
+def net_config(link: Requester, ssid: str, psk: str, timeout: float = _NET_TIMEOUT_S) -> Message:
+    """Point the device's radio at an access point.
+
+    Idempotent on the device side: an association that is already up is
+    reported as success without touching the radio.
+    """
+    if not ssid:
+        raise ValueError("no ssid")
+    ack = link.request(
+        {"cmd": "net.config", "ssid": ssid, "psk": psk}, "net.config", timeout=timeout
+    )
+    if not ack.get("ok"):
+        raise RuntimeError(f"device could not join {ssid!r}: {ack.get('err', ack)}")
+    return ack
+
+
 # ----- speech
 #
-# PCM does not travel as JSON. The device declares a length, switches
-# its transport into bulk mode, and reads raw bytes; see the bulk-mode
-# note in device/buddy_serial.py for why the length has to come first.
+# Synthesis happens on a VOICEVOX engine, and the device fetches from it
+# directly over WiFi. Nothing but the text crosses the cable.
 
-# Bytes the device reads in one go. Must be even — a 16-bit sample may
-# not straddle two blocks — and must match `block` in speak.begin. 2048
-# is 64 ms of 16 kHz audio, read in about 11 ms, which leaves the
-# device's 40 ms tick comfortably ahead of playback.
-BLOCK_BYTES = 2048
+# VOICEVOX's own default port.
+_ENGINE_PORT = 50021
+
+# Zundamon, normal. Style ids come from the engine's /speakers.
+ZUNDAMON = 3
+
+# 16 kHz over the engine's default 24 kHz. The device has 61 KB of heap
+# and no PSRAM, so a third off the stream is worth more than the
+# bandwidth it saves.
+DEFAULT_RATE = 16000
+
+# Long enough to cover synthesis, which is seconds: the device does not
+# answer speak.say until the engine has produced the whole WAV and the
+# response headers are in.
+_SYNTHESIS_TIMEOUT_S = 60.0
+
+# A loopback engine is reachable from this Mac and from nowhere else.
+# It is the likeliest mistake to make here, and on the device it
+# surfaces as a connection timeout seconds later, nowhere near its
+# cause.
+_LOOPBACK = ("127.0.0.1", "localhost", "::1", "0.0.0.0")
 
 
-def pad_to_blocks(pcm: bytes, block: int = BLOCK_BYTES) -> bytes:
-    """Round `pcm` up to a whole number of blocks with silence.
+def voicevox_url(explicit: str | None = None) -> str:
+    """Where the engine is, as the device will address it.
 
-    Not cosmetic. The device reads fixed-size blocks with a call that
-    blocks until the block is full, so a short tail does not truncate
-    the sound — it parks the device inside a read waiting for bytes that
-    are never coming, with Ctrl-C disabled. The cost is up to 64 ms of
-    silence at the end.
+    Resolution order: the argument, then `$VOICEVOX_URL`, then this
+    machine's LAN address — the engine runs here, in Docker, published
+    with `-p 50021:50021` so it listens on every interface rather than
+    just loopback.
+
+    A bare host or address is given a scheme and the default port. The
+    device does no URL parsing; it concatenates paths onto whatever it
+    is handed.
     """
-    if block <= 0 or block % 2:
-        raise ValueError(f"block must be a positive even number, got {block}")
-    remainder = len(pcm) % block
-    if not remainder:
-        return pcm
-    return pcm + b"\x00" * (block - remainder)
+    raw = explicit or os.environ.get("VOICEVOX_URL") or _lan_address()
+    if not raw:
+        raise ValueError(
+            "cannot work out where VOICEVOX is — set $VOICEVOX_URL to "
+            "http://<this-mac-on-the-lan>:50021"
+        )
+
+    url = raw.strip().rstrip("/")
+    if "://" not in url:
+        url = f"http://{url}"
+    if ":" not in url.split("://", 1)[1]:
+        url = f"{url}:{_ENGINE_PORT}"
+
+    host = url.split("://", 1)[1].split(":")[0]
+    if host in _LOOPBACK:
+        raise ValueError(
+            f"{url} is loopback — reachable from this Mac but not from the "
+            "device. Use this machine's LAN address and publish the "
+            "container with `-p 50021:50021`."
+        )
+    return url
+
+
+def _lan_address() -> str | None:
+    """This machine's address on the LAN, or None.
+
+    Opening a UDP socket towards an off-link address and asking what the
+    kernel bound is the portable way to find which interface would carry
+    the traffic. No packet is sent.
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("8.8.8.8", 53))
+        return probe.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        probe.close()
+
+
+class SpeechLink(Requester, Protocol):
+    """A link that can also wait for an ack the request did not carry.
+
+    `speak.say` is answered when playback starts; `speak.end` follows
+    when it finishes, seconds later, with no command in between to hang
+    it off.
+    """
+
+    def await_ack(self, expect: str, timeout: float = 5.0) -> Message: ...
 
 
 def speak(
-    link: BulkLink,
-    pcm: bytes,
-    rate: int = 16000,
-    block: int = BLOCK_BYTES,
+    link: SpeechLink,
+    text: str,
+    url: str | None = None,
+    speaker: int = ZUNDAMON,
+    rate: int = DEFAULT_RATE,
     timeout: float = 10.0,
 ) -> Message:
-    """Stream `pcm` to the device's speaker and wait for it to finish.
+    """Have the device fetch `text` from VOICEVOX and play it.
 
-    `pcm` is signed 16-bit little-endian mono at `rate` — what
-    `buddy_speech.synthesize` returns. Blocks for roughly the duration
-    of the audio: the device's speaker queue holds about a second, so
-    the write paces itself against playback rather than the link.
+    Returns the `speak.end` ack, which arrives once the last block has
+    been played. Blocks for synthesis plus playback.
+
+    A non-zero `stalls` in the result means the device ran out of audio
+    while waiting on the network — the utterance will have gapped.
     """
-    if not pcm:
-        raise ValueError("nothing to play")
-    payload = pad_to_blocks(pcm, block)
-    blocks = len(payload) // block
+    if not text.strip():
+        raise ValueError("nothing to say")
 
     ack = link.request(
-        {"cmd": "speak.begin", "rate": rate, "block": block, "blocks": blocks},
-        "speak.begin",
-        timeout=timeout,
+        {
+            "cmd": "speak.say",
+            "text": text,
+            "url": voicevox_url(url),
+            "speaker": speaker,
+            "rate": rate,
+        },
+        "speak.say",
+        timeout=_SYNTHESIS_TIMEOUT_S,
     )
     if not ack.get("ok"):
-        raise RuntimeError(f"device refused speak.begin: {ack.get('err', ack)}")
+        # Waiting for speak.end here would block until the timeout for
+        # an utterance that never started.
+        raise RuntimeError(f"device refused speak.say: {ack.get('err', ack)}")
 
-    # Only after the ack: the ack is what put the device into bulk mode,
-    # and bytes sent before it would be parsed as a line and dropped.
-    link.write_raw(payload)
-
-    playback_s = len(payload) / 2 / rate
+    playback_s = ack.get("bytes", 0) / 2 / max(ack.get("rate", rate), 1)
     return link.await_ack("speak.end", timeout=playback_s + timeout)
 
 
@@ -430,20 +603,56 @@ class LineDemux:
         return out
 
 
+# ----- launching the app
+#
+# The app takes the console over: once its transport is up it disables
+# Ctrl-C and speaks the sentinel protocol on the same wire. So the launch
+# happens through the REPL, and the port that the REPL was using is
+# handed straight to the link rather than closed and reopened — the
+# device says whatever it is going to say about a failed import in that
+# gap, and reopening would miss it.
+
+# Imported rather than exec'd: the launcher uses the same path, and
+# compiling an 18 KB source string in one go is a poor fit for the
+# ~65 KB of free heap this bundle leaves behind.
+LAUNCH_SOURCE = (
+    "import sys\n"
+    "for _p in ('/flash', '/flash/apps'):\n"
+    "    if _p not in sys.path: sys.path.insert(0, _p)\n"
+    "import claude_buddy\n"
+)
+
+# Default read timeout for a link. Short: the readers poll `in_waiting`
+# and a blocking read would stall them on a quiet device.
+DEFAULT_READ_TIMEOUT = 0.05
+
+
+def launch_app(
+    port: str,
+    baud: int = 115200,
+    read_timeout: float = DEFAULT_READ_TIMEOUT,
+    wait: float = 180.0,
+    on_wait: Callable[[], None] | None = None,
+) -> SerialPort:
+    """Import the Buddy app on the device. Returns the port to read it on.
+
+    One-way: the app disables Ctrl-C once its transport is up, so a
+    second call will not find a REPL to talk to. Getting there needs a
+    BtnRST press, which is what `wait` is for.
+
+    Hand the result to `BuddyLink.open(adopt=...)` or
+    `ResidentLink.connect(adopt=...)`; whoever takes it owns it.
+    """
+    repl = connect_repl(port, baud, timeout=wait, on_wait=on_wait)
+    return run_and_release(repl, LAUNCH_SOURCE, read_timeout)
+
+
 class BuddyLink:
     """An open serial session with the device."""
 
-    # Imported rather than exec'd: the launcher uses the same path, and
-    # compiling an 18 KB source string in one go is a poor fit for the
-    # ~65 KB of free heap this bundle leaves behind.
-    _LAUNCH = (
-        "import sys\n"
-        "for _p in ('/flash', '/flash/apps'):\n"
-        "    if _p not in sys.path: sys.path.insert(0, _p)\n"
-        "import claude_buddy\n"
-    )
-
-    def __init__(self, port: str, baud: int = 115200, read_timeout: float = 0.05) -> None:
+    def __init__(
+        self, port: str, baud: int = 115200, read_timeout: float = DEFAULT_READ_TIMEOUT
+    ) -> None:
         self.port = port
         self.baud = baud
         self.read_timeout = read_timeout
@@ -463,8 +672,18 @@ class BuddyLink:
             raise RuntimeError("link is not open; use `with BuddyLink(port)` or call open()")
         return self._ser
 
-    def open(self) -> BuddyLink:
-        self._ser = serial.Serial(self.port, self.baud, timeout=self.read_timeout)
+    def open(self, adopt: SerialPort | None = None) -> BuddyLink:
+        """Open the port, or take over one `launch_app` already opened.
+
+        Idempotent, so `with link:` after an adopting open does not throw
+        the adopted port away and open a second one.
+        """
+        if self._ser is None:
+            self._ser = (
+                adopt
+                if adopt is not None
+                else serial.Serial(self.port, self.baud, timeout=self.read_timeout)
+            )
         return self
 
     def close(self) -> None:
@@ -480,48 +699,10 @@ class BuddyLink:
     def __exit__(self, *_exc: object) -> None:
         self.close()
 
-    # ----- app launch
-
-    def start_app(self, settle: float = 4.0) -> None:
-        """Interrupt to the REPL and import the Buddy app.
-
-        One-way: the app disables Ctrl-C once its transport is up, so a
-        second call will not find a REPL to talk to.
-        """
-        s = self._io
-        for _ in range(5):
-            s.write(b"\x03")
-            time.sleep(0.05)
-        s.write(b"\r\n")
-        time.sleep(0.3)
-        s.reset_input_buffer()
-
-        s.write(b"\x05")  # paste mode: no auto-indent mangling
-        time.sleep(0.1)
-        for line in self._LAUNCH.splitlines():
-            s.write(line.encode("utf-8") + b"\r\n")
-            time.sleep(0.005)
-        s.write(b"\x04")
-        # See ResidentLink.start_app: the paste-mode terminator needs a
-        # newline behind it or it corrupts the next frame.
-        s.write(b"\r\n")
-
-        # Paste mode echoes what we just sent, so some of what follows is
-        # our own input coming back. Keep it anyway: a startup traceback
-        # arrives on this same channel, and discarding the echo would
-        # discard the one diagnostic that explains a failed launch.
-        time.sleep(settle)
-        self._read_available()
-
     # ----- traffic
 
     def send(self, obj: Message) -> None:
         self._io.write(encode(obj))
-        self._io.flush()
-
-    def write_raw(self, data: bytes) -> None:
-        """Push unframed bytes. Only valid while the device is in bulk mode."""
-        self._io.write(data)
         self._io.flush()
 
     def _read_available(self) -> None:
@@ -601,7 +782,7 @@ class ResidentLink:
         self,
         port: str,
         baud: int = 115200,
-        read_timeout: float = 0.05,
+        read_timeout: float = DEFAULT_READ_TIMEOUT,
         log_history: int = 500,
         serial_factory: SerialFactory | None = None,
     ) -> None:
@@ -634,11 +815,20 @@ class ResidentLink:
             raise RuntimeError("link is not connected; call connect() first")
         return self._ser
 
-    def connect(self) -> None:
+    def connect(self, adopt: SerialPort | None = None) -> None:
+        """Open the port and start reading, or take over an open one.
+
+        `adopt` is how a launch is picked up: `launch_app` leaves the
+        REPL's port open precisely so the reader can start on it without
+        a gap.
+        """
         if self._ser is not None:
             return
-        factory: SerialFactory = self._serial_factory or serial.Serial
-        ser = factory(self.port, self.baud, timeout=self.read_timeout)
+        if adopt is not None:
+            ser = adopt
+        else:
+            factory: SerialFactory = self._serial_factory or serial.Serial
+            ser = factory(self.port, self.baud, timeout=self.read_timeout)
         self._ser = ser
         self.dropped = False
         self._stop.clear()
@@ -698,18 +888,6 @@ class ResidentLink:
             self._io.write(encode(obj))
             self._io.flush()
 
-    def write_raw(self, data: bytes) -> None:
-        """Push unframed bytes. Only valid while the device is in bulk mode.
-
-        Held under the write lock for the whole payload: a JSON command
-        interleaved into an audio stream would be consumed as samples,
-        and the transfer would end up as many bytes short as the command
-        was long.
-        """
-        with self._write_lock:
-            self._io.write(data)
-            self._io.flush()
-
     def await_ack(self, expect: str, timeout: float = 5.0) -> Message:
         """Wait for the reader thread to surface a matching ack."""
         deadline = time.monotonic() + timeout
@@ -740,34 +918,22 @@ class ResidentLink:
             self._logs.clear()
         return msgs, logs
 
-    def start_app(self, settle: float = 8.0) -> None:
-        """Interrupt to the REPL and import the Buddy app.
+    def start_app(self, settle: float = 8.0, wait: float = 15.0) -> None:
+        """Relaunch the app and come back reading the same port.
 
-        Unlike BuddyLink.start_app there is no explicit drain: the reader
-        thread is already collecting, and the paste-mode echo plus any
-        startup traceback land in the log buffer for `events()`.
+        The port cannot be in two places at once: the REPL needs it to
+        run the import, so the reader is stopped first and restarted on
+        the port the launch hands back. Nothing is drained here — the
+        reader collects the startup output, including a traceback from a
+        failed import, for `events()`.
+
+        `wait` is short on purpose. Getting to the REPL needs a BtnRST
+        press, and a tool call that blocks for three minutes waiting for
+        one is worse than one that says so.
         """
-        io = self._io
-        with self._write_lock:
-            for _ in range(5):
-                io.write(b"\x03")
-                time.sleep(0.05)
-            io.write(b"\r\n")
-            time.sleep(0.3)
-            io.write(b"\x05")
-            time.sleep(0.1)
-            for line in BuddyLink._LAUNCH.splitlines():
-                io.write(line.encode("utf-8") + b"\r\n")
-                time.sleep(0.005)
-            io.write(b"\x04")
-            # Terminate the line. 0x04 carries no newline, so without
-            # this it sits unconsumed in the device's rx buffer and gets
-            # prepended to the next frame — whose sentinel is then not at
-            # the start of the line, so the transport drops it. The
-            # symptom is a launch that looks fine followed by exactly one
-            # timed-out request.
-            io.write(b"\r\n")
-            io.flush()
+        self.disconnect()
+        ser = launch_app(self.port, self.baud, self.read_timeout, wait=wait)
+        self.connect(adopt=ser)
         time.sleep(settle)
 
 
@@ -806,10 +972,35 @@ def main() -> int:
         action="append",
         default=[],
         metavar="TEXT",
-        help="Synthesize TEXT on this machine and play it on the device. Repeatable.",
+        help="Have the device fetch TEXT from VOICEVOX and play it. Repeatable.",
     )
-    ap.add_argument("--voice", default=buddy_speech.DEFAULT_VOICE)
-    ap.add_argument("--rate", type=int, default=buddy_speech.DEFAULT_RATE)
+    ap.add_argument(
+        "--wifi",
+        metavar="SSID",
+        help=(
+            "Join this network from the REPL, before --start. Password from "
+            "$BUDDY_WIFI_PSK. Needs the device at the REPL, so BtnRST first."
+        ),
+    )
+    ap.add_argument("--baud", type=int, default=115200)
+    ap.add_argument(
+        "--wait",
+        type=float,
+        default=180.0,
+        help="Seconds to wait for the REPL when --wifi needs it. Needs a BtnRST press.",
+    )
+    ap.add_argument(
+        "--engine",
+        metavar="URL",
+        help="VOICEVOX engine. Defaults to $VOICEVOX_URL, then this machine's LAN address.",
+    )
+    ap.add_argument(
+        "--speaker",
+        type=int,
+        default=ZUNDAMON,
+        help=f"VOICEVOX style id. {ZUNDAMON} is Zundamon (normal).",
+    )
+    ap.add_argument("--rate", type=int, default=DEFAULT_RATE)
     ap.add_argument(
         "--no-show",
         action="store_true",
@@ -820,13 +1011,68 @@ def main() -> int:
     ap.add_argument("--settle", type=float, default=4.0, help="Seconds to wait after --start.")
     args = ap.parse_args()
 
-    with BuddyLink(args.port) as link:
+    def nudge_repl() -> None:
+        print("waiting for the REPL — press BtnRST on the device...")
+
+    if args.wifi:
+        # Before the app and before the link: see the note above
+        # `join_wifi`. The REPL and the running app cannot both own the
+        # port, so this finishes and closes before BuddyLink opens.
+        try:
+            repl = connect_repl(args.port, args.baud, timeout=args.wait, on_wait=nudge_repl)
+        except ReplError as e:
+            sys.stderr.write(f"{e}\n")
+            return 1
+        try:
+            result = join_wifi(repl, args.wifi, os.environ.get("BUDDY_WIFI_PSK", ""))
+        except OSError as e:
+            # The port vanished mid-exchange: the board reset and
+            # re-enumerated. Bringing the radio up is the current spike
+            # of this whole exchange — a few hundred mA on transmit —
+            # and this board browns out under it when the battery is
+            # low. Worth saying, because the bare errno reads like a
+            # cable fault.
+            sys.stderr.write(
+                f"device dropped off USB while joining WiFi ({e}). Powering the "
+                "radio draws a few hundred mA and this board browns out on it "
+                "when the battery is low; leave it on USB for a while and retry.\n"
+            )
+            return 1
+        finally:
+            # Back to the friendly REPL before letting go: --start
+            # interrupts and pastes into it, and a port left in raw mode
+            # would swallow that silently.
+            with contextlib.suppress(Exception):
+                repl.exit_raw_repl()
+            repl.close()
+        print("wifi:", json.dumps({"ssid": args.wifi, **result}, ensure_ascii=False))
+        if not result.get("ok"):
+            sys.stderr.write(f"could not join {args.wifi!r}\n")
+            return 1
+
+    link = BuddyLink(args.port, baud=args.baud)
+    if args.start:
+        print("starting app over REPL...")
+        try:
+            link.open(
+                adopt=launch_app(
+                    args.port, args.baud, link.read_timeout, wait=args.wait, on_wait=nudge_repl
+                )
+            )
+        except ReplError as e:
+            sys.stderr.write(f"{e}\n")
+            return 1
+    else:
+        link.open()
+
+    with link:
         # Whatever happens, print what the device said first. On a failed
         # launch the buffered logs are the diagnostic.
         try:
             if args.start:
-                print("starting app over REPL...")
-                link.start_app(settle=args.settle)
+                # The reader is already on the port the launch handed
+                # over, so this is just letting the device talk.
+                link.pump(args.settle)
                 _dump(*link.drain())
 
             if args.status:
@@ -855,15 +1101,28 @@ def main() -> int:
                 for ack in say(link, text, role=args.role, timeout=args.timeout, pace=args.pace):
                     print("chat.say:", json.dumps(ack, ensure_ascii=False))
 
+            engine: str | None = None
+            if args.speak:
+                # Resolved once, and before the first request, so a bad
+                # engine address is reported here rather than after the
+                # device has already been told to say something.
+                engine = voicevox_url(args.engine)
+                print(f"engine: {engine}")
+
             for text in args.speak:
-                pcm = buddy_speech.synthesize(text, voice=args.voice, rate=args.rate)
-                print(f"speaking {buddy_speech.duration_s(pcm, args.rate):.1f}s...")
                 if not args.no_show:
-                    # Sent first so the words are on screen before the
-                    # audio starts, not after it has finished.
+                    # Sent first so the words are on screen while the
+                    # engine synthesises, not after playback has ended.
                     for ack in say(link, text, timeout=args.timeout, pace=0):
                         print("chat.say:", json.dumps(ack, ensure_ascii=False))
-                ack = speak(link, pcm, rate=args.rate, timeout=args.timeout)
+                ack = speak(
+                    link,
+                    text,
+                    url=engine,
+                    speaker=args.speaker,
+                    rate=args.rate,
+                    timeout=args.timeout,
+                )
                 print("speak.end:", json.dumps(ack, ensure_ascii=False))
 
             if args.watch:

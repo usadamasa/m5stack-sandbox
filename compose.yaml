@@ -1,0 +1,35 @@
+# VOICEVOX ENGINE for the device to fetch its speech from.
+#
+#     docker compose up -d
+#
+# The Cardputer-Adv calls this over WiFi and plays the result through
+# M5.Speaker; nothing but the text crosses the USB cable. See the
+# "音声 (speak)" section of CLAUDE.md.
+#
+# Credit, per the VOICEVOX terms: VOICEVOX:ずんだもん
+
+services:
+  voicevox:
+    image: voicevox/voicevox_engine:cpu-latest
+    container_name: voicevox
+    ports:
+      # Deliberately not "127.0.0.1:50021:50021", which is what the
+      # upstream README suggests. That binds the published port to this
+      # Mac's loopback, and the device is not on this Mac — it reaches
+      # the engine over the LAN. Bound to every interface, Docker
+      # Desktop's proxy listens on the LAN address and the device can
+      # get to it.
+      - "50021:50021"
+    restart: unless-stopped
+    healthcheck:
+      # The image has no curl, but it does have the Python the engine
+      # itself runs on.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:50021/version')"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s

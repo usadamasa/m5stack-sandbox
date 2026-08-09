@@ -35,8 +35,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp.server.mcpserver import MCPServer
 
-import buddy_speech
-from buddy_bridge import DEFAULT_PACE, ResidentLink, say, speak
+from buddy_bridge import (
+    DEFAULT_PACE,
+    DEFAULT_RATE,
+    ZUNDAMON,
+    ResidentLink,
+    net_config,
+    say,
+    speak,
+    voicevox_url,
+)
+from device_repl import ReplError
 
 DEFAULT_PORT = os.environ.get("BUDDY_PORT", "/dev/cu.usbmodem101")
 
@@ -135,17 +144,23 @@ def buddy_disconnect() -> dict:
 
 
 @server.tool()
-def buddy_start_app(settle: float = 8.0) -> dict:
+def buddy_start_app(settle: float = 8.0, wait: float = 15.0) -> dict:
     """Interrupt to the REPL and launch the Buddy app on the device.
 
     One-way: the app disables Ctrl-C once its transport is up, so getting
-    back to the REPL afterwards requires pressing BtnRST on the device.
+    back to the REPL afterwards requires pressing BtnRST on the device —
+    and so does calling this a second time. `wait` bounds how long that
+    press is waited for before giving up.
+
     Returns the startup output, which is where a launch traceback lands.
     """
     link = _get_link()
-    link.start_app(settle=settle)
+    try:
+        link.start_app(settle=settle, wait=wait)
+    except ReplError as e:
+        return {"started": False, "error": str(e)}
     msgs, logs = link.events()
-    return {"messages": msgs, "logs": _decode_logs(logs)}
+    return {"started": True, "messages": msgs, "logs": _decode_logs(logs)}
 
 
 @server.tool()
@@ -194,37 +209,53 @@ def buddy_say(
 
 
 @server.tool()
+def buddy_net_config(ssid: str, psk: str = "", timeout: float = 25.0) -> dict:
+    """Join `ssid` so the device can reach the VOICEVOX engine.
+
+    Needed once per boot before `buddy_speak`. The device has no WiFi
+    credentials of its own — its NVS keys are empty and the only SSID in
+    the bundle belongs to an event venue — so they come over the cable
+    and are never written to flash.
+
+    Idempotent: an association that is already up is reported as success
+    without touching the radio. `psk` defaults to `$BUDDY_WIFI_PSK`.
+    """
+    return net_config(_get_link(), ssid, psk or os.environ.get("BUDDY_WIFI_PSK", ""), timeout)
+
+
+@server.tool()
 def buddy_speak(
     text: str,
-    voice: str = buddy_speech.DEFAULT_VOICE,
-    rate: int = buddy_speech.DEFAULT_RATE,
+    speaker: int = ZUNDAMON,
+    engine: str = "",
+    rate: int = DEFAULT_RATE,
     show: bool = True,
     timeout: float = 10.0,
 ) -> dict:
     """Say `text` out loud on the device, and by default show it too.
 
-    Synthesis runs here, not on the device: the Cardputer-Adv is an
-    ESP32-S3 and has no Japanese TTS available to it. The audio is
-    streamed over the serial link as raw PCM and played through
-    M5.Speaker.
+    The device fetches its own audio: it calls a VOICEVOX engine over
+    WiFi and streams the WAV straight into M5.Speaker. Nothing but the
+    text crosses the cable. Call `buddy_net_config` first — without an
+    association this fails with a connection error from the device.
 
-    Blocks for about the duration of the audio — the device's speaker
-    queue holds a second, so the transfer paces itself against playback.
-    `voice` is any macOS voice name (`say -v '?'` lists them; Kyoko is
-    the Japanese default).
+    The engine runs in Docker on this Mac and must be published on all
+    interfaces (`-p 50021:50021`), because the device reaches it over
+    the LAN and not over loopback. `engine` defaults to `$VOICEVOX_URL`
+    and then to this machine's LAN address.
 
-    Returns the device's `speak.end` ack. A non-zero `stalls` means the
-    speaker ran ahead of the link and the audio may have stuttered.
+    `speaker` is a VOICEVOX style id from the engine's `/speakers`;
+    3 is Zundamon (normal), 2 is Shikoku Metan, 8 is Kasukabe Tsumugi.
+
+    Blocks for synthesis (seconds) plus playback. Returns the device's
+    `speak.end` ack — a non-zero `stalls` means the device ran out of
+    audio waiting on the network and the utterance gapped.
     """
-    pcm = buddy_speech.synthesize(text, voice=voice, rate=rate)
     link = _get_link()
+    url = voicevox_url(engine or None)
     shown = say(link, text, timeout=timeout, pace=0) if show else []
-    ack = speak(link, pcm, rate=rate, timeout=timeout)
-    return {
-        "seconds": round(buddy_speech.duration_s(pcm, rate), 2),
-        "shown": len(shown),
-        "end": ack,
-    }
+    ack = speak(link, text, url=url, speaker=speaker, rate=rate, timeout=timeout)
+    return {"engine": url, "shown": len(shown), "end": ack}
 
 
 @server.tool()

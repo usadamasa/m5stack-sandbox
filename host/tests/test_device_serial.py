@@ -54,9 +54,12 @@ class HandleLineTest(unittest.TestCase):
         self.assertFalse(self.t._host_seen)
 
     def test_tolerates_a_partial_line_prefix(self) -> None:
-        # What actually bit us: start_app ends with a bare 0x04, which
-        # stays in the device's rx buffer and lands in front of the next
-        # frame. A strict startswith() drops that frame silently.
+        # A control byte left over from whatever ran before, sitting in
+        # the rx buffer ahead of the first frame. The host no longer
+        # produces one — raw-paste acknowledges its own terminator,
+        # unlike the paste mode this used to use — but a strict
+        # startswith() drops such a frame silently, and the device is
+        # the side that cannot be debugged when it does.
         self.t._handle_line(b"\x04" + _SENTINEL + b'{"cmd":"status"}')
         self.assertEqual(self.lines, [b'{"cmd":"status"}'])
 

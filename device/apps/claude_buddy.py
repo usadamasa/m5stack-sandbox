@@ -77,6 +77,7 @@ import buddy_chat
 import buddy_speak
 import buddy_protocol
 import buddy_state
+import buddy_tts
 import buddy_ui_cp as buddy_ui
 
 
@@ -103,6 +104,11 @@ _TRANSPORT = "serial"
 # pay for a second JSON parse — see buddy_chat.py for the commands.
 _CHAT_TAG = b'"chat.'
 _SPEAK_TAG = b'"speak.'
+# net.config carries the WiFi credentials the speech path needs. They
+# come over the cable rather than from flash because this device has
+# nothing usable stored: its NVS keys are empty and the only SSID in
+# the bundle belongs to an event venue (see /flash/wifi_event.py).
+_NET_TAG = b'"net.'
 
 
 def _make_transport(**kw):
@@ -205,33 +211,38 @@ def run():
     # nearby BLE peers, lots of WiFi traffic — that init
     # intermittently faults at the C layer and reboots the chip with
     # no Python-catchable error. We saw this consistently with the
-    # crash log ending at `pre_active= False`. Buddy is BLE-only, so
-    # taking WiFi down for the duration of the app is harmless; the
-    # launcher reconnects on the next reboot via main.py.
-    try:
-        import network
-        sta = network.WLAN(network.STA_IF)
-        if sta.active():
-            try:
-                sta.disconnect()
-            except OSError:
-                pass
-            sta.active(False)
-        print("claude_buddy: wifi off")
-    except Exception as e:
-        # Defensive — if `network` isn't importable on this build, or
-        # the WLAN object behaves unexpectedly, we'd rather continue
-        # and risk the original coexistence crash than fail the app
-        # outright. The print is enough to investigate later.
-        print("claude_buddy: wifi disable warning:", e)
-    # Drain the radio scheduler so WiFi tx queues finish before BLE
-    # init takes over the controller. 1000 ms (was 200 ms) is the
-    # value that finally got us past intermittent NimBLE
-    # active(True) C-faults on a busy show floor — ESP32's WiFi
-    # tear-down is more leisurely than its connect path, and the
-    # 200 ms we tried first wasn't enough to fully release the
-    # radio before BLE asks for it.
-    time.sleep_ms(1000)
+    # crash log ending at `pre_active= False`.
+    #
+    # Only on the BLE transport. The serial build never touches the
+    # NimBLE controller, so there is no coexistence to arbitrate — and
+    # it needs the radio, because that is where the speech comes from
+    # now (see buddy_tts.py). Taking WiFi down here would leave
+    # `speak.say` with nothing to reach the engine over.
+    if _TRANSPORT == "ble":
+        try:
+            import network
+            sta = network.WLAN(network.STA_IF)
+            if sta.active():
+                try:
+                    sta.disconnect()
+                except OSError:
+                    pass
+                sta.active(False)
+            print("claude_buddy: wifi off")
+        except Exception as e:
+            # Defensive — if `network` isn't importable on this build, or
+            # the WLAN object behaves unexpectedly, we'd rather continue
+            # and risk the original coexistence crash than fail the app
+            # outright. The print is enough to investigate later.
+            print("claude_buddy: wifi disable warning:", e)
+        # Drain the radio scheduler so WiFi tx queues finish before BLE
+        # init takes over the controller. 1000 ms (was 200 ms) is the
+        # value that finally got us past intermittent NimBLE
+        # active(True) C-faults on a busy show floor — ESP32's WiFi
+        # tear-down is more leisurely than its connect path, and the
+        # 200 ms we tried first wasn't enough to fully release the
+        # radio before BLE asks for it.
+        time.sleep_ms(1000)
 
     ui = buddy_ui.BuddyUI()
     print("claude_buddy: ui ready")
@@ -269,10 +280,20 @@ def run():
                 ble.send_line(json.dumps(ack, separators=(",", ":")).encode("utf-8"))
                 chat_dirty[0] = True
                 return
-        # speak.begin puts the transport into bulk mode and its ack is
-        # what releases the host to start writing the payload, so this
-        # has to answer synchronously — deferring it to the loop would
-        # leave the host waiting with the link already switched over.
+        # Answers synchronously, and takes seconds doing it: the
+        # handler associates with an AP while the caller waits. There
+        # is nothing to defer it to — the host cannot send speak.say
+        # until this has come back.
+        if _NET_TAG in raw and ble is not None:
+            ack = buddy_tts.handle_net_raw(raw)
+            if ack is not None:
+                ble.send_line(json.dumps(ack, separators=(",", ":")).encode("utf-8"))
+                return
+        # speak.say fetches the audio from the engine before it answers,
+        # which blocks this loop for the length of synthesis. It has to
+        # be synchronous anyway: the ack reports the length and the rate
+        # the engine actually used, neither of which is known until the
+        # response headers are in.
         if _SPEAK_TAG in raw and ble is not None and speech is not None:
             ack = speech.handle_raw(raw)
             if ack is not None:
@@ -348,9 +369,11 @@ def run():
     )
     print("claude_buddy: transport ready")
 
-    # Only the serial transport has the bulk mode this needs; a BLE
-    # build simply has no speech path.
-    if hasattr(ble, "bulk_begin"):
+    # Speech needs the radio, and the BLE build gives it away above to
+    # keep the NimBLE controller from faulting. So this is a
+    # serial-only path — not because of anything in the transport, but
+    # because the two cannot both have the antenna.
+    if _TRANSPORT == "serial":
         speech = buddy_speak.SpeechPlayer(ble)
         print("claude_buddy: speech ready")
 

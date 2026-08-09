@@ -10,7 +10,9 @@ import threading
 import time
 import unittest
 
+import buddy_bridge
 from buddy_bridge import SENTINEL, Message, ResidentLink, encode
+from fake_repl import FakeRepl
 
 
 def framed(payload: bytes) -> bytes:
@@ -65,10 +67,6 @@ class FakeSerial:
 
     def close(self) -> None:
         self.closed = True
-
-    def reset_input_buffer(self) -> None:
-        with self._lock:
-            self._inbound.clear()
 
     # ----- test helpers
 
@@ -158,25 +156,86 @@ class ResidentLinkTest(unittest.TestCase):
         self.assertTrue(self.fake.closed)
         self.assertFalse(self.link.connected)
 
-    def test_start_app_terminates_its_last_line(self) -> None:
-        # The paste-mode terminator (0x04) carries no newline of its own.
-        # Left unterminated it sits in the device's rx buffer and gets
-        # prepended to the next frame, whose sentinel then no longer
-        # starts the line — the device drops it silently and the first
-        # request after a launch times out.
-        self.link.start_app(settle=0.0)
-        self.assertTrue(
-            self.fake.written().endswith(b"\n"),
-            "start_app must leave the device's line buffer empty",
-        )
-
-    def test_first_frame_after_start_app_starts_the_line(self) -> None:
-        # The property the device actually checks: once start_app is
-        # done, a subsequent frame must be the first thing on its line.
-        self.link.start_app(settle=0.0)
+    def test_connect_can_adopt_an_already_open_port(self) -> None:
+        # How a launch is picked up. The REPL had the port to run the
+        # import; opening a second one would miss whatever the device
+        # says in the gap, which is where a failed import's traceback
+        # lands.
+        self.link.disconnect()
+        adopted = FakeSerial("/dev/adopted", 115200, None)
+        self.link.connect(adopt=adopted)
+        self.assertTrue(self.link.connected)
+        # Still one port from the factory: the one setUp opened.
+        self.assertEqual(len(self.fakes), 1)
         self.link.send({"cmd": "status"})
-        last_line = self.fake.written().split(b"\n")[-2] + b"\n"
-        self.assertEqual(last_line, encode({"cmd": "status"}))
+        self.assertEqual(adopted.written(), encode({"cmd": "status"}))
+
+
+class StartAppTest(unittest.TestCase):
+    """Relaunching hands the port from the REPL to the reader thread."""
+
+    def setUp(self) -> None:
+        self.repl = FakeRepl()
+        self.opened: list[str] = []
+
+        def connect_repl(port: str, baud: int, timeout: float = 180.0, **_kw: object) -> FakeRepl:
+            self.opened.append(port)
+            return self.repl
+
+        real = buddy_bridge.connect_repl
+        buddy_bridge.connect_repl = connect_repl
+        self.addCleanup(setattr, buddy_bridge, "connect_repl", real)
+
+    def test_imports_the_app_without_waiting_for_it_to_end(self) -> None:
+        # `exec` would block until the command returns, and the app's
+        # whole job is never to return.
+        buddy_bridge.launch_app("/dev/fake")
+        self.assertEqual(self.repl.launched, [buddy_bridge.LAUNCH_SOURCE])
+        self.assertEqual(self.repl.execs, [buddy_bridge.LAUNCH_SOURCE])
+
+    def test_hands_back_a_port_the_reader_can_poll(self) -> None:
+        # mpremote opens blocking with a one second inter-byte timeout.
+        # A reader that polls in_waiting would stall on both.
+        port = buddy_bridge.launch_app("/dev/fake", read_timeout=0.05)
+        self.assertIs(port, self.repl.serial)
+        self.assertEqual(self.repl.serial.timeout, 0.05)
+        self.assertIsNone(self.repl.serial.inter_byte_timeout)
+
+    def test_writes_nothing_after_the_launch(self) -> None:
+        # The paste-mode launch had to send a trailing newline: Ctrl-D
+        # carries none, so the stray byte was prepended to the next
+        # protocol frame and the device dropped it, timing out exactly
+        # one request. Raw-paste acknowledges its own terminator, so
+        # there is nothing to clean up — and anything written here would
+        # land in the app's input.
+        buddy_bridge.launch_app("/dev/fake")
+        self.assertEqual(bytes(self.repl.serial.written), b"")
+
+    def test_a_resident_link_comes_back_on_the_launched_port(self) -> None:
+        link = ResidentLink("/dev/fake", serial_factory=lambda *_a, **_k: FakeSerial("x", 0, None))
+        link.connect()
+        self.addCleanup(link.disconnect)
+        link.start_app(settle=0.0)
+        self.assertTrue(link.connected)
+        link.send({"cmd": "status"})
+        self.assertEqual(bytes(self.repl.serial.written), encode({"cmd": "status"}))
+
+    def test_the_repl_wait_is_short_enough_for_a_tool_call(self) -> None:
+        # Getting to the REPL needs a BtnRST press. An MCP call that
+        # blocks for three minutes waiting for one is worse than one
+        # that says so.
+        captured: list[float] = []
+
+        def connect_repl(_port: str, _baud: int, timeout: float = 180.0, **_kw: object) -> FakeRepl:
+            captured.append(timeout)
+            return self.repl
+
+        buddy_bridge.connect_repl = connect_repl
+        link = ResidentLink("/dev/fake", serial_factory=lambda *_a, **_k: FakeSerial("x", 0, None))
+        link.connect()
+        self.addCleanup(link.disconnect)
+        link.start_app(settle=0.0)
+        self.assertLessEqual(captured[0], 30.0)
 
 
 if __name__ == "__main__":

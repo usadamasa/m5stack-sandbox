@@ -17,10 +17,18 @@ uv run basedpyright            # 型検査
 デバイス操作は必ず `uv run` を通す。
 
 ```bash
+docker compose up -d                                       # VOICEVOX ENGINE
 PORT=/dev/cu.usbmodem101
 uv run python host/buddy_push.py --port $PORT              # overlay を転送
 uv run python host/buddy_bridge.py --port $PORT --status   # 単発で叩く
+
+export BUDDY_WIFI_PSK=...                                  # 声を出すなら
+uv run python host/buddy_bridge.py --port $PORT \
+  --wifi <SSID> --speak 'ずんだもんなのだ'
 ```
+
+`sandbox` は loopback 宛でも `curl` を拒否する。エンジンの疎通確認は `uv run` 経由の
+Python から行う (`tmp/voicevox_probe.py` が例)。
 
 **`uv run` を経由する理由**: シリアルポートを開くには `tcsetattr` (ioctl) が要り、
 Seatbelt はこれを拒否する。グローバル設定の `sandbox.excludedCommands` に `uv *` が
@@ -34,13 +42,15 @@ Seatbelt はこれを拒否する。グローバル設定の `sandbox.excludedCo
 | --- | --- |
 | `device/buddy_serial.py` | デバイス側のシリアル transport (`BuddyBLE` を duck-typing) |
 | `device/buddy_chat.py` | LCD 上のチャットパネル。`chat.*` コマンドを処理する |
-| `device/buddy_speak.py` | ホストから流れてくる PCM を `M5.Speaker` へ流す。`speak.*` |
-| `device/apps/claude_buddy.py` | upstream 派生。差分は transport 選択と chat / speak のルーティング |
+| `device/buddy_speak.py` | VOICEVOX の WAV ストリームをブロックに割って `M5.Speaker` へ流す。`speak.*` |
+| `device/buddy_tts.py` | WiFi 接続と VOICEVOX の呼び出し。`net.*` |
+| `device/apps/claude_buddy.py` | upstream 派生。差分は transport 選択と chat / speak / net のルーティング |
 | `host/buddy_bridge.py` | ホスト側クライアント。`BuddyLink` (単発) と `ResidentLink` (常駐) |
-| `host/buddy_speech.py` | macOS `say` で 16kHz 16bit mono PCM を作る |
-| `host/buddy_mcp.py` | MCP server (12 tools) |
-| `host/buddy_push.py` | paste-mode REPL 経由で overlay を転送 |
-| `host/probe_device.py` | 実機のフォント一覧・実測メトリクス・Speaker API を取る (read-only) |
+| `compose.yaml` | VOICEVOX ENGINE。`docker compose up -d` |
+| `host/buddy_mcp.py` | MCP server |
+| `host/device_repl.py` | `mpremote` の SerialTransport を掴むところ。BtnRST 待ちのループもここ |
+| `host/buddy_push.py` | overlay を `/flash/` へ転送。転送そのものは `mpremote` |
+| `host/probe_device.py` | 実機のフォント一覧・実測メトリクス・Speaker API を取る (read-only、JSON) |
 | `host/fetch_firmware.py` | UIFlow 2.0 ファームウェアの取得 (Range レジューム付き) |
 | `host/tests/` | 全て実機不要 |
 
@@ -69,33 +79,68 @@ Seatbelt はこれを拒否する。グローバル設定の `sandbox.excludedCo
 
 ## 音声 (speak)
 
-合成はホストの macOS `say` が行う。デバイス側は PCM を鳴らすだけ。Cardputer-Adv は
-ESP32-S3 で、M5Stack の on-device TTS (StackFlow の MeloTTS) は別基板の Module LLM
-(AX630C, Linux) が要る。Espressif の `esp-tts` は中国語のみ。
+**デバイスが自分で VOICEVOX を叩く。** ホストからはテキストしか渡らない。声はずんだもん
+(`speaker=3`)。合成はホストの macOS `say` が行っていたが、置き換えた。
 
-**`say` は sandbox の中では無音のファイル (4096 バイトのヘッダのみ) を exit 0 で吐く。**
-`uv run` 経由なら sandbox の外なので通る。`buddy_speech.synthesize` はこのサイズを見て
-エラーにしている (無音をそのまま流すと転送失敗と区別がつかなくなるため)。
+```
+Claude Code -MCP-> USB line {"cmd":"speak.say","text":...,"url":...}
+  -> device/buddy_tts.py -HTTP-> VOICEVOX ENGINE (Mac の Docker)
+  -> WAV ストリーム -> device/buddy_speak.py -> M5.Speaker
+```
 
-### バルクモード
+エンジンは `docker compose up -d` で立てる。**`-p` は `0.0.0.0` に bind すること。**
+VOICEVOX の README の例は `127.0.0.1:50021:50021` だが、それだと Mac の loopback にしか
+listen しないのでデバイスから届かない。`voicevox_url()` は loopback アドレスを渡されたら
+エラーにする — デバイス側では接続タイムアウトとして数秒後に出るため、原因から遠い。
 
-音声は JSON に乗せない。`speak.begin` で長さを宣言 → transport が bulk モードへ →
-生バイトを流す、という経路になっている。理由:
+on-device TTS が無い事情は変わっていない。Cardputer-Adv は ESP32-S3 で、M5Stack の
+on-device TTS (StackFlow の MeloTTS) は別基板の Module LLM (AX630C, Linux) が要る。
+Espressif の `esp-tts` は中国語のみ。
 
-- `poll()` の行読みは **1 バイトずつ**。実測 24.5 KiB/s で、16kHz 16bit の 32 KB/s に
-  届かない。速くできない理由は、行は長さが分からないから
-- `readinto` は **バッファが埋まるまでブロックする** (1024 バイトのバッファに 100 バイト
-  だけ送ったら 41 秒待った)。長さが既知のときだけ安全に使える。実測 182 KiB/s
+### 実機の制約 (実測)
 
-そのため送信側の制約が2つある。破ると BtnRST でしか戻れない:
+`host/probe_device.py` と `tmp/probe_*.py` で採った値。設計はここから来ている。
 
-- **必ずブロック単位で送る。** 端数はホスト側 (`pad_to_blocks`) が無音で埋める。
-  半端なブロックはデバイスを `readinto` の中で待たせたまま固める
-- **`speak.begin` の ack を待ってから書く。** ack がバルクモードへの切り替えそのもの
+| 項目 | 実測 | 効いてくる場所 |
+| --- | --- | --- |
+| heap | `mem_free` 61248。`bytearray(200000)` は失敗 | WAV 全体を載せられない |
+| PSRAM | **無し** (`ESP32-S3-FN8`) | 同上。ストリーミング必須 |
+| HTTP | `urequests` は無く **`requests`** (1.20 で改名) | 参考記事は `urequests` で書かれている |
+| `Response.raw` | ある (インスタンス属性なのでクラスの `dir()` には出ない) | ストリーミングの土台 |
+| socket | `settimeout` / `readinto` あり | 40ms tick に載せられる |
+| WAV | `fmt `→`data`、PCM は offset 44。1ch/16bit | — |
+| 16000Hz 指定 | 2.56 秒で 81964 バイト (既定 24000 の 2/3) | 帯域と heap |
 
-ブロックは 2048 バイト固定。40ms の tick で 1 ブロックずつしか読まないので、これより
-小さいと再生が追いつかない (`_MIN_BLOCK`)。`speak.end` の `stalls` が 0 以外なら
-供給が間に合っていない。
+`M5.Speaker` には `playWav` / `playWavFile` もあるが、WAV 全体を渡す API なので heap に
+載らない。`playRaw` にブロックを送り続ける。
+
+### ストリーミングの制約
+
+`res.raw` は素のソケットで、**MicroPython のデフォルトはブロッキング**。何もしないと
+`read()` がデータ待ちで止まり 40ms tick ごと固まる。`_StreamSource` が `settimeout(0.02)`
+を掛けている (tick の半分)。
+
+- **ブロックは 2048 バイト固定。** 40ms tick で 1 ブロックずつしか読まないので、これより
+  小さいと再生が追いつかない
+- **端数ブロックはデバイス側で無音パディングする。** ホストの `pad_to_blocks` がやっていた
+  仕事が `_StreamSource.read_block` に移った。`playRaw` に短いブロックを渡すとクリックが鳴る
+- **進捗が 3 秒止まったら諦める** (`_STALL_MS`)。EOF で足りない場合も同じ扱い。
+  `Content-Length` で長さが分かっているので、途中で切れたのは異常
+- `speak.end` の `stalls` が 0 以外なら供給が間に合っていない
+
+合成中 (`audio_query` → `synthesis` の 2 回の POST) は **UI が数秒止まる**。`_thread` は
+GIL 付きなので逃げ場がない。再生が始まってからは 1 tick 1 ブロックで進むので UI は動く。
+
+### WiFi
+
+**認証情報はホストから `net.config` で渡す。** デバイスに使えるものが無いため:
+
+- NVS の `uiflow` / `wifi` / `system` はいずれも `ESP_ERR_NVS_NOT_FOUND`
+- `/flash/wifi_event.py` にハードコードされている SSID はイベント会場の AP
+
+`claude_buddy.py` は起動時に WiFi を落とすが、**BLE transport のときだけ**。ESP32 の
+WiFi/BLE 共存クラッシュ回避が目的で、serial では NimBLE を触らないので不要。むしろ
+speech が radio を使う。
 
 ## device/ は MicroPython
 
@@ -114,6 +159,51 @@ AST で機械的に弾いているので、追加するときはそちらも見�
 `device/apps/claude_buddy.py` は upstream 派生なので `ruff format` の対象外にしてある。
 差分を読める状態に保つのが目的で、import 順や E402 も同じ理由で無視している。
 
+## REPL は mpremote に任せる
+
+デバイスと REPL で喋る経路 (ファイル転送・コード実行・値の読み出し) は
+MicroPython 公式の `mpremote` を**ライブラリとして**使う。CLI は叩かない。
+入口は `host/device_repl.py` の `connect_repl()` だけで、`Repl` protocol が
+使っている API の範囲を記述している。
+
+**paste mode (Ctrl-E / Ctrl-D) を自前で駆動しない。** 以前そうしていて踏んだこと:
+
+- paste mode にはフロー制御が無い。長い転送がデバイスの rx を追い越して**無言で切れる**。
+  固定チャンク長と 1 行ごとの `sleep` はその場しのぎだった
+- paste mode はソースをエコーバックする。結果を読むのに自分が送った `print(...)` を
+  正規表現の negative lookahead で除外する羽目になっていた
+
+raw REPL ならどちらも無い。`repl.exec()` は完走するか例外を投げるかで、`repl.eval()` は
+Python の値をそのまま返す (デバイス側で `print(repr(...))` してホストで `literal_eval`)。
+
+`enter_raw_repl(soft_reset=False)` を使うこと。既定の `soft_reset=True` は
+boot.py / main.py を走らせ直すので、UIFlow のランチャーが再起動してしまう。
+
+BtnRST 待ちのループだけは自前。`mpremote` の `wait=` は `open()` の失敗しか
+リトライせず、アプリが `kbd_intr(-1)` で Ctrl-C を殺している状態 (ポートは開くが
+応答しない) を待てないため。
+
+### アプリの起動 (`launch_app`)
+
+アプリは起動するとコンソールを乗っ取る (Ctrl-C 無効 + 同じ線で sentinel protocol)。
+だから **REPL のポートをそのままリンクへ渡す**。
+
+```
+connect_repl() -> run_and_release(repl, LAUNCH_SOURCE, read_timeout) -> SerialPort
+  -> BuddyLink.open(adopt=...) / ResidentLink.connect(adopt=...)
+```
+
+`run_and_release` は `exec_raw_no_follow` を使う。`exec` は戻り値を待つが、アプリは
+戻ってこない。これは `mpremote repl` の ctrl-k (スクリプト注入) と同じ手順。
+
+閉じて開き直さないのは、その隙間にデバイスが喋る内容 — import 失敗のトレースバック —
+を落とすため。
+
+**起動後にポートへ何も書かないこと。** paste mode の頃は Ctrl-D が改行を持たないせいで
+末尾に `\r\n` を足す必要があり、忘れると次の frame の先頭に紛れて sentinel が行頭で
+なくなり、デバイスが黙って捨てて「起動直後の 1 リクエストだけ timeout」になっていた。
+raw-paste は自分の terminator を ack してから実行に入るので、後始末は要らない。
+
 ## デバイスを触るときの前提
 
 - **ポートは 1 プロセスしか掴めない。** `buddy_push.py` や `esptool` を使う前に MCP の
@@ -123,4 +213,12 @@ AST で機械的に弾いているので、追加するときはそちらも見�
 - **MCP server はセッション開始時に host のコードを import 済み。** `buddy_bridge.py` を
   直しても走っているサーバには反映されない。実機検証は `uv run` の別プロセスで行うか、
   セッションを再起動する
+- **WiFi は毎ブート設定し直す。** `net.config` の結果はどこにも保存されない
 - `.mcp.json` と `.claude/settings.json` は絶対パスを持つ。別マシンでは書き換えが要る
+
+## クレジット
+
+VOICEVOX の利用規約に従い表記する。
+
+- VOICEVOX:ずんだもん
+- 「VOICEVOX」は廣芝和之の商標、「ずんだもん」は SSS 合同会社の商標
