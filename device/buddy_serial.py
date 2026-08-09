@@ -29,6 +29,14 @@ in front of the next frame and would cost us a message. A line with no
 sentinel at all is a human at the REPL or leftover noise, and is
 dropped silently.
 
+### Annotations
+
+MicroPython parses function annotations and throws them away, so they
+are free here — but only as long as every name in one is a builtin.
+There is no `typing` and no `__future__` on the device, and reaching for
+either turns into an ImportError at launch. `host/tests/
+test_device_constraints.py` enforces that mechanically.
+
 ### Ctrl-C
 
 Host and device share one USB CDC channel, and MicroPython treats an
@@ -63,7 +71,7 @@ _MAX_DRAIN = 512
 _MAX_LINE = 4096
 
 
-def _binary_streams():
+def _binary_streams() -> tuple:
     """Return (stdin_reader, stdout_writer) as byte streams.
 
     MicroPython exposes ``.buffer`` on the std streams for the esp32
@@ -84,7 +92,7 @@ class BuddySerial:
     # same branch the stripped UIFlow 2.0 BLE build takes.
     pairing_supported = False
 
-    def __init__(self, name_prefix="Claude", on_line=None, on_passkey=None, on_state=None):
+    def __init__(self, name_prefix="Claude", on_line=None, on_passkey=None, on_state=None) -> None:
         self._on_line = on_line or (lambda _line: None)
         self._on_passkey = on_passkey or (lambda _pk: None)
         self._on_state = on_state or (lambda _st: None)
@@ -108,11 +116,11 @@ class BuddySerial:
     # ----- transport surface
 
     @property
-    def advertised_name(self):
+    def advertised_name(self) -> str:
         return self._name
 
     @property
-    def connected(self):
+    def connected(self) -> bool:
         return self._host_seen
 
     # Forwarded verbatim into the status ack as `sec`
@@ -129,7 +137,7 @@ class BuddySerial:
     # a host it may relax exactly the behaviour `sec` exists to gate.
     encrypted = False
 
-    def send_line(self, payload):
+    def send_line(self, payload) -> bool:
         """Push one JSON line to the host. Returns False if no session."""
         if self._shutting_down or not self._host_seen:
             return False
@@ -144,19 +152,19 @@ class BuddySerial:
             return False
         return True
 
-    def disconnect(self):
+    def disconnect(self) -> None:
         """Drop the logical session. The cable stays up; the host has to
         re-handshake before we will emit anything again."""
         if self._host_seen:
             self._host_seen = False
             self._emit_state("disconnected")
 
-    def forget_bonds(self):
+    def forget_bonds(self) -> None:
         # No bonding store on a wire. Present for parity with BuddyBLE so
         # buddy_protocol's unpair path (line 235) does not need a guard.
         pass
 
-    def deinit(self):
+    def deinit(self) -> None:
         self._shutting_down = True
         try:
             self._poller.unregister(self._stdin)
@@ -171,7 +179,7 @@ class BuddySerial:
 
     # ----- inbound pump
 
-    def poll(self):
+    def poll(self) -> None:
         """Drain pending stdin bytes and dispatch complete lines.
 
         Called from the app's main loop. Callbacks fire synchronously in
@@ -209,7 +217,7 @@ class BuddySerial:
 
     # ----- internals
 
-    def _handle_line(self, line):
+    def _handle_line(self, line: bytes) -> None:
         line = line.rstrip(b"\r")
         # Search rather than match the prefix: an unterminated fragment
         # left in the rx buffer — a paste-mode 0x04, a REPL echo, half a
@@ -230,13 +238,13 @@ class BuddySerial:
             self._emit_state("connected")
         self._on_line(payload)
 
-    def _emit_state(self, state):
+    def _emit_state(self, state: str) -> None:
         try:
             self._on_state(state)
-        except Exception as e:  # noqa: BLE001 - never let UI errors kill the pump
+        except Exception as e:
             print("buddy_serial: on_state error:", e)
 
-    def _write(self, raw):
+    def _write(self, raw: bytes) -> None:
         try:
             self._stdout.write(raw)
         except TypeError:

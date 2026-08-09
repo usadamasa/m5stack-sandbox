@@ -4,12 +4,12 @@
   },
   "permissions": {
     "allow": [
-      "Bash(/Users/masaru_uchida/src/github.com/usadamasa/m5stack-sandbox/tmp/m5venv/bin/python:*)"
+      "Bash(/Users/masaru_uchida/src/github.com/usadamasa/m5stack-sandbox/.venv/bin/python:*)"
     ]
   },
   "sandbox": {
     "excludedCommands": [
-      "/Users/masaru_uchida/src/github.com/usadamasa/m5stack-sandbox/tmp/m5venv/bin/python *"
+      "/Users/masaru_uchida/src/github.com/usadamasa/m5stack-sandbox/.venv/bin/python *"
     ],
     "filesystem": {
       "allowWrite": [
