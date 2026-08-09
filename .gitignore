@@ -1,6 +1,9 @@
 # Scratch. Everything transient goes here (see CLAUDE.md).
 tmp/
 
+# WiFi credentials for provision_wifi.py. Never commit; the PSK is plaintext.
+.env
+
 .venv/
 
 __pycache__/
