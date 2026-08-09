@@ -10,15 +10,24 @@ asserting there is not that files move — it is the two invariants that
 were learnt the hard way: bytecode with its source left beside it is
 bytecode that never runs, and a file deleted off flash whose only other
 copy was on flash is gone.
+
+The third is the confirmation the run ends with, which is a launch and
+an utterance. No speaker here either: the acks a device would send are
+fed to a fake port, and what is asserted is that the app is started the
+one-way way, that a refusal is reported as a failed deploy rather than
+a successful one, and that the port the link took over is not closed
+twice.
 """
 
 from __future__ import annotations
 
+import json
 import unittest
 import unittest.mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from buddy_bridge import DEFAULT_READ_TIMEOUT, LAUNCH_SOURCE, SENTINEL, Message, encode
 from buddy_deploy import (
     DEST_ROOT,
     LAUNCHER,
@@ -28,6 +37,7 @@ from buddy_deploy import (
     REPO,
     SERIAL_READ_TIMEOUT_S,
     UPSTREAM,
+    VERIFY_TEXT,
     Deadline,
     DeployError,
     DeployTimeout,
@@ -36,6 +46,7 @@ from buddy_deploy import (
     check_launcher,
     compile_source,
     device_mpy_abi,
+    engine_url,
     find_shadows,
     install_launcher,
     main,
@@ -45,9 +56,61 @@ from buddy_deploy import (
     push_file,
     push_jobs,
     stage_upstream,
+    verify_by_speech,
 )
 from device_repl import ReplError
-from fake_repl import FakeRepl
+from fake_repl import FakePort, FakeRepl
+
+ENGINE = "http://192.168.0.156:50021"
+
+# What the device answers with, keyed by the cmd it is answering.
+Replies = dict[str, list[Message]]
+
+# A device that is working. `speak.say` is answered twice: once when
+# playback starts and once when the last block has been played, which
+# is what the confirmation actually waits for.
+_HAPPY: Replies = {
+    "chat.say": [{"ack": "chat.say", "ok": True}],
+    "speak.say": [
+        {"ack": "speak.say", "ok": True, "bytes": 81920, "rate": 16000},
+        {"ack": "speak.end", "ok": True, "blocks": 40, "stalls": 0},
+    ],
+}
+
+
+class _TalkingPort(FakePort):
+    """A port that answers, rather than one with answers waiting on it.
+
+    Queueing the acks up front does not work and the reason is worth
+    keeping: the launch is followed by a settle window that reads
+    whatever the app says while starting, and anything already sitting
+    in the buffer is consumed there and gone.
+    """
+
+    def __init__(self, replies: Replies | None = None) -> None:
+        super().__init__()
+        self.replies = _HAPPY if replies is None else replies
+
+    def write(self, data: bytes, /) -> int:
+        written = super().write(data)
+        for frame in _frames(data):
+            for ack in self.replies.get(frame["cmd"], []):
+                self.feed(encode(ack))
+        return written
+
+    @property
+    def frames(self) -> list[Message]:
+        """Everything the host sent, parsed. `encode` escapes non-ASCII,
+        so matching on the raw bytes would miss the text every time."""
+        return _frames(self.written)
+
+
+def _frames(data: bytes | bytearray) -> list[Message]:
+    return [
+        json.loads(line[len(SENTINEL) :])
+        for line in bytes(data).split(b"\n")
+        if line.startswith(SENTINEL)
+    ]
 
 
 def _forever() -> Deadline:
@@ -233,6 +296,7 @@ class _Bench:
     def __init__(self, cleanup: unittest.TestCase) -> None:
         tmp = TemporaryDirectory()
         cleanup.addCleanup(tmp.cleanup)
+        self.case = cleanup
         root = Path(tmp.name)
         self.vendor = root / "vendor"
         self.build = root / "build"
@@ -240,9 +304,42 @@ class _Bench:
         self.src.mkdir()
         (self.src / LAUNCHER).write_text("print('our launcher')\n")
         self.repl = FakeRepl(dirs={DEST_ROOT, f"{DEST_ROOT}/apps"})
+        # Kept as its own reference, not read back off the transport:
+        # `FakeRepl.serial` is a plain port and this is the one that
+        # answers.
+        self.port = _TalkingPort()
 
     def put(self, path: str, text: str) -> None:
         self.repl.files[f"{DEST_ROOT}/{path}"] = text.encode()
+
+    def seed_unconverted(self) -> None:
+        """Flash as it looks before the first deploy: all source."""
+        self.repl.answers["sys.implementation._mpy"] = 0x2806
+        self.repl.serial = self.port
+        for name in UPSTREAM:
+            self.put(f"{name}.py", f"print('{name}')\n")
+        for rel in OVERLAY:
+            self.put(rel, "print('the source this replaces')\n")
+        for rel in REMOVE:
+            self.put(rel, f"print('{rel}')\n")
+        self.put(LAUNCHER, "print('upstream menu + NimBLE')\n")
+
+    def deploy(self, *extra: str) -> int:
+        """One pass of main() over this device. Returns its exit code."""
+        patch = unittest.mock.patch("buddy_deploy.connect_repl", return_value=self.repl)
+        patch.start()
+        self.case.addCleanup(patch.stop)
+        return main(
+            [
+                "--port",
+                "/dev/null",
+                "--build",
+                str(self.build),
+                "--vendor",
+                str(self.vendor),
+                *extra,
+            ]
+        )
 
 
 class StageUpstreamTest(unittest.TestCase):
@@ -358,6 +455,101 @@ class LauncherTest(unittest.TestCase):
         )
 
 
+class SpeechConfirmationTest(unittest.TestCase):
+    """The last step: launch what was installed and listen to it.
+
+    A directory listing cannot tell a bundle that imports from one that
+    does not, and neither can a successful transfer. This is the step
+    that can, so what matters is that a device which will not speak ends
+    the run as a failure — and that whatever it printed on the way is
+    said out loud in the output rather than being flattened into a
+    timeout.
+    """
+
+    def setUp(self) -> None:
+        self.repl = FakeRepl()
+        self.port = _TalkingPort()
+        self.repl.serial = self.port
+        self.said: list[str] = []
+
+    def answers(self, replies: Replies) -> None:
+        self.port.replies = replies
+
+    def run_it(self, text: str = VERIFY_TEXT) -> Message:
+        return verify_by_speech(self.repl, "/dev/null", text, ENGINE, self.said.append, settle=0.0)
+
+    @property
+    def sent(self) -> list[Message]:
+        return self.port.frames
+
+    def test_the_app_is_started_the_one_way_way(self) -> None:
+        # exec would wait for a return the app never makes: it takes the
+        # console over and speaks its own protocol on the same wire.
+        self.run_it()
+        self.assertEqual(self.repl.launched, [LAUNCH_SOURCE])
+
+    def test_it_asks_for_the_words_on_the_panel_and_then_out_loud(self) -> None:
+        ack = self.run_it("デプロイ完了なのだ")
+        self.assertEqual([frame["cmd"] for frame in self.sent], ["chat.say", "speak.say"])
+        self.assertEqual([frame["text"] for frame in self.sent], ["デプロイ完了なのだ"] * 2)
+        self.assertEqual(self.sent[1]["url"], ENGINE)
+        self.assertEqual(ack["blocks"], 40)
+
+    def test_the_port_the_link_took_over_is_closed_once(self) -> None:
+        # The transport is not closed by the caller after this, so the
+        # link is the only thing that can release the port.
+        self.run_it()
+        self.assertTrue(self.repl.serial.closed)
+        self.assertFalse(self.repl.closed)
+
+    def test_a_device_that_refuses_fails_the_deploy(self) -> None:
+        self.answers(
+            {
+                "chat.say": [{"ack": "chat.say", "ok": True}],
+                "speak.say": [{"ack": "speak.say", "ok": False, "err": "ECONNREFUSED"}],
+            }
+        )
+        with self.assertRaises(DeployError) as caught:
+            self.run_it()
+        self.assertIn("ECONNREFUSED", str(caught.exception))
+
+    def test_playback_that_ends_early_is_not_a_confirmation(self) -> None:
+        self.answers(
+            {
+                "chat.say": [{"ack": "chat.say", "ok": True}],
+                "speak.say": [
+                    {"ack": "speak.say", "ok": True, "bytes": 81920, "rate": 16000},
+                    {"ack": "speak.end", "ok": False, "blocks": 3, "stalls": 0},
+                ],
+            }
+        )
+        with self.assertRaises(DeployError) as caught:
+            self.run_it()
+        self.assertIn("ended early", str(caught.exception))
+
+    def test_what_the_app_printed_while_failing_is_reported(self) -> None:
+        # The case this exists for: the bundle does not import. Without
+        # the traceback the only symptom is an ack that never came.
+        self.answers({})
+        self.port.feed(b"Traceback (most recent call last):\r\n")
+        self.port.feed(b"ImportError: no module named 'buddy_tts'\r\n")
+        with (
+            unittest.mock.patch("buddy_deploy.VERIFY_TIMEOUT_S", 0.05),
+            self.assertRaises(DeployError),
+        ):
+            self.run_it()
+        self.assertTrue(
+            any("ImportError" in line for line in self.said),
+            f"the device's own output never made it into the log: {self.said}",
+        )
+
+    def test_a_loopback_engine_is_refused_before_the_repl_is_spent(self) -> None:
+        # Reachable from this Mac and from nowhere else. Discovered after
+        # the launch it would cost a BtnRST press to try again.
+        with self.assertRaises(DeployError):
+            engine_url("http://127.0.0.1:50021")
+
+
 class CliTest(unittest.TestCase):
     def test_a_deploy_without_a_port_is_refused_before_anything_is_built(self) -> None:
         self.assertEqual(main([]), 2)
@@ -374,33 +566,18 @@ class WholeRunTest(unittest.TestCase):
     The parts are covered above; what this adds is the order they run
     in. Getting that wrong is how a file gets deleted before it has been
     archived, and no unit test of either half would notice.
+
+    `--no-speak`, so this stays about the flash rewriting; the launch
+    and the utterance have their own tests.
     """
+
+    extra_args: tuple[str, ...] = ("--no-speak",)
 
     def setUp(self) -> None:
         self.bench = _Bench(self)
+        self.bench.seed_unconverted()
         self.repl = self.bench.repl
-        self.repl.answers["sys.implementation._mpy"] = 0x2806
-        for name in UPSTREAM:
-            self.bench.put(f"{name}.py", f"print('{name}')\n")
-        for rel in OVERLAY:
-            self.bench.put(rel, "print('the source this replaces')\n")
-        for rel in REMOVE:
-            self.bench.put(rel, f"print('{rel}')\n")
-        self.bench.put(LAUNCHER, "print('upstream menu + NimBLE')\n")
-
-        patch = unittest.mock.patch("buddy_deploy.connect_repl", return_value=self.repl)
-        patch.start()
-        self.addCleanup(patch.stop)
-        self.rc = main(
-            [
-                "--port",
-                "/dev/null",
-                "--build",
-                str(self.bench.build),
-                "--vendor",
-                str(self.bench.vendor),
-            ]
-        )
+        self.rc = self.bench.deploy(*self.extra_args)
 
     def test_it_succeeds(self) -> None:
         self.assertEqual(self.rc, 0)
@@ -442,6 +619,52 @@ class WholeRunTest(unittest.TestCase):
         # mpremote leaves it at None, and every read in a transfer goes
         # through it. Without this the run can only be ended from outside.
         self.assertEqual(self.repl.serial.timeout, SERIAL_READ_TIMEOUT_S)
+
+
+class NoSpeakTest(unittest.TestCase):
+    """The escape hatch, and the reason anyone would want it.
+
+    Its own run rather than an assertion on `WholeRunTest`, which the
+    confirmation subclass inherits from: what is being asserted here is
+    exactly what that subclass inverts.
+    """
+
+    def test_it_leaves_the_device_at_the_repl(self) -> None:
+        # The REPL is what the next deploy needs, and getting it back
+        # costs a BtnRST press once the app has the console.
+        bench = _Bench(self)
+        bench.seed_unconverted()
+        self.assertEqual(bench.deploy("--no-speak"), 0)
+        self.assertEqual(bench.repl.launched, [])
+        self.assertTrue(bench.repl.closed)
+
+
+class WholeRunWithConfirmationTest(WholeRunTest):
+    """The same pass, ending the way a real deploy ends: out loud.
+
+    Everything `WholeRunTest` asserts still has to hold — the ordering
+    is inherited rather than restated — and what is added is that the
+    run does not stop at a successful transfer.
+    """
+
+    extra_args = ("--engine", ENGINE, "--settle", "0")
+
+    def test_it_launched_the_app_and_got_its_utterance_played(self) -> None:
+        self.assertEqual(self.repl.launched, [LAUNCH_SOURCE])
+        frames = self.bench.port.frames
+        self.assertEqual([frame["cmd"] for frame in frames], ["chat.say", "speak.say"])
+        self.assertEqual(frames[-1]["text"], VERIFY_TEXT)
+
+    def test_the_transport_is_not_closed_over_the_top_of_the_link(self) -> None:
+        # mpremote's close() drops RTS/DTR, which on a port the link has
+        # already closed raises out of the finally block.
+        self.assertFalse(self.repl.closed)
+        self.assertTrue(self.repl.serial.closed)
+
+    def test_the_port_gets_a_read_timeout(self) -> None:
+        # Superseded: the launch hands the port to the link, which polls
+        # `in_waiting` and wants the short timeout instead.
+        self.assertEqual(self.repl.serial.timeout, DEFAULT_READ_TIMEOUT)
 
 
 class PruneTest(unittest.TestCase):

@@ -164,9 +164,20 @@ mode はウィンドウ制御付きで、しかもソースをエコーバック
 落ちたときにどのステップだったかが出る。
 
 ```bash
-uv run python host/buddy_deploy.py --port $PORT              # 転送
+uv run python host/buddy_deploy.py --port $PORT              # 転送 + 発話で確認
+uv run python host/buddy_deploy.py --port $PORT --no-speak   # 転送のみ。REPL に残す
 uv run python host/buddy_deploy.py --compile-only            # 実機なしで検証
 ```
+
+転送が終わったらアプリを起動して「デプロイ完了なのだ」と喋らせ、それを確認とする。
+ファイルが載ったことと、バンドルが動くことは別で、import 失敗も engine 不達も
+speaker の沈黙もディレクトリ一覧からは同じに見える。import、継承した WiFi link、
+VOICEVOX 往復、`M5.Speaker` までを一度に通すので、確認が部屋の向こうからでも分かる。
+
+代償は REPL で、起動は片道 (アプリが Ctrl-C を無効化する) なので次のデプロイは
+BtnRST から始まる。REPL に残したいときは `--no-speak`。発話が通らなければ
+exit code は 1 で、どの層が断ったか (engine のアドレス / `speak.say` の拒否 /
+途中で切れた再生) を出す。
 
 `mpy-cross` は `mpy-cross==1.27.0.post2` に固定してある。バイトコードは同じ `.mpy` ABI
 の中でしか通用せず、デバイス (MicroPython 1.27) が読むのは v6。ずれると症状はデバイス側の
@@ -191,6 +202,7 @@ uv run python host/buddy_deploy.py --compile-only  # device/ が MicroPython で
 PORT=/dev/cu.usbmodem101
 
 # デバイスへ overlay を転送 (REPL に居ることが前提。居なければ止まる)
+# 転送後はアプリが起動して喋る。喋らせないなら --no-speak
 uv run python host/buddy_deploy.py --port $PORT
 
 # アプリを起動して状態を取得

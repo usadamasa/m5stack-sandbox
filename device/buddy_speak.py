@@ -100,12 +100,56 @@ _MONO = False
 _ONCE = 1
 _ANY_CHANNEL = -1
 
+# How much louder than the firmware's own setting the speaker is driven.
+# The Cardputer-Adv's is a small one and M5Unified starts it quiet
+# enough that an utterance is hard to make out across a desk.
+#
+# Relative, not a fixed byte: the default belongs to M5Unified and moves
+# with the firmware, so reading it and multiplying keeps this saying
+# what was actually wanted. Master volume scales the samples before the
+# amp; measured, the default is 64 of 255, so this lands on the cap
+# below — 255 is as loud as the master volume goes, and anything past
+# it is the same setting under a different name.
+_VOLUME_GAIN = 4
+
+# setVolume takes a byte.
+_MAX_VOLUME = 255
+
 
 def _default_speaker():
     """The real speaker. Imported lazily so the host can import this."""
     import M5
 
     return M5.Speaker
+
+
+def _boost_volume(spk):
+    """Turn `spk` up by `_VOLUME_GAIN`. Returns the volume now set.
+
+    Called once, when the player is built. That is once per boot, which
+    is what makes multiplying safe: the firmware sets the volume back to
+    its own default on every reset, and re-importing the app inside a
+    live session fails on memory long before it gets here.
+
+    Never raises. A board whose build has no volume control still plays
+    audio, and losing the utterance over the setting for it would be the
+    wrong trade.
+    """
+    try:
+        before = spk.getVolume()
+    except Exception as e:
+        print("buddy_speak: getVolume failed:", e)
+        return None
+    after = before * _VOLUME_GAIN
+    if after > _MAX_VOLUME:
+        after = _MAX_VOLUME
+    try:
+        spk.setVolume(after)
+    except Exception as e:
+        print("buddy_speak: setVolume failed:", e)
+        return before
+    print("buddy_speak: volume", before, "->", after)
+    return after
 
 
 def _default_fetch():
@@ -245,6 +289,7 @@ class SpeechPlayer:
         self._t = transport
         self._spk = speaker if speaker is not None else _default_speaker()
         self._fetch = fetch if fetch is not None else None
+        self.volume = _boost_volume(self._spk)
 
         self.active = False
         self.text = ""
