@@ -3,6 +3,11 @@
 M5Stack Cardputer-Adv を USB シリアル経由で Claude Code から操作する実験リポジトリ。
 経緯と設計判断は [README.md](README.md) にある。
 
+## 言語
+
+これから書くコメント・docstring、コミットメッセージ、PR の本文は日本語 (標準語) で書く。
+既存の英語コメントは触らない。当面は混在する。
+
 ## コマンド
 
 ```bash
@@ -20,7 +25,7 @@ uv run python host/buddy_deploy.py --compile-only   # device/ が MicroPython �
 ```bash
 docker compose up -d                                       # VOICEVOX ENGINE
 PORT=/dev/cu.usbmodem101
-uv run python host/buddy_deploy.py --port $PORT            # overlay を .mpy にして転送
+uv run python host/buddy_deploy.py --port $PORT            # 転送 + 起動 + 発話で確認
 uv run python host/buddy_bridge.py --port $PORT --status   # 単発で叩く
 
 # 声を出すなら、一度だけ WiFi を焼く (以降ブートごとの操作は不要)
@@ -76,8 +81,17 @@ import のたびに構文木とバイトコードの両方を GC heap に作り�
 
 ```bash
 uv run python host/buddy_deploy.py --port $PORT       # 転送 (BtnRST 待ちを含む)
+uv run python host/buddy_deploy.py --port $PORT --no-speak   # 発話確認を省き REPL に残す
 uv run python host/buddy_deploy.py --compile-only     # 実機なし。CI の mpy-build と同じ
 ```
+
+- **転送の最後にアプリを起動して喋らせる。** ファイルが載ったことはバンドルが動くことを
+  意味せず、import 失敗も engine 不達も speaker の沈黙もディレクトリ一覧からは区別できない。
+  `verify_by_speech` が import・継承した WiFi link・VOICEVOX 往復・`M5.Speaker` を一度に
+  通す。engine の URL はランチ前に解決する (後で分かってもポートはもう返らない)。
+  失敗は exit 1 で、断った層を名指しする
+- **したがってデプロイの後、デバイスはアプリを走らせたままになる。** 次のデプロイは
+  BtnRST から始まる。REPL に残したいときだけ `--no-speak`
 
 - **`mpy-cross` は `==1.27.0.post2` 固定。** バイトコードは同じ `.mpy` ABI の中でしか
   通用せず、デバイス (MicroPython 1.27) が読むのは v6。ずれたときの症状はデバイス側の
@@ -150,6 +164,15 @@ Espressif の `esp-tts` は中国語のみ。
 
 `M5.Speaker` には `playWav` / `playWavFile` もあるが、WAV 全体を渡す API なので heap に
 載らない。`playRaw` にブロックを送り続ける。
+
+**音量はファームウェアの既定の 4 倍にしてある** (`buddy_speak._VOLUME_GAIN`)。固定値では
+なく `getVolume()` を読んで掛ける。既定は M5Unified のもので、ファームウェアと一緒に動くため。
+実測の既定は 64 で、4 倍は 256 = byte の上限を超えるため 255 に丸まる。つまり現状は
+master volume の最大で、これ以上は `_VOLUME_GAIN` を上げても変わらない。起動ログの
+`buddy_speak: volume 64 -> 255` がその行。
+掛けるのは `SpeechPlayer` を作るときの 1 回だけ = ブート 1 回につき 1 回で、リセットで
+ファームウェアが自分の既定へ戻すので累積しない。master volume はアンプの手前で
+サンプルを掛けるだけなので、既定が full scale の半分以下である限りクリップしない。
 
 ### ストリーミングの制約
 

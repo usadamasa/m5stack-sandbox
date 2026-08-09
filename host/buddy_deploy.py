@@ -28,6 +28,21 @@ Three consequences, and this module is all three:
     stays source — MicroPython runs `/flash/main.py` and never looks
     for `main.mpy`.
 
+### Why it ends by talking
+
+Everything above proves bytes landed on flash, which is not the same as
+a bundle that runs: an import that fails, an engine that cannot be
+reached and a speaker that stays silent all look identical from a
+directory listing. So the last step launches the app and has the device
+say so out loud. That exercises the import, the inherited WiFi link, the
+VOICEVOX round trip and `M5.Speaker` in one go, and the confirmation is
+audible from across the room rather than being another line of output.
+
+The cost is the REPL: launching is one-way, because the app disables
+Ctrl-C once its transport is up. The device is left running the app, and
+the next deploy starts by asking for a BtnRST press. `--no-speak` keeps
+the old behaviour of stopping at the REPL.
+
 ### Why the timeout lives in here
 
 mpremote opens the port with `timeout=None`, and `raw_paste_write` does
@@ -58,7 +73,16 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from device_repl import Repl, ReplError, connect_repl
+from buddy_bridge import (
+    DEFAULT_READ_TIMEOUT,
+    LAUNCH_SOURCE,
+    BuddyLink,
+    Message,
+    say,
+    speak,
+    voicevox_url,
+)
+from device_repl import Repl, ReplError, connect_repl, run_and_release
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -132,6 +156,21 @@ SERIAL_READ_TIMEOUT_S = 5.0
 # mpy-cross on five small modules is milliseconds. This only exists so
 # that a wedged child cannot outlive the budget it was checked against.
 COMPILE_TIMEOUT_S = 60.0
+
+# What the device says once the bundle is on flash. Short on purpose:
+# the panel holds four rows of nine wide glyphs, and synthesis is the
+# slow part of the round trip.
+VERIFY_TEXT = "デプロイ完了なのだ"
+
+# Seconds to let the app talk after the launch before anything is asked
+# of it. The same settle `buddy_bridge --start` uses: a failed import
+# prints its traceback in this window, and reading it is how the run
+# gets to say what went wrong instead of just timing out.
+LAUNCH_SETTLE_S = 4.0
+
+# Per-request patience once the app is up. Synthesis has its own, much
+# longer budget inside `buddy_bridge.speak`.
+VERIFY_TIMEOUT_S = 10.0
 
 
 class DeployError(RuntimeError):
@@ -457,6 +496,85 @@ def report_flash(repl: Repl, log: Callable[[str], None]) -> None:
         log(f"  {path}: {', '.join(names)}")
 
 
+# ------------------------------------------------------------ confirmation
+
+
+def engine_url(engine: str | None) -> str:
+    """Where the device should fetch speech from.
+
+    Resolved before the launch, deliberately: after it the console
+    belongs to the app, so a bad engine address discovered then costs a
+    BtnRST press to get back from.
+    """
+    try:
+        return voicevox_url(engine)
+    except ValueError as exc:
+        raise DeployError(f"the bundle is installed, but {exc}") from None
+
+
+def verify_by_speech(
+    repl: Repl,
+    port: str,
+    text: str,
+    url: str,
+    log: Callable[[str], None],
+    settle: float = LAUNCH_SETTLE_S,
+) -> Message:
+    """Launch what was just installed and have it say `text` out loud.
+
+    Returns the `speak.end` ack. Raises `DeployError` if the device
+    would not say it, naming the layer that refused: `speak.say` fails
+    when the device cannot reach the engine, and a `speak.end` that is
+    not ok means playback started and was cut short.
+
+    Takes the port over. `run_and_release` hands the REPL's own port to
+    the link rather than closing and reopening it, so the traceback from
+    a failed import is not lost in the gap — and the caller must not
+    close the transport afterwards.
+
+    One-way, like every other launch: the app disables Ctrl-C, so the
+    device stays out of the REPL until someone presses BtnRST.
+    """
+    log(f"launching the app to confirm out loud (engine: {url})")
+
+    link = BuddyLink(port).open(adopt=run_and_release(repl, LAUNCH_SOURCE, DEFAULT_READ_TIMEOUT))
+
+    def report(msgs: Sequence[Message], logs: Sequence[bytes]) -> None:
+        """Print what the device said. Both halves: `drain` empties both,
+        and a protocol frame dropped without a word — the `hello` the
+        transport sends on handshake, or an ack for something nobody
+        asked about — is the kind of thing worth seeing."""
+        for line in logs:
+            log("  dev | " + line.decode("utf-8", errors="replace"))
+        for msg in msgs:
+            log(f"  <-- {msg}")
+
+    try:
+        # Whatever the app says while starting, said here. On a failed
+        # import this is the diagnostic, and the request below would
+        # otherwise report it as nothing more than a timeout.
+        report(*link.pump(settle))
+        try:
+            # On the panel first: the words are readable while the
+            # engine synthesises, which is seconds.
+            say(link, text, timeout=VERIFY_TIMEOUT_S, pace=0)
+            ack = speak(link, text, url=url, timeout=VERIFY_TIMEOUT_S)
+        except (ConnectionError, TimeoutError, RuntimeError, ValueError) as exc:
+            raise DeployError(
+                f"the bundle is on flash but the device would not say {text!r}: {exc}"
+            ) from None
+        if not ack.get("ok"):
+            raise DeployError(f"playback ended early: {ack}")
+        if ack.get("stalls"):
+            # Not a failure: the audio played, with gaps. Worth saying,
+            # because it means the stream could not keep up with the tick.
+            log(f"  the stream stalled {ack['stalls']} times — the utterance will have gapped")
+        return ack
+    finally:
+        report(*link.drain())
+        link.close()
+
+
 # --------------------------------------------------------------------- cli
 
 
@@ -487,6 +605,28 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=float,
         default=DEFAULT_WAIT_S,
         help="Seconds to wait for the REPL. Getting there needs a BtnRST press.",
+    )
+    ap.add_argument(
+        "--no-speak",
+        action="store_true",
+        help="Skip the spoken confirmation and leave the device at the REPL.",
+    )
+    ap.add_argument(
+        "--speak-text",
+        default=VERIFY_TEXT,
+        metavar="TEXT",
+        help="What the device says once the bundle is installed.",
+    )
+    ap.add_argument(
+        "--engine",
+        metavar="URL",
+        help="VOICEVOX engine. Defaults to $VOICEVOX_URL, then this machine's LAN address.",
+    )
+    ap.add_argument(
+        "--settle",
+        type=float,
+        default=LAUNCH_SETTLE_S,
+        help="Seconds to read the app's startup output before speaking to it.",
     )
     return ap.parse_args(argv)
 
@@ -549,6 +689,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         _log(str(exc))
         return 1
 
+    # Set by the confirmation, which hands the REPL's port to the link.
+    # Closing the transport after that would take the port with it.
+    handed_over = False
     try:
         # mpremote leaves this at None, i.e. block forever. Every read in
         # a transfer goes through it, so this is the whole reason the run
@@ -575,13 +718,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"would go on parsing them: {', '.join(shadows)}"
             )
         report_flash(repl, _log)
+
+        if args.no_speak:
+            _log("done. Launch with: buddy_start_app (MCP) or buddy_bridge --start")
+            return 0
+
+        deadline.check("the spoken confirmation")
+        url = engine_url(args.engine)
+        handed_over = True
+        ack = verify_by_speech(repl, args.port, args.speak_text, url, _log, settle=args.settle)
+        _log(f"  speak.end: {ack}")
     except (DeployError, ReplError, OSError) as exc:
         _log(str(exc))
         return 1
     finally:
-        repl.close()
+        if not handed_over:
+            repl.close()
 
-    _log("done. Launch with: buddy_start_app (MCP) or buddy_bridge --start")
+    _log(
+        f"done, and the device said so: {args.speak_text!r}. The app is running now, "
+        "so the next deploy needs a BtnRST press."
+    )
     return 0
 
 

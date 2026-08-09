@@ -192,10 +192,18 @@ class StreamSourceTest(TimeFrozen):
 class _FakeSpeaker:
     """M5.Speaker with a bounded queue, as measured: eight and no more."""
 
-    def __init__(self, depth: int = 8) -> None:
+    def __init__(self, depth: int = 8, volume: int = 64) -> None:
         self.depth = depth
         self.queued: list[bytes] = []
         self.stopped = 0
+        # M5Unified's own default, which is what the player multiplies.
+        self.volume = volume
+
+    def getVolume(self) -> int:
+        return self.volume
+
+    def setVolume(self, master_volume: int) -> None:
+        self.volume = master_volume
 
     def playRaw(
         self,
@@ -387,6 +395,49 @@ class SpeechPlayerTest(TimeFrozen):
         self.assertTrue(ack["ok"])
         # Defaults matter: the host may send only text and url.
         self.assertEqual(self.fetched[0][2], 3)
+
+
+class VolumeTest(TimeFrozen):
+    """Turning the speaker up, relative to whatever the firmware set.
+
+    A fixed byte would go stale the moment M5Unified moved its default,
+    and the thing actually asked for was "twice as loud".
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.t = _RecordingTransport()
+
+    def build(self, spk: object) -> SpeechPlayer:
+        return SpeechPlayer(self.t, speaker=spk, fetch=lambda *_a: {})
+
+    def test_the_speaker_is_turned_up_when_the_player_is_built(self) -> None:
+        # From a quiet start, so the multiplication is what is being
+        # read here rather than the ceiling below.
+        spk = _FakeSpeaker(volume=10)
+        player = self.build(spk)
+        self.assertEqual(spk.volume, 10 * buddy_speak._VOLUME_GAIN)
+        self.assertEqual(player.volume, spk.volume)
+
+    def test_it_stops_at_the_top_of_the_byte(self) -> None:
+        # setVolume takes a byte, and this board boots at 64 — measured
+        # — so the shipped gain runs into the ceiling rather than
+        # handing the device a value it cannot hold. Worth knowing: at
+        # this gain the speaker is already at its loudest, and raising
+        # `_VOLUME_GAIN` further changes nothing.
+        spk = _FakeSpeaker(volume=64)
+        self.build(spk)
+        self.assertEqual(spk.volume, buddy_speak._MAX_VOLUME)
+
+    def test_a_speaker_without_volume_control_still_plays(self) -> None:
+        # Losing the utterance over the setting for it would be the wrong
+        # trade, and the binding is not in every firmware build.
+        class _NoVolume(_FakeSpeaker):
+            def getVolume(self) -> int:
+                raise AttributeError("getVolume")
+
+        player = self.build(_NoVolume())
+        self.assertIsNone(player.volume)
 
 
 class _FakeLink:
