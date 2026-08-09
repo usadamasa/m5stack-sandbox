@@ -12,6 +12,7 @@ uv run pytest --cov            # カバレッジ付き
 uv run ruff check              # lint
 uv run ruff format             # format
 uv run basedpyright            # 型検査
+uv run python host/buddy_deploy.py --compile-only   # device/ が MicroPython で通るか
 ```
 
 デバイス操作は必ず `uv run` を通す。
@@ -19,7 +20,7 @@ uv run basedpyright            # 型検査
 ```bash
 docker compose up -d                                       # VOICEVOX ENGINE
 PORT=/dev/cu.usbmodem101
-uv run python host/buddy_push.py --port $PORT              # overlay を転送
+uv run python host/buddy_deploy.py --port $PORT            # overlay を .mpy にして転送
 uv run python host/buddy_bridge.py --port $PORT --status   # 単発で叩く
 
 # 声を出すなら、一度だけ WiFi を焼く (以降ブートごとの操作は不要)
@@ -47,18 +48,51 @@ Seatbelt はこれを拒否する。グローバル設定の `sandbox.excludedCo
 | `device/buddy_speak.py` | VOICEVOX の WAV ストリームをブロックに割って `M5.Speaker` へ流す。`speak.*` |
 | `device/buddy_tts.py` | VOICEVOX の呼び出しと WAV ヘッダの解析。WiFi は扱わない |
 | `device/apps/claude_buddy.py` | upstream 派生。差分は transport 選択と chat / speak のルーティング |
+| `device/main.py` | upstream の launcher の置き換え。WiFi を上げて REPL に落ちるだけ。ソースのまま置く |
 | `host/buddy_bridge.py` | ホスト側クライアント。`BuddyLink` (単発) と `ResidentLink` (常駐) |
 | `compose.yaml` | VOICEVOX ENGINE。`docker compose up -d` |
 | `host/buddy_mcp.py` | MCP server |
 | `host/device_repl.py` | `mpremote` の SerialTransport を掴むところ。BtnRST 待ちのループもここ |
-| `host/buddy_push.py` | overlay を `/flash/` へ転送。転送そのものは `mpremote` |
+| `host/buddy_deploy.py` | overlay を `.mpy` にして `/flash/` へ。upstream ピアの変換と launcher 差し替えもここ |
 | `host/provision_wifi.py` | `/flash/wifi_event.py` の SSID/PASSWORD を書き換える。一度だけ |
 | `host/probe_device.py` | 実機のフォント一覧・実測メトリクス・Speaker API を取る (read-only、JSON) |
+| `vendor/device/` | デバイスから吸い出した upstream ソース。git 管理外、削除しない (再配布しないので他に控えが無い) |
 | `host/fetch_firmware.py` | UIFlow 2.0 ファームウェアの取得 (Range レジューム付き) |
 | `host/tests/` | 全て実機不要 |
 
 `buddy_protocol.py` / `buddy_ui_cp.py` / `buddy_state.py` / `buddy_chars.py` は upstream の
-ものがデバイスの `/flash/` に入っている。このリポジトリには置かない。
+ものがデバイスの `/flash/` に入っている。このリポジトリには置かない。`buddy_deploy.py` が
+デバイスから読み出して `.mpy` にし、消す前に `vendor/device/` へ退避する。
+
+## デバイスへ載るのは .mpy
+
+**`.py` を push してはいけない。** import 機構は各 `sys.path` エントリで `foo.py` を
+`foo.mpy` より先に探すので、ソースを置くとバイトコードが読まれなくなる。デバイスは
+import のたびに構文木とバイトコードの両方を GC heap に作り、`gc.mem_free()` が 55280
+あっても `import buddy_ui_cp` が 776 バイト取れずに落ちる (総量ではなく連続領域)。
+`.mpy` 化で clean GC heap 55280 → 101120、ESP-IDF DATA の最大連続 17408 → 51200。
+
+だから転送の入口は `host/buddy_deploy.py` だけ。`.py` を push する経路はリポジトリに無い。
+
+```bash
+uv run python host/buddy_deploy.py --port $PORT       # 転送 (BtnRST 待ちを含む)
+uv run python host/buddy_deploy.py --compile-only     # 実機なし。CI の mpy-build と同じ
+```
+
+- **`mpy-cross` は `==1.27.0.post2` 固定。** バイトコードは同じ `.mpy` ABI の中でしか
+  通用せず、デバイス (MicroPython 1.27) が読むのは v6。ずれたときの症状はデバイス側の
+  素の ImportError だけになるので、転送前に `sys.implementation._mpy` と突き合わせている。
+  ピンは `pyproject.toml` と `buddy_deploy.MPY_CROSS_ABI` の 2 箇所で、テストが一致を見る
+- **消す前に必ず `vendor/device/` へ退避する。** upstream のピアは本リポジトリに無く
+  (NOTICE のとおり再配布しない)、`.py` を消した後はそこが唯一の控えになる。
+  `vendor/` は `.gitignore` に入っているが `tmp/` とは違って消してはいけない
+- **`main.py` だけはソースのまま。** MicroPython は `/flash/main.py` を実行し、
+  `main.mpy` を探さない。`--compile-only` はパーサに通すためだけにコンパイルし、
+  結果は push 対象と別のディレクトリに落とす
+- **タイムアウトはスクリプトの中。** `mpremote` はポートを `timeout=None` で開き、
+  `raw_paste_write` は素の `serial.read(1)` で待つので、応答が止まると永久にブロックする。
+  `bash` の `timeout` で包まない。ポートへ有限の read timeout を掛け、`--timeout` の予算を
+  ステップ間で見て、落ちたステップ名を出す
 
 ## チャットパネル
 
@@ -162,11 +196,16 @@ GIL 付きなので逃げ場がない。再生が始まってからは 1 tick 1 
 展示会場の AP で、会場で配られる公開パスワード。ファイル冒頭にそう明記されている。
 
 **代償**: PSK が `/flash/wifi_event.py` に平文で残る。またブート時から radio が上がる分、
-アプリが読み込まれる時点の空き heap が **41040** まで落ちる (WiFi 無しの頃は 61248)。
+アプリが読み込まれる時点の空き heap が落ちる。`.py` を載せていた頃はここが **41040** まで
+下がって発話が通らなかった。`.mpy` 化と launcher 差し替えの後は **69920**
+(いずれも `tmp/launch_probe.py`、reboot 直後の計測)。`buddy_status` が返す `sys.heap` は
+transport と UI を上げた後の値なので、これより 1 万ほど小さく出る。
 
-`claude_buddy.py` は起動時に WiFi を落とすが、**BLE transport のときだけ**。ESP32 の
+`claude_buddy.py` の WiFi 停止処理は `_TRANSPORT == "ble"` のときだけ走る。ESP32 の
 WiFi/BLE 共存クラッシュ回避が目的で、serial では NimBLE を触らないので不要。むしろ
-speech が radio を使う。
+speech が radio を使う。なお `buddy_ble` はデバイスから外してあり (NimBLE が speech の
+ソケット分の ESP-IDF heap を押さえるため)、BLE 分岐は upstream との diff を読める形に
+保つためだけに残っている。
 
 ### provisioning の手順で踏んだこと
 
@@ -242,7 +281,7 @@ raw-paste は自分の terminator を ack してから実行に入るので、�
 
 ## デバイスを触るときの前提
 
-- **ポートは 1 プロセスしか掴めない。** `buddy_push.py` や `esptool` を使う前に MCP の
+- **ポートは 1 プロセスしか掴めない。** `buddy_deploy.py` や `esptool` を使う前に MCP の
   `buddy_disconnect` を呼ぶ
 - **アプリ起動は片道。** transport が上がると `micropython.kbd_intr(-1)` で Ctrl-C が
   無効になる。REPL に戻すには本体背面の BtnRST を押してもらう

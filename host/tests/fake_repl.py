@@ -79,6 +79,17 @@ class FakeStat:
         self.st_mode = 0o100644
 
 
+class FakeDirEntry:
+    """One row of `fs_listdir`. mpremote's is a namedtuple; only the
+    name is ever read."""
+
+    def __init__(self, name: str, size: int) -> None:
+        self.name = name
+        self.st_mode = 0o100644
+        self.st_ino = 0
+        self.st_size = size
+
+
 class FakeRepl:
     def __init__(
         self,
@@ -93,6 +104,7 @@ class FakeRepl:
         self.execs: list[str] = []
         self.evals: list[str] = []
         self.made_dirs: list[str] = []
+        self.removed: list[str] = []
         self.in_raw_repl = False
         self.closed = False
         self.soft_resets = 0
@@ -176,14 +188,35 @@ class FakeRepl:
         size = self.report_size if self.report_size is not None else len(self.files[src])
         return FakeStat(size)
 
+    def fs_exists(self, src: str) -> bool:
+        return src in self.files or src in self.dirs
+
     def fs_isdir(self, src: str) -> bool:
         return src in self.dirs
+
+    def fs_listdir(self, src: str = "") -> list[FakeDirEntry]:
+        if src and src not in self.dirs:
+            raise OSError(errno.ENOENT, "No such file or directory", src)
+        prefix = f"{src}/" if src else ""
+        return [
+            FakeDirEntry(path[len(prefix) :], len(data))
+            for path, data in sorted(self.files.items())
+            # One level, like os.ilistdir: a file in a subdirectory of
+            # `src` belongs to that subdirectory's listing, not this one.
+            if path.startswith(prefix) and "/" not in path[len(prefix) :]
+        ]
 
     def fs_mkdir(self, path: str) -> None:
         if path in self.dirs:
             raise OSError(errno.EEXIST, "File exists", path)
         self.dirs.add(path)
         self.made_dirs.append(path)
+
+    def fs_rmfile(self, path: str) -> None:
+        if path not in self.files:
+            raise OSError(errno.ENOENT, "No such file or directory", path)
+        del self.files[path]
+        self.removed.append(path)
 
     def close(self) -> None:
         self.closed = True
