@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "buddy": {
+      "command": "/Users/masaru_uchida/src/github.com/usadamasa/m5stack-sandbox/tmp/m5venv/bin/python",
+      "args": [
+        "/Users/masaru_uchida/src/github.com/usadamasa/m5stack-sandbox/host/buddy_mcp.py"
+      ],
+      "env": {
+        "BUDDY_PORT": "/dev/cu.usbmodem101"
+      }
+    }
+  }
+}

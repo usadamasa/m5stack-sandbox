@@ -26,7 +26,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 import time
+from collections import deque
 
 try:
     import serial
@@ -155,6 +157,9 @@ class BuddyLink:
             s.write(line.encode("utf-8") + b"\r\n")
             time.sleep(0.005)
         s.write(b"\x04")
+        # See ResidentLink.start_app: the paste-mode terminator needs a
+        # newline behind it or it corrupts the next frame.
+        s.write(b"\r\n")
 
         # Paste mode echoes what we just sent, so some of what follows is
         # our own input coming back. Keep it anyway: a startup traceback
@@ -178,7 +183,7 @@ class BuddyLink:
         try:
             waiting = self._ser.in_waiting
             data = self._ser.read(waiting if waiting else 1)
-        except (OSError, serial.SerialException):
+        except OSError:
             self.dropped = True
             return
         if not data:
@@ -227,6 +232,175 @@ class BuddyLink:
                     "no {!r} ack within {:.1f}s".format(expect, timeout)
                 )
             self._read_available()
+
+
+class ResidentLink:
+    """A session whose reads run on a background thread.
+
+    `BuddyLink` only reads while a caller is waiting, which is fine for a
+    one-shot CLI run. An MCP server outlives any single tool call, so
+    device-initiated traffic — the `hello` on handshake, and anything the
+    device pushes later — has to be captured in between. This class owns
+    the port for the life of the server and buffers what arrives.
+
+    Writes are serialised with a lock; reads happen only on the reader
+    thread, so the two never race on the same file descriptor.
+    """
+
+    def __init__(
+        self,
+        port: str,
+        baud: int = 115200,
+        read_timeout: float = 0.05,
+        log_history: int = 500,
+        serial_factory=None,
+    ):
+        self.port = port
+        self.baud = baud
+        self.read_timeout = read_timeout
+        # Logs are unbounded chatter; drop the oldest rather than grow
+        # without limit across a long-lived server. Protocol messages are
+        # kept in full — losing an ack would be a correctness bug.
+        self._logs: deque[bytes] = deque(maxlen=log_history)
+        self._msgs: deque[dict] = deque()
+        self._demux = LineDemux()
+        self._cv = threading.Condition()
+        self._write_lock = threading.Lock()
+        self._stop = threading.Event()
+        self._reader: threading.Thread | None = None
+        self._ser = None
+        self._serial_factory = serial_factory
+        self.dropped = False
+
+    # ----- lifecycle
+
+    @property
+    def connected(self) -> bool:
+        return self._ser is not None
+
+    def connect(self) -> None:
+        if self._ser is not None:
+            return
+        factory = self._serial_factory
+        if factory is None:
+            if serial is None:
+                raise RuntimeError("pyserial is required; install it in the venv")
+            factory = serial.Serial
+        self._ser = factory(self.port, self.baud, timeout=self.read_timeout)
+        self.dropped = False
+        self._stop.clear()
+        self._reader = threading.Thread(
+            target=self._read_loop, name="buddy-reader", daemon=True
+        )
+        self._reader.start()
+
+    def disconnect(self) -> None:
+        self._stop.set()
+        reader, self._reader = self._reader, None
+        if reader is not None:
+            reader.join(timeout=2.0)
+        ser, self._ser = self._ser, None
+        if ser is not None:
+            try:
+                ser.close()
+            except Exception:  # noqa: BLE001 - closing a dead port is not news
+                pass
+
+    # ----- reader thread
+
+    def _read_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                waiting = self._ser.in_waiting
+                data = self._ser.read(waiting if waiting else 1)
+            except OSError:
+                # SerialException subclasses OSError, so this covers both
+                # a closed port and the ENXIO of a device that reset.
+                with self._cv:
+                    self.dropped = True
+                    self._cv.notify_all()
+                return
+            if not data:
+                continue
+            items = self._demux.feed(data)
+            if not items:
+                continue
+            with self._cv:
+                for kind, payload in items:
+                    if kind == "protocol":
+                        try:
+                            self._msgs.append(decode(payload))
+                        except ValueError:
+                            self._logs.append(b"<undecodable protocol line> " + payload)
+                    else:
+                        self._logs.append(payload)
+                self._cv.notify_all()
+
+    # ----- traffic
+
+    def send(self, obj: dict) -> None:
+        with self._write_lock:
+            self._ser.write(encode(obj))
+            self._ser.flush()
+
+    def request(self, obj: dict, expect: str, timeout: float = 5.0) -> dict:
+        """Send `obj` and wait for the reader to surface a matching ack."""
+        self.send(obj)
+        deadline = time.monotonic() + timeout
+        with self._cv:
+            while True:
+                for i, msg in enumerate(self._msgs):
+                    if msg.get("ack") == expect:
+                        del self._msgs[i]
+                        return msg
+                if self.dropped:
+                    raise ConnectionError(
+                        "device dropped off USB while waiting for {!r}".format(expect)
+                    )
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        "no {!r} ack within {:.1f}s".format(expect, timeout)
+                    )
+                self._cv.wait(remaining)
+
+    def events(self) -> tuple[list[dict], list[bytes]]:
+        """Drain everything buffered since the last call."""
+        with self._cv:
+            msgs = list(self._msgs)
+            logs = list(self._logs)
+            self._msgs.clear()
+            self._logs.clear()
+        return msgs, logs
+
+    def start_app(self, settle: float = 8.0) -> None:
+        """Interrupt to the REPL and import the Buddy app.
+
+        Unlike BuddyLink.start_app there is no explicit drain: the reader
+        thread is already collecting, and the paste-mode echo plus any
+        startup traceback land in the log buffer for `events()`.
+        """
+        with self._write_lock:
+            for _ in range(5):
+                self._ser.write(b"\x03")
+                time.sleep(0.05)
+            self._ser.write(b"\r\n")
+            time.sleep(0.3)
+            self._ser.write(b"\x05")
+            time.sleep(0.1)
+            for line in BuddyLink._LAUNCH.splitlines():
+                self._ser.write(line.encode("utf-8") + b"\r\n")
+                time.sleep(0.005)
+            self._ser.write(b"\x04")
+            # Terminate the line. 0x04 carries no newline, so without
+            # this it sits unconsumed in the device's rx buffer and gets
+            # prepended to the next frame — whose sentinel is then not at
+            # the start of the line, so the transport drops it. The
+            # symptom is a launch that looks fine followed by exactly one
+            # timed-out request.
+            self._ser.write(b"\r\n")
+            self._ser.flush()
+        time.sleep(settle)
 
 
 def _dump(msgs: list[dict], logs: list[bytes]) -> None:
