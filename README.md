@@ -118,7 +118,7 @@ docker compose up -d
 `m5-onboard` スキルが行う。スキルは
 [moremas/build-with-claude](https://github.com/moremas/build-with-claude) のローカル
 クローンを要求するので、`/maker-setup` で作る。本リポジトリはそのクローンに依存しない
-(overlay の転送は `host/buddy_push.py` が行う)。
+(overlay の転送は `host/buddy_deploy.py` が行う)。
 
 転送と REPL 実行は MicroPython 公式の [`mpremote`](https://docs.micropython.org/en/latest/reference/mpremote.html)
 に任せている。ライブラリとして使っており (`mpremote.transport_serial.SerialTransport`)、
@@ -136,16 +136,54 @@ mode はウィンドウ制御付きで、しかもソースをエコーバック
 > uv run python host/fetch_firmware.py --device cardputer-adv
 > ```
 
+### デバイスへ載るのは .mpy
+
+`host/buddy_deploy.py` が `mpy-cross` で全モジュールをバイトコードにしてから転送する。
+速度の話ではなく、載るかどうかの話。`.py` のままだとデバイスは import のたびに構文木と
+バイトコードの両方を GC heap に作り、`gc.mem_free()` が 55280 あっても
+`import buddy_ui_cp` が「776 バイトが取れない」で落ちた。総量ではなく連続領域が無い。
+`.mpy` にして clean heap は 55280 → 101120 になった。
+
+3 つの帰結がそのままスクリプトの仕事になっている。
+
+- **`.py` は消す。** import 機構は各 `sys.path` エントリで `foo.py` を `foo.mpy` より先に
+  探すので、ソースを残すとバイトコードは読まれない。だから `.py` を push する経路は
+  リポジトリから消してある。overlay を `.py` で push すると黙って元に戻り、症状は
+  数日後の合成失敗として出る
+- **upstream のピア (`buddy_protocol` / `buddy_ui_cp` / `buddy_state` / `buddy_chars`) は
+  デバイスから読み出してコンパイルする。** 本リポジトリはこれらを持たないし再配布もしない
+  (NOTICE)。消す前に必ず `vendor/` へ退避するので、消える側が最後の 1 部になることはない
+- **launcher は `device/main.py` に差し替える。** upstream のものは NimBLE を上げ、その
+  ESP-IDF heap が speech のソケットの取り分を食う。`main.py` だけはソースのまま置く
+  (MicroPython は `/flash/main.py` を実行し、`main.mpy` を探さない)
+
+タイムアウトはスクリプトの中にある。`mpremote` はポートを `timeout=None` で開き、
+`raw_paste_write` は素の `serial.read(1)` でフロー制御バイトを待つので、途中で
+応答が止まったデバイスは永久にブロックする。外側の `timeout 300` はそれを覆っていただけ。
+代わりにポートへ有限の read timeout を掛け、`--timeout` の予算をステップ間で確認する。
+落ちたときにどのステップだったかが出る。
+
+```bash
+uv run python host/buddy_deploy.py --port $PORT              # 転送
+uv run python host/buddy_deploy.py --compile-only            # 実機なしで検証
+```
+
+`mpy-cross` は `mpy-cross==1.27.0.post2` に固定してある。バイトコードは同じ `.mpy` ABI
+の中でしか通用せず、デバイス (MicroPython 1.27) が読むのは v6。ずれると症状はデバイス側の
+素の ImportError だけになるので、転送前に `sys.implementation._mpy` と突き合わせる。
+
 ### 品質チェック
 
 ```bash
-uv run ruff check      # lint
-uv run ruff format     # format
-uv run basedpyright    # 型検査
-uv run pytest --cov    # テスト + カバレッジ
+uv run ruff check                                  # lint
+uv run ruff format                                 # format
+uv run basedpyright                                # 型検査
+uv run pytest --cov                                # テスト + カバレッジ
+uv run python host/buddy_deploy.py --compile-only  # device/ が MicroPython で通るか
 ```
 
-同じものが GitHub Actions で回る。デバイスは要らない。
+同じものが GitHub Actions で回る。デバイスは要らない。最後のひとつが要るのは、
+`ruff` と `basedpyright` が通っても MicroPython のパーサが受け取るとは限らないから。
 
 ## 使い方
 
@@ -153,7 +191,7 @@ uv run pytest --cov    # テスト + カバレッジ
 PORT=/dev/cu.usbmodem101
 
 # デバイスへ overlay を転送 (REPL に居ることが前提。居なければ止まる)
-uv run python host/buddy_push.py --port $PORT
+uv run python host/buddy_deploy.py --port $PORT
 
 # アプリを起動して状態を取得
 uv run python host/buddy_bridge.py --port $PORT --start --status
@@ -180,7 +218,7 @@ uv run python host/probe_device.py --port $PORT
 `--start` は片道。アプリは transport 起動時に `micropython.kbd_intr(-1)` で Ctrl-C を
 無効化するため、REPL に戻るには本体背面の BtnRST を押す。
 
-REPL を要求するもの (`buddy_push.py`、`provision_wifi.py`、`buddy_bridge.py --start`、
+REPL を要求するもの (`buddy_deploy.py`、`provision_wifi.py`、`buddy_bridge.py --start`、
 `probe_device.py`) は BtnRST が押されるまでポーリングして待つ。「押してから実行し直す」を
 求めない。待ち時間は `--wait` 秒 (既定 180、0 で待たない)。MCP の `buddy_start_app` だけは
 ツール呼び出しを長時間ブロックしないよう既定 15 秒。
@@ -193,7 +231,7 @@ REPL を要求するもの (`buddy_push.py`、`provision_wifi.py`、`buddy_bridg
 | tool | 用途 |
 | --- | --- |
 | `probe_serial` | `tcsetattr` が通るかの判定。**最初にこれを呼ぶ** |
-| `buddy_connect` / `buddy_disconnect` | シリアルの掴み直し。`buddy_push.py` を使う前は disconnect する |
+| `buddy_connect` / `buddy_disconnect` | シリアルの掴み直し。`buddy_deploy.py` を使う前は disconnect する |
 | `buddy_start_app` | REPL 経由でアプリを起動。起動時のトレースバックも返る |
 | `buddy_status` | status ack を取得 |
 | `buddy_set_name` / `buddy_set_owner` | NVS に永続化される表示名とオーナー |
@@ -216,7 +254,7 @@ REPL を要求するもの (`buddy_push.py`、`provision_wifi.py`、`buddy_bridg
 
 `ResidentLink` がバックグラウンドスレッドでポートを読み続けるため、ツール呼び出しの
 合間に届いたメッセージも `buddy_events` で回収できる。ポートは1プロセスしか掴めないので、
-`buddy_push.py` や `esptool` を使う前には `buddy_disconnect` する。
+`buddy_deploy.py` や `esptool` を使う前には `buddy_disconnect` する。
 
 ## 既知の制約
 

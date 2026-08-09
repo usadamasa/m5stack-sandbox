@@ -16,12 +16,18 @@ device/apps/claude_buddy.py
     transport selection: the BLE peripheral can be swapped for the USB-serial
     link in device/buddy_serial.py.
 
-host/buddy_push.py
-    Reimplementation of buddy/scripts/push.py. The paste-mode plus base64
-    transfer mechanism is upstream's; the prompt check, the post-transfer
-    stat, and the removal of the DTR/RTS reset are local.
+host/buddy_deploy.py (push_file)
+    Lineage rather than code. It began as a reimplementation of
+    buddy/scripts/push.py, whose paste-mode plus base64 transfer mechanism was
+    upstream's; that mechanism has since been replaced wholesale by mpremote's
+    raw-paste transport, and what remains — the install layout, the
+    post-transfer stat — is local. Recorded because the derivation is real
+    history, not because upstream code survives in it. It lived in
+    host/buddy_push.py until that module was folded into host/buddy_deploy.py.
 
 The peer modules the device imports at runtime (buddy_protocol.py,
 buddy_ui_cp.py, buddy_state.py, buddy_chars.py, main.py) are used unmodified
 and are not redistributed here — they are installed onto the device's flash by
-the m5-onboard skill from the upstream clone.
+the m5-onboard skill from the upstream clone. host/buddy_deploy.py reads them
+off the device to compile them, and keeps the copy it read under vendor/,
+which is untracked.

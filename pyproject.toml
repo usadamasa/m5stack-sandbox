@@ -16,9 +16,15 @@ dev = [
     "basedpyright>=1.31.0",
     # MicroPython's own remote-control tool. Used as a library, not a CLI:
     # `mpremote.transport_serial.SerialTransport` is the raw-paste REPL
-    # transport that host/buddy_push.py drives. Development-time only —
+    # transport that host/buddy_deploy.py drives. Development-time only —
     # nothing at runtime pushes files.
     "mpremote>=1.28.0",
+    # The MicroPython cross-compiler, driven by host/buddy_deploy.py.
+    # Pinned exactly, not floated: bytecode is only portable within one
+    # .mpy ABI, and the board runs MicroPython 1.27, which loads v6.
+    # A newer mpy-cross would build modules the firmware refuses to
+    # import, and the only symptom is an ImportError on the device.
+    "mpy-cross==1.27.0.post2",
     "pytest>=8.4.0",
     "pytest-cov>=6.2.0",
     "ruff>=0.14.0",
@@ -73,8 +79,8 @@ select = [
 known-first-party = [
     "buddy_bridge",
     "buddy_chat",
+    "buddy_deploy",
     "buddy_mcp",
-    "buddy_push",
     "buddy_serial",
     "buddy_speak",
     "buddy_tts",

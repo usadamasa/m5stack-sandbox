@@ -34,7 +34,7 @@ from __future__ import annotations
 import contextlib
 import io
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Protocol
 
 from mpremote.transport import TransportError
@@ -51,6 +51,14 @@ class Stat(Protocol):
 
     @property
     def st_size(self) -> int: ...
+
+
+class DirEntry(Protocol):
+    """One row of `fs_listdir`. mpremote returns a four-field namedtuple;
+    only the name is read here, and only to print what landed."""
+
+    @property
+    def name(self) -> str: ...
 
 
 class Repl(Protocol):
@@ -108,9 +116,21 @@ class Repl(Protocol):
 
     def fs_stat(self, src: str) -> Stat: ...
 
+    # A stat that swallows the OSError. Worth having as its own call
+    # because "is the source still there next to the bytecode" is asked
+    # about a file that is expected to be absent, and an exception is
+    # the wrong shape for a question whose answer is usually "no".
+    def fs_exists(self, src: str) -> bool: ...
+
     def fs_isdir(self, src: str) -> bool: ...
 
+    # A Sequence, not a list: `list` is invariant, so a fake returning
+    # its own row type would not satisfy the protocol.
+    def fs_listdir(self, src: str = "") -> Sequence[DirEntry]: ...
+
     def fs_mkdir(self, path: str) -> None: ...
+
+    def fs_rmfile(self, path: str) -> None: ...
 
     def close(self) -> None: ...
 

@@ -1,6 +1,13 @@
 # Scratch. Everything transient goes here (see CLAUDE.md).
 tmp/
 
+# Upstream device sources that host/buddy_deploy.py reads off the board
+# before it replaces them with bytecode. Kept out of git for the reason
+# the NOTICE gives: the peer modules are used unmodified and are not
+# redistributed here. Unlike tmp/, do not delete this — for those
+# modules it is the only copy on the host.
+vendor/
+
 # WiFi credentials for provision_wifi.py. Never commit; the PSK is plaintext.
 .env
 
