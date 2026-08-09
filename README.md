@@ -130,6 +130,7 @@ REPL を要求するもの (`buddy_deploy.py`、`provision_wifi.py`、`buddy_bri
 | `buddy_chat_clear` | 会話ログを消してダッシュボードへ戻す |
 | `buddy_chat_info` | パネルが選んだフォントと行数・幅 |
 | `buddy_events` | 前回の呼び出し以降にデバイスが発した全て (protocol + ログ) |
+| `buddy_chatter_start` / `_stop` / `_status` | 作業中の独り言 (下記) の開始・停止・様子見 |
 
 `buddy_say` は分割したパートの間に既定で 2 秒空ける (`pace`)。画面は末尾 4 行しか映らないので、
 まとめて送ると読む前に流れていく。誰も見ていないなら `pace=0` でよい。
@@ -139,6 +140,43 @@ REPL を要求するもの (`buddy_deploy.py`、`provision_wifi.py`、`buddy_bri
 
 `ResidentLink` がバックグラウンドスレッドでポートを読み続けるため、ツール呼び出しの合間に
 届いたメッセージも `buddy_events` で回収できる。
+
+### 作業中に喋らせる (chatter)
+
+Claude Code が作業している間、デバイスが勝手に独り言を言う。dog fooding のための機能で、
+音声経路を「思い出したときに呼ぶ」から「常時使われる」に変えるのが目的。
+
+```
+Claude Code hooks ─datagram─> tmp/buddy-chatter.sock ─> MCP server の worker thread
+                                                          └─ 台詞を生成してキャッシュ
+                                                          └─ ResidentLink で発話
+```
+
+**タスクを一切ブロックしない。** hook は `.claude/hooks/buddy_chatter_notify.py` が
+datagram を 1 発投げて終わり (約 40ms、listener が居なくても exit 0)。合成と再生は
+MCP server 側のスレッドが自分の時間でやる。そのスレッドはデバイスのロックを
+`blocking=False` でしか取らないので、本物のツール呼び出しを待たせることが無い。
+
+**間隔は毎回引き直す。** 固定間隔はメトロノームに聞こえて数分で気に障るため。
+
+`buddy_start_app` か `buddy_connect` でリンクが上がるまでは何も喋らない。chatter が
+自分からポートを開けることは無い (`buddy_deploy.py` や `esptool` のため)。
+
+**喋る内容を変えたいときは `host/mcp/src/chatter_prompt.md` を直す。** コードは触らなくてよい。
+
+間隔・音量の頻度・無効化といった調整は環境変数と `buddy_chatter_start` で行う。一覧は
+`.claude/skills/buddy-chatter/SKILL.md` にある。
+
+MCP server はセッション開始時にホストのコードを import 済みなので、`buddy_chatter.py` を
+直しても走っているサーバには届かない。単体プロセスで動かす口がある。
+
+```bash
+uv run python host/mcp/src/buddy_chatter.py --port $PORT --once   # 1 行喋って終わる
+uv run python host/mcp/src/buddy_chatter.py --port $PORT          # 常駐する
+```
+
+こちらはポートを自分で掴む。**先に `buddy_disconnect` を呼ぶこと。** 走っている間は MCP の
+`buddy_*` からデバイスに触れない。
 
 ## 品質チェック
 
