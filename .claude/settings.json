@@ -1,0 +1,28 @@
+{
+  "enabledPlugins": {
+    "cwc-makers@claude-plugins-official": true
+  },
+  "permissions": {
+    "allow": [
+      "Bash(/Users/masaru_uchida/src/github.com/usadamasa/m5stack-sandbox/tmp/m5venv/bin/python:*)"
+    ]
+  },
+  "sandbox": {
+    "excludedCommands": [
+      "/Users/masaru_uchida/src/github.com/usadamasa/m5stack-sandbox/tmp/m5venv/bin/python *"
+    ],
+    "filesystem": {
+      "allowWrite": [
+        "/dev/cu.usbmodem*",
+        "/dev/tty.usbmodem*",
+        "~/.cache/m5-onboard"
+      ]
+    },
+    "network": {
+      "allowedDomains": [
+        "m5burner-api.m5stack.com",
+        "m5burner.m5stack.com"
+      ]
+    }
+  }
+}
