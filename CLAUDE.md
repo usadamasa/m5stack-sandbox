@@ -3,6 +3,11 @@
 M5Stack Cardputer-Adv を USB シリアル経由で Claude Code から操作する実験リポジトリ。
 経緯と設計判断は [README.md](README.md) にある。
 
+## 言語
+
+これから書くコメント・docstring、コミットメッセージ、PR の本文は日本語 (標準語) で書く。
+既存の英語コメントは触らない。当面は混在する。
+
 ## コマンド
 
 ```bash
