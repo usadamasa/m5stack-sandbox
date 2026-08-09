@@ -22,13 +22,15 @@ services:
       - "50021:50021"
     restart: unless-stopped
     healthcheck:
-      # The image has no curl, but it does have the Python the engine
-      # itself runs on.
+      # curl is installed in the image (ubuntu:24.04 + "apt-get install
+      # curl gosu"). There is no "python" on PATH: the engine ships as a
+      # PyInstaller bundle at /opt/voicevox_engine/run with the
+      # interpreter embedded, so the Python it runs on is not callable.
       test:
         - CMD
-        - python
-        - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:50021/version')"
+        - curl
+        - -fsS
+        - http://127.0.0.1:50021/version
       interval: 10s
       timeout: 5s
       retries: 6
