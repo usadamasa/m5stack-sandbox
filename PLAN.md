@@ -87,8 +87,10 @@ transport を替えても自動では開かない。本 PLAN のスコープ外�
       デバイス発のメッセージを取りこぼさない仕組みが要る
 - [x] 偽シリアルによる `ResidentLink` の単体テスト (9 件)
 - [x] `host/buddy_mcp.py` (8 tools) と `.mcp.json` を追加
-- [ ] **セッション再起動後、`probe_serial` で `tcsetattr` が通るか実測する**
-  - 通れば前提どおり。`EPERM` なら Bash 常駐ブリッジ + JSONL ファイル経由に切り替える
+- [x] **セッション再起動後、`probe_serial` で `tcsetattr` が通るか実測する**
+  - 通った。Claude Code が spawn した MCP server は sandbox の外で動いており、
+    `open` / `tcgetattr` / `tcsetattr` の全てが成功する。代替案 (Bash 常駐ブリッジ +
+    JSONL ファイル経由) は不要
 
 MCP SDK は v2.0.0 を使う。`mcp.server.fastmcp` は廃止されており、`MCPServer` を
 `mcp.server.mcpserver` から import して `server.run("stdio")` で起動する。同期関数の
@@ -122,6 +124,41 @@ import claude_buddy   # 例外がそのまま上がってくる
 `machine` は frozen module なので `machine.reset = ...` は `AttributeError` になる。
 `sys.modules` への差し込みが要る。
 
+### paste mode の 0x04 が次のフレームを 1 通だけ食う
+
+`start_app` の最後に送る `\x04` には改行が付かない。デバイスの `_rx_buf` に未確定の
+まま残り、次に届く protocol 行の先頭に連結される:
+
+```
+\x04\x1eBUDDY1 {"cmd":"status"}\n
+```
+
+`_handle_line` は `line.startswith(_SENTINEL)` で判定していたため、この 1 バイトで
+False になり**黙って捨てられる**。症状は「アプリ起動は成功したのに直後の 1 リクエスト
+だけタイムアウトし、2 回目以降は通る」。前セッションはこれをデバイスの不調と読み違えた。
+
+切り分けを誤らせた要因が 2 つある:
+
+- 生の serial に `\r\n` や `print()` を投げても 0 バイトしか返らないのは**正常**。
+  sentinel の無い行は仕様として drop され、`send_line` はハンドシェイク前は
+  何も書かない (`_host_seen` が False)。無応答を故障の証拠にしてはいけない
+- MCP server はセッション開始時に `buddy_bridge.py` を import 済みなので、
+  ホスト側を修正しても走っているプロセスには反映されない。MCP 経由で試すと
+  直っていないように見える。実機検証は `ResidentLink` を直接使う別プロセスで行うか、
+  セッションを再起動する
+
+修正は両側に入れた。host は `\x04` の後に改行を送り (根本原因)、device は sentinel を
+`find` で探して前置ゴミを吸収する (REPL エコーやリセット時の部分行にも効く保険)。
+
+### 起動経路によって name / owner が既定値になる
+
+REPL から `import claude_buddy` で直接起動した直後の status は
+`name="Buddy"` / `owner=""` を返した。`main.py` 経由の自動起動 (NVS `boot_option=2`)
+では `name="Mikawa"` / `owner="usadamasa"` が出ている。NVS の値を読んで渡しているのが
+`main.py` 側なのか別の理由なのかは未調査だが、`start_app` で起動した直後の
+name / owner を「デバイスの永続設定」と読むと誤る。`buddy_set_name` /
+`buddy_set_owner` で設定し直せば NVS に書かれる。
+
 ### バッファされたログは時系列を潰す
 
 `buddy_serial: down` を起動直後の出力だと読み違えて、原因をアプリ起動時だと誤断した。
@@ -132,4 +169,12 @@ import claude_buddy   # 例外がそのまま上がってくる
 
 - `tcsetattr` は `sandbox.excludedCommands` により Bash 経由で通る (本セッションで実測)
 - REPL ラウンドトリップは成立する (MicroPython 1.27.0 / M5STACK_CardputerADV で実測)
-- MCP が sandbox 外であることは**ドキュメントからの推論のみ**。Phase 3 で実測する
+- MCP server プロセスは sandbox の外で動く (`probe_serial` で実測):
+
+  ```json
+  {"port": "/dev/cu.usbmodem101", "open": true,
+   "tcgetattr": true, "tcsetattr": true}
+  ```
+
+  Bash から起動した server では検証にならない。`excludedCommands` の venv python の
+  子プロセスになるため、Claude Code が spawn した場合と経路が異なる

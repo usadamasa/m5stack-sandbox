@@ -21,8 +21,13 @@ with a sentinel (``_SENTINEL``) that plain logging never emits: 0x1E
 (ASCII Record Separator) followed by a version tag. The host filters on
 the prefix and passes everything else through as log output.
 
-Inbound uses the same framing. Anything without the sentinel is a human
-at the REPL or leftover noise, and is dropped silently.
+Inbound uses the same framing, but is matched leniently: the sentinel
+may appear anywhere on the line, not just at the start. A fragment left
+unterminated in the rx buffer — the bare 0x04 that ends a paste-mode
+launch, a REPL echo, half a line from before a reset — otherwise lands
+in front of the next frame and would cost us a message. A line with no
+sentinel at all is a human at the REPL or leftover noise, and is
+dropped silently.
 
 ### Ctrl-C
 
@@ -206,10 +211,17 @@ class BuddySerial:
 
     def _handle_line(self, line):
         line = line.rstrip(b"\r")
-        if not line.startswith(_SENTINEL):
+        # Search rather than match the prefix: an unterminated fragment
+        # left in the rx buffer — a paste-mode 0x04, a REPL echo, half a
+        # line from before a reset — ends up in front of the sentinel and
+        # would otherwise make us drop a perfectly good frame. 0x1E is
+        # not something print()-style logging emits, so finding the
+        # sentinel anywhere on the line is still unambiguous.
+        idx = line.find(_SENTINEL)
+        if idx < 0:
             # REPL noise or a stray log echo. Not ours.
             return
-        payload = line[len(_SENTINEL) :]
+        payload = line[idx + len(_SENTINEL) :]
         if not payload:
             return
         self._last_rx_ms = time.ticks_ms()

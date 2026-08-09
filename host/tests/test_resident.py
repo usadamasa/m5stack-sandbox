@@ -153,6 +153,26 @@ class ResidentLinkTest(unittest.TestCase):
         self.assertTrue(self.fake.closed)
         self.assertFalse(self.link.connected)
 
+    def test_start_app_terminates_its_last_line(self):
+        # The paste-mode terminator (0x04) carries no newline of its own.
+        # Left unterminated it sits in the device's rx buffer and gets
+        # prepended to the next frame, whose sentinel then no longer
+        # starts the line — the device drops it silently and the first
+        # request after a launch times out.
+        self.link.start_app(settle=0.0)
+        self.assertTrue(
+            self.fake.written().endswith(b"\n"),
+            "start_app must leave the device's line buffer empty",
+        )
+
+    def test_first_frame_after_start_app_starts_the_line(self):
+        # The property the device actually checks: once start_app is
+        # done, a subsequent frame must be the first thing on its line.
+        self.link.start_app(settle=0.0)
+        self.link.send({"cmd": "status"})
+        last_line = self.fake.written().split(b"\n")[-2] + b"\n"
+        self.assertEqual(last_line, encode({"cmd": "status"}))
+
 
 if __name__ == "__main__":
     unittest.main()

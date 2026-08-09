@@ -157,6 +157,9 @@ class BuddyLink:
             s.write(line.encode("utf-8") + b"\r\n")
             time.sleep(0.005)
         s.write(b"\x04")
+        # See ResidentLink.start_app: the paste-mode terminator needs a
+        # newline behind it or it corrupts the next frame.
+        s.write(b"\r\n")
 
         # Paste mode echoes what we just sent, so some of what follows is
         # our own input coming back. Keep it anyway: a startup traceback
@@ -389,6 +392,13 @@ class ResidentLink:
                 self._ser.write(line.encode("utf-8") + b"\r\n")
                 time.sleep(0.005)
             self._ser.write(b"\x04")
+            # Terminate the line. 0x04 carries no newline, so without
+            # this it sits unconsumed in the device's rx buffer and gets
+            # prepended to the next frame — whose sentinel is then not at
+            # the start of the line, so the transport drops it. The
+            # symptom is a launch that looks fine followed by exactly one
+            # timed-out request.
+            self._ser.write(b"\r\n")
             self._ser.flush()
         time.sleep(settle)
 
