@@ -82,9 +82,18 @@ transport を替えても自動では開かない。本 PLAN のスコープ外�
 
 ### Phase 3 — MCP server 化
 
-- [ ] `host/buddy_mcp.py` と `.mcp.json` を追加
-- [ ] セッション再起動後、MCP からポートを開いて `tcsetattr` が通るか実測する
+- [x] `host/buddy_bridge.py` に `ResidentLink` を追加 (読み取り専用スレッド + バッファ)
+      — MCP server は個々のツール呼び出しより長生きするため、呼び出しの合間に届く
+      デバイス発のメッセージを取りこぼさない仕組みが要る
+- [x] 偽シリアルによる `ResidentLink` の単体テスト (9 件)
+- [x] `host/buddy_mcp.py` (8 tools) と `.mcp.json` を追加
+- [ ] **セッション再起動後、`probe_serial` で `tcsetattr` が通るか実測する**
   - 通れば前提どおり。`EPERM` なら Bash 常駐ブリッジ + JSONL ファイル経由に切り替える
+
+MCP SDK は v2.0.0 を使う。`mcp.server.fastmcp` は廃止されており、`MCPServer` を
+`mcp.server.mcpserver` から import して `server.run("stdio")` で起動する。同期関数の
+tool は `anyio.to_thread.run_sync` 経由で呼ばれる (`func_metadata.py:108`) ため、
+ブロッキング I/O をそのまま書いてよい。
 
 ## 実装中に踏んだ罠
 
