@@ -1,53 +1,39 @@
-[project]
-name = "m5stack-sandbox"
-version = "0.1.0"
-description = "Drive an M5Stack Cardputer-Adv from Claude Code over the USB serial console."
-requires-python = ">=3.13"
+# uv workspace のルート。パッケージではなく、member の列挙と共通のツール設定だけ。
+# 分離の効き方は CLAUDE.md の「構成」にある。
 
-# Host-side runtime only. Nothing here reaches the device: device/ runs on
-# MicroPython, whose modules ship with the firmware.
-dependencies = [
-    "mcp==2.0.0",
-    "pyserial==3.5",
+[tool.uv.workspace]
+members = [
+    "device",
+    "host/link",
+    "host/mcp",
+    "host/tools",
 ]
 
+# ツール本体はここに集約する。venv は 1 つなので member ごとに書いても
+# 1 バージョンにしかならず、書き分けられるように見せる方が害が大きい。
+# member が宣言するのは、その member のコードが必要とするものだけ。
 [dependency-groups]
 dev = [
     "basedpyright>=1.31.0",
-    # MicroPython's own remote-control tool. Used as a library, not a CLI:
-    # `mpremote.transport_serial.SerialTransport` is the raw-paste REPL
-    # transport that host/buddy_deploy.py drives. Development-time only —
-    # nothing at runtime pushes files.
-    "mpremote>=1.28.0",
-    # The MicroPython cross-compiler, driven by host/buddy_deploy.py.
-    # Pinned exactly, not floated: bytecode is only portable within one
-    # .mpy ABI, and the board runs MicroPython 1.27, which loads v6.
-    # A newer mpy-cross would build modules the firmware refuses to
-    # import, and the only symptom is an ImportError on the device.
-    "mpy-cross==1.27.0.post2",
     "pytest>=8.4.0",
     "pytest-cov>=6.2.0",
     "ruff>=0.14.0",
-    "types-pyserial>=3.5.0.20250822",
 ]
-# Only needed to reflash firmware, which is a provisioning task rather than a
-# development one. Install with `uv sync --group flash`.
-flash = [
-    "esptool==5.3.1",
-]
-
-[tool.uv]
-# Scripts and a device overlay, not an installable distribution.
-package = false
 
 # ---------------------------------------------------------------- ruff
 
+# ruff の設定は継承ではなく置換される。member 側で `[tool.ruff]` を開くと
+# ここの `select` は消えて既定値に戻るので、member には
+# `extend = "../../pyproject.toml"` を書いて差分だけを載せること。
+
 [tool.ruff]
 line-length = 100
-# host/ target. device/ is MicroPython and gets the modernisation rules
-# switched off below rather than a separate ruff invocation.
 target-version = "py313"
-extend-exclude = ["tmp"]
+# vendor/ はデバイスから吸い出した upstream ソースで、`.gitignore` に入って
+# いるぶん普段は勝手に外れている。それでも明示するのは、パスを直接渡すと
+# ruff が gitignore を無視して整形しにくるため。あれは再配布しない代わりに
+# ホスト側で唯一の控えなので、書き換えてはいけない。
+extend-exclude = ["tmp", "vendor"]
 
 [tool.ruff.lint]
 select = [
@@ -62,18 +48,6 @@ select = [
     "UP",  # pyupgrade
     "W",
 ]
-
-[tool.ruff.lint.per-file-ignores]
-# MicroPython is not CPython 3.13. pyupgrade would happily rewrite this code
-# into syntax the device cannot parse, full annotation coverage is not
-# reachable without `typing` (see test_device_constraints.py),
-# `contextlib` is not in the firmware at all so SIM105 has no fix available,
-# and there is no exception chaining, which leaves B904 with nothing to
-# suggest — test_device_constraints.py enforces its absence instead.
-"device/**/*.py" = ["ANN", "UP", "SIM105", "B904"]
-# Derived from upstream (see NOTICE). Imports sit below a sys.path fixup by
-# necessity, and holding the order to upstream's keeps the diff readable.
-"device/apps/*.py" = ["ANN", "UP", "SIM105", "E402", "I001"]
 
 [tool.ruff.lint.isort]
 known-first-party = [
@@ -90,62 +64,7 @@ known-first-party = [
     "provision_wifi",
 ]
 
-[tool.ruff.format]
-# Left byte-identical to upstream apart from the transport hook, so that a
-# diff against the clone still shows only the intentional change.
-exclude = ["device/apps/*.py"]
-
-# ---------------------------------------------------------- basedpyright
-
-[tool.basedpyright]
-pythonVersion = "3.13"
-include = ["host", "device"]
-exclude = ["**/__pycache__", ".venv", "tmp"]
-# The two trees are flat module namespaces pushed onto sys.path rather than
-# packages, so the checker needs the same search path the runtime gets.
-extraPaths = ["host", "device"]
-typeCheckingMode = "standard"
-
-[[tool.basedpyright.executionEnvironments]]
-# device/ imports firmware-provided modules (M5, hardware, micropython) and
-# upstream peers that live on the device's flash, none of which exist here.
-# Their absence is the expected state, not a finding.
-root = "device"
-reportMissingImports = "none"
-reportMissingModuleSource = "none"
-reportAttributeAccessIssue = "none"
-
-[[tool.basedpyright.executionEnvironments]]
-root = "host"
-
-# ---------------------------------------------------------------- pytest
-
-[tool.pytest.ini_options]
-testpaths = ["host/tests"]
-# Replaces the sys.path.insert prologue the tests used to carry.
-pythonpath = ["host", "device"]
-addopts = "--strict-markers --strict-config"
-
-# -------------------------------------------------------------- coverage
-
-[tool.coverage.run]
-branch = true
-source = ["host", "device"]
-omit = [
-    # Calls run() at import time and needs M5 hardware modules; importing it
-    # here would launch the app, not measure it.
-    "device/apps/*",
-    "host/tests/*",
-]
-
-[tool.coverage.report]
-show_missing = true
-skip_covered = false
-# A regression bar, not a target. Everything that needs a serial port
-# attached is out of reach here, so the ceiling is well under 100%.
-fail_under = 55
-exclude_also = [
-    "if __name__ == .__main__.:",
-    "if TYPE_CHECKING:",
-    "raise NotImplementedError",
-]
+# ルートはテストも型検査の対象も持たない。pytest と basedpyright は
+# member ごとに回す (`uv run --directory host/link pytest` のように)。
+# ruff だけはここから 1 回で足りる — 上に書いたとおり、member の設定は
+# ruff 自身が階層で拾う。

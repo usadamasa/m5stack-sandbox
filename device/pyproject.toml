@@ -1,0 +1,96 @@
+# デバイスの上で動くコード。MicroPython 1.27 (ESP32-S3) 用の distribution では
+# ないので package = false。ディレクトリの形はデバイスの /flash/ をそのまま写す。
+# 転送のしかたは CLAUDE.md の「デバイスへ載るのは .mpy」にある。
+
+[project]
+name = "buddy-device"
+version = "0.1.0"
+description = "Device-side app, transport, chat panel and speech for the Cardputer-Adv."
+requires-python = ">=3.13"
+# 実行時の依存は無い。デバイスが使うモジュールはファームウェアが持っている。
+dependencies = []
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+# tests/test_chat.py と tests/test_speak.py がホスト側の定数と突き合わせる
+# 契約テストなので、テストだけがホストを要る。
+dev = ["buddy-host-link"]
+
+[tool.uv.sources]
+buddy-host-link = { workspace = true }
+
+# ---------------------------------------------------------------- ruff
+
+[tool.ruff]
+extend = "../pyproject.toml"
+
+# MicroPython is not CPython 3.13. pyupgrade would happily rewrite this code
+# into syntax the device cannot parse, full annotation coverage is not
+# reachable without `typing` (see tests/test_device_constraints.py),
+# `contextlib` is not in the firmware at all so SIM105 has no fix available,
+# and there is no exception chaining, which leaves B904 with nothing to
+# suggest — test_device_constraints.py enforces its absence instead.
+#
+# tests/ には掛からない。あちらは CPython で走るテストコードなので、
+# tests/ruff.toml がルートの設定へ戻している。
+[tool.ruff.lint]
+ignore = ["ANN", "UP", "SIM105", "B904"]
+
+[tool.ruff.lint.per-file-ignores]
+# Derived from upstream (see NOTICE). Imports sit below a sys.path fixup by
+# necessity, and holding the order to upstream's keeps the diff readable.
+"apps/*.py" = ["E402", "I001"]
+
+[tool.ruff.format]
+# Left byte-identical to upstream apart from the transport hook, so that a
+# diff against the clone still shows only the intentional change.
+exclude = ["apps/*.py"]
+
+# ---------------------------------------------------------------- pytest
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# package = false なので editable install が無い。テストから見えるように
+# ここを sys.path に入れる。
+pythonpath = ["."]
+addopts = "--strict-markers --strict-config"
+
+# ---------------------------------------------------------- basedpyright
+
+[tool.basedpyright]
+pythonVersion = "3.13"
+include = ["."]
+exclude = ["**/__pycache__"]
+extraPaths = ["."]
+typeCheckingMode = "standard"
+# device/ imports firmware-provided modules (M5, hardware, micropython) and
+# upstream peers that live on the device's flash, none of which exist here.
+# Their absence is the expected state, not a finding.
+reportMissingImports = "none"
+reportMissingModuleSource = "none"
+reportAttributeAccessIssue = "none"
+
+# -------------------------------------------------------------- coverage
+
+[tool.coverage.run]
+branch = true
+source = ["."]
+omit = [
+    # Calls run() at import time and needs M5 hardware modules; importing it
+    # here would launch the app, not measure it.
+    "apps/*",
+    "tests/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+# 目標ではなく回帰バー。実測 78%。
+fail_under = 75
+exclude_also = [
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

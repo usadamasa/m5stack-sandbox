@@ -1,0 +1,72 @@
+# 実機を仕込むためのツール群。デプロイ (buddy_deploy)、WiFi の焼き込み
+# (provision_wifi)、実測の採取 (probe_device)、ファームウェア取得
+# (fetch_firmware)。どれも人が明示的に走らせるもので、MCP server の経路には
+# 乗らない。mpy-cross がここにしか無いのはそのため。
+
+[project]
+name = "buddy-host-tools"
+version = "0.1.0"
+description = "Deploy, provisioning and probing tools for the Cardputer-Adv."
+requires-python = ">=3.13"
+dependencies = [
+    "buddy-host-link",
+    # The MicroPython cross-compiler, driven by buddy_deploy.py.
+    # Pinned exactly, not floated: bytecode is only portable within one
+    # .mpy ABI, and the board runs MicroPython 1.27, which loads v6.
+    # A newer mpy-cross would build modules the firmware refuses to
+    # import, and the only symptom is an ImportError on the device.
+    "mpy-cross==1.27.0.post2",
+]
+
+[tool.uv.sources]
+buddy-host-link = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+sources = ["src"]
+only-include = ["src"]
+
+[dependency-groups]
+# Only needed to reflash firmware, which is a provisioning task rather than a
+# development one. Install with `uv sync --package buddy-host-tools --group flash`.
+flash = ["esptool==5.3.1"]
+
+# ---------------------------------------------------------------- ruff
+
+[tool.ruff]
+extend = "../../pyproject.toml"
+
+# ---------------------------------------------------------------- pytest
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers --strict-config"
+
+# ---------------------------------------------------------- basedpyright
+
+[tool.basedpyright]
+pythonVersion = "3.13"
+include = ["src", "tests"]
+exclude = ["**/__pycache__"]
+extraPaths = ["src"]
+typeCheckingMode = "standard"
+
+# -------------------------------------------------------------- coverage
+
+[tool.coverage.run]
+branch = true
+source = ["src"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+# 目標ではなく回帰バー。実測 75%。
+fail_under = 72
+exclude_also = [
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

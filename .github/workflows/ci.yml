@@ -4,6 +4,10 @@ name: CI
 # checked too: its framing logic and its MicroPython constraints are both
 # exercised on CPython, which is the point — those are the failures that
 # would otherwise only surface on the bench.
+#
+# uv workspace なので pytest と basedpyright は member ごとに回す。どちらも
+# 1 プロセス 1 プロジェクトで、member の設定を読むにはそこで動かすしかない。
+# ruff だけはルートから 1 回で足りる — member の設定は ruff 自身が階層で拾う。
 
 on:
   push:
@@ -28,19 +32,24 @@ jobs:
       # --locked fails rather than silently re-resolving, so a
       # pyproject.toml edit that never made it into uv.lock is caught
       # here instead of drifting.
-      - run: uv sync --locked
+      - run: uv sync --locked --all-packages
       - run: uv run ruff check --output-format=github
       - run: uv run ruff format --check
 
   typecheck:
     runs-on: ubuntu-latest
+    strategy:
+      # 1 つの member が落ちても残りの結果は見たい。
+      fail-fast: false
+      matrix:
+        member: [device, host/link, host/mcp, host/tools]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
-      - run: uv sync --locked
-      - run: uv run basedpyright
+      - run: uv sync --locked --all-packages
+      - run: uv run --directory ${{ matrix.member }} basedpyright
 
   # The device runs bytecode, so CPython accepting device/ is not enough:
   # MicroPython's own parser has to accept it too, and it is a different
@@ -54,21 +63,51 @@ jobs:
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
-      - run: uv sync --locked
-      - run: uv run python host/buddy_deploy.py --compile-only
+      - run: uv sync --locked --all-packages
+      - run: uv run python host/tools/src/buddy_deploy.py --compile-only
 
   test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        member: [device, host/link, host/mcp, host/tools]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked --all-packages
+      - run: uv run --directory ${{ matrix.member }} pytest --cov --cov-report=term-missing
+      - name: Coverage summary
+        if: always()
+        run: |
+          printf '### %s\n\n' '${{ matrix.member }}' >> "$GITHUB_STEP_SUMMARY"
+          uv run --directory ${{ matrix.member }} coverage report --format=markdown \
+            >> "$GITHUB_STEP_SUMMARY"
+
+  # workspace を分けた意味がここで回帰する。member 単体で sync したときに
+  # 他 member の依存が漏れて入っていないこと、そしてそれで足りることを見る。
+  # MCP server は Claude Code が起動のたびに走らせる経路で、デプロイ用の
+  # mpy-cross も esptool も要らない。
+  isolation:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
-      - run: uv sync --locked
-      - run: uv run pytest --cov --cov-report=term-missing --cov-report=xml
-      - name: Coverage summary
-        if: always()
-        run: uv run coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+      - run: uv sync --locked --package buddy-host-mcp
+      - name: The MCP server imports without the deploy toolchain
+        run: |
+          uv run --no-sync python - <<'PY'
+          import importlib.util as u
+
+          import buddy_mcp  # noqa: F401
+
+          for name in ("mpy_cross", "esptool"):
+              assert u.find_spec(name) is None, f"{name} leaked into the mcp environment"
+          PY
 
   # The single required status check. Branch protection points at this
   # job and nothing else, so adding or renaming a job above only means
@@ -81,7 +120,7 @@ jobs:
   # condition and the job fails on purpose.
   ci-status-check:
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, mpy-build, test]
+    needs: [lint, typecheck, mpy-build, test, isolation]
     permissions: {}
     if: failure() || cancelled()
     steps:

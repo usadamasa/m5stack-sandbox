@@ -15,7 +15,7 @@ import ast
 import unittest
 from pathlib import Path
 
-DEVICE_ROOT = Path(__file__).resolve().parents[2] / "device"
+DEVICE_ROOT = Path(__file__).resolve().parents[1]
 
 # Available on MicroPython without an import, and safe to name in an
 # annotation. Anything richer belongs in a `# type:` comment, which the
@@ -40,7 +40,9 @@ BANNED_IMPORTS = frozenset({"__future__", "typing", "typing_extensions"})
 
 
 def device_sources() -> list[Path]:
-    return sorted(DEVICE_ROOT.rglob("*.py"))
+    # tests/ は除く。デバイスへは載らず CPython で走るテストコードで、
+    # ここで禁じている `typing` などをむしろ使う。
+    return sorted(p for p in DEVICE_ROOT.rglob("*.py") if "tests" not in p.parts)
 
 
 class DeviceSourceTest(unittest.TestCase):
