@@ -22,9 +22,11 @@ PORT=/dev/cu.usbmodem101
 uv run python host/buddy_push.py --port $PORT              # overlay を転送
 uv run python host/buddy_bridge.py --port $PORT --status   # 単発で叩く
 
-export BUDDY_WIFI_PSK=...                                  # 声を出すなら
-uv run python host/buddy_bridge.py --port $PORT \
-  --wifi <SSID> --speak 'ずんだもんなのだ'
+# 声を出すなら、一度だけ WiFi を焼く (以降ブートごとの操作は不要)
+export BUDDY_WIFI_PSK=...
+uv run python host/provision_wifi.py --port $PORT --ssid <SSID> --verify
+
+uv run python host/buddy_bridge.py --port $PORT --speak 'ずんだもんなのだ'
 ```
 
 `sandbox` は loopback 宛でも `curl` を拒否する。エンジンの疎通確認は `uv run` 経由の
@@ -43,13 +45,14 @@ Seatbelt はこれを拒否する。グローバル設定の `sandbox.excludedCo
 | `device/buddy_serial.py` | デバイス側のシリアル transport (`BuddyBLE` を duck-typing) |
 | `device/buddy_chat.py` | LCD 上のチャットパネル。`chat.*` コマンドを処理する |
 | `device/buddy_speak.py` | VOICEVOX の WAV ストリームをブロックに割って `M5.Speaker` へ流す。`speak.*` |
-| `device/buddy_tts.py` | WiFi 接続と VOICEVOX の呼び出し。`net.*` |
-| `device/apps/claude_buddy.py` | upstream 派生。差分は transport 選択と chat / speak / net のルーティング |
+| `device/buddy_tts.py` | VOICEVOX の呼び出しと WAV ヘッダの解析。WiFi は扱わない |
+| `device/apps/claude_buddy.py` | upstream 派生。差分は transport 選択と chat / speak のルーティング |
 | `host/buddy_bridge.py` | ホスト側クライアント。`BuddyLink` (単発) と `ResidentLink` (常駐) |
 | `compose.yaml` | VOICEVOX ENGINE。`docker compose up -d` |
 | `host/buddy_mcp.py` | MCP server |
 | `host/device_repl.py` | `mpremote` の SerialTransport を掴むところ。BtnRST 待ちのループもここ |
 | `host/buddy_push.py` | overlay を `/flash/` へ転送。転送そのものは `mpremote` |
+| `host/provision_wifi.py` | `/flash/wifi_event.py` の SSID/PASSWORD を書き換える。一度だけ |
 | `host/probe_device.py` | 実機のフォント一覧・実測メトリクス・Speaker API を取る (read-only、JSON) |
 | `host/fetch_firmware.py` | UIFlow 2.0 ファームウェアの取得 (Range レジューム付き) |
 | `host/tests/` | 全て実機不要 |
@@ -133,14 +136,47 @@ GIL 付きなので逃げ場がない。再生が始まってからは 1 tick 1 
 
 ### WiFi
 
-**認証情報はホストから `net.config` で渡す。** デバイスに使えるものが無いため:
+**デバイスもホストも、実行時には WiFi を一切扱わない。** `/flash/main.py` がブート時に
+`/flash/wifi_event.py` の認証情報で接続し、アプリはその link を継承するだけ。
+認証情報は `host/provision_wifi.py` が一度だけ書き込む。
 
-- NVS の `uiflow` / `wifi` / `system` はいずれも `ESP_ERR_NVS_NOT_FOUND`
-- `/flash/wifi_event.py` にハードコードされている SSID はイベント会場の AP
+なぜアプリ側で繋げないか (実測):
+
+- アプリ稼働中の `connect()` は受理されるが association が完了しない。15 秒後も
+  `status()` は "connecting"。ランチャーだけ載った状態で ESP-IDF heap の最大領域が
+  ~12 KB しかなく、link を上げるのに DRAM が足りない
+- したがって radio はアプリ起動前に上がっている必要がある。**アプリは link を継承できるが、
+  作れない**
+
+なぜ NVS ではなく `wifi_event.py` か (実測):
+
+- UIFlow の startup は `uiflow/ssid0` / `uiflow/pswd0` を読む。キーは**存在する**が空文字
+  (以前ここに「`ESP_ERR_NVS_NOT_FOUND`」と書いてあったのは誤り。`get_blob` で読んでいた
+  ための空振り。実際は `get_str`)
+- ただし `uiflow/boot_option` が **2** ("user app mode") で、UIFlow のフレームワーク自体を
+  迂回して `/flash/main.py` を直接走らせている。**NVS を読む経路が通らない**
+- `/flash/wifi_event.py` の docstring 自身が「他所で使うなら SSID / PASSWORD を
+  差し替えろ」と案内している。想定された拡張点
+
+`/flash/wifi_event.py` に元から焼かれている `cardputer` / `cardconnect` は M5Stack の
+展示会場の AP で、会場で配られる公開パスワード。ファイル冒頭にそう明記されている。
+
+**代償**: PSK が `/flash/wifi_event.py` に平文で残る。またブート時から radio が上がる分、
+アプリが読み込まれる時点の空き heap が **41040** まで落ちる (WiFi 無しの頃は 61248)。
 
 `claude_buddy.py` は起動時に WiFi を落とすが、**BLE transport のときだけ**。ESP32 の
 WiFi/BLE 共存クラッシュ回避が目的で、serial では NimBLE を触らないので不要。むしろ
 speech が radio を使う。
+
+### provisioning の手順で踏んだこと
+
+- **reset 直後に REPL を掴みに行ってはいけない。** `machine.reset()` の直後から poll すると
+  90 秒経っても raw REPL に入れない。25 秒待ってから 1 回試すと 0.1 秒で入る。ブート中の
+  ハンドシェイク試行がデバイスを戻らなくするらしい。`_SETTLE_S` はこれ
+- **reset 後の `repl.close()` は必ず失敗する。** mpremote が RTS を落としに行き、消えた
+  デバイスの fd に ioctl して `OSError: [Errno 6] Device not configured`。異常ではない
+- `main.py` が動いている間でも BtnRST 無しで raw REPL に入れる (落ち着いた後なら 0.1 秒)。
+  そこで割り込んでも既に完了した association は落ちない
 
 ## device/ は MicroPython
 
@@ -213,7 +249,11 @@ raw-paste は自分の terminator を ack してから実行に入るので、�
 - **MCP server はセッション開始時に host のコードを import 済み。** `buddy_bridge.py` を
   直しても走っているサーバには反映されない。実機検証は `uv run` の別プロセスで行うか、
   セッションを再起動する
-- **WiFi は毎ブート設定し直す。** `net.config` の結果はどこにも保存されない
+- **WiFi は provisioning 済みなら何もしなくてよい。** 繋がらないときは
+  `host/provision_wifi.py --verify` が どの層で切れているかを言う
+- **アプリを起動し直すには実際に reboot する。** REPL から re-import すると
+  `MemoryError: memory allocation failed` で落ちる。`enter_raw_repl(soft_reset=False)` を
+  使っているため前のインスタンスが residual に残る
 - `.mcp.json` と `.claude/settings.json` は絶対パスを持つ。別マシンでは書き換えが要る
 
 ## クレジット

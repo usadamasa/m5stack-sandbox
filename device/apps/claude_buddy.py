@@ -77,7 +77,6 @@ import buddy_chat
 import buddy_speak
 import buddy_protocol
 import buddy_state
-import buddy_tts
 import buddy_ui_cp as buddy_ui
 
 
@@ -104,11 +103,11 @@ _TRANSPORT = "serial"
 # pay for a second JSON parse — see buddy_chat.py for the commands.
 _CHAT_TAG = b'"chat.'
 _SPEAK_TAG = b'"speak.'
-# net.config carries the WiFi credentials the speech path needs. They
-# come over the cable rather than from flash because this device has
-# nothing usable stored: its NVS keys are empty and the only SSID in
-# the bundle belongs to an event venue (see /flash/wifi_event.py).
-_NET_TAG = b'"net.'
+# There is deliberately no net.* verb. main.py connects at boot from the
+# credentials in wifi_event.py (written by host/provision_wifi.py), and
+# this app inherits that link. `connect()` from in here is accepted and
+# never completes — the ESP-IDF heap is down to ~12 KB in its largest
+# region by the time we run — so nothing here touches `network`.
 
 
 def _make_transport(**kw):
@@ -279,15 +278,6 @@ def run():
             if ack is not None:
                 ble.send_line(json.dumps(ack, separators=(",", ":")).encode("utf-8"))
                 chat_dirty[0] = True
-                return
-        # Answers synchronously, and takes seconds doing it: the
-        # handler associates with an AP while the caller waits. There
-        # is nothing to defer it to — the host cannot send speak.say
-        # until this has come back.
-        if _NET_TAG in raw and ble is not None:
-            ack = buddy_tts.handle_net_raw(raw)
-            if ack is not None:
-                ble.send_line(json.dumps(ack, separators=(",", ":")).encode("utf-8"))
                 return
         # speak.say fetches the audio from the engine before it answers,
         # which blocks this loop for the length of synthesis. It has to

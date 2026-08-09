@@ -40,7 +40,6 @@ from buddy_bridge import (
     DEFAULT_RATE,
     ZUNDAMON,
     ResidentLink,
-    net_config,
     say,
     speak,
     voicevox_url,
@@ -209,21 +208,6 @@ def buddy_say(
 
 
 @server.tool()
-def buddy_net_config(ssid: str, psk: str = "", timeout: float = 25.0) -> dict:
-    """Join `ssid` so the device can reach the VOICEVOX engine.
-
-    Needed once per boot before `buddy_speak`. The device has no WiFi
-    credentials of its own — its NVS keys are empty and the only SSID in
-    the bundle belongs to an event venue — so they come over the cable
-    and are never written to flash.
-
-    Idempotent: an association that is already up is reported as success
-    without touching the radio. `psk` defaults to `$BUDDY_WIFI_PSK`.
-    """
-    return net_config(_get_link(), ssid, psk or os.environ.get("BUDDY_WIFI_PSK", ""), timeout)
-
-
-@server.tool()
 def buddy_speak(
     text: str,
     speaker: int = ZUNDAMON,
@@ -236,8 +220,13 @@ def buddy_speak(
 
     The device fetches its own audio: it calls a VOICEVOX engine over
     WiFi and streams the WAV straight into M5.Speaker. Nothing but the
-    text crosses the cable. Call `buddy_net_config` first — without an
-    association this fails with a connection error from the device.
+    text crosses the cable.
+
+    The device must already be on the network, which is a one-time setup
+    step rather than anything this server does: `host/provision_wifi.py`
+    writes the credentials into the bundle's boot-time connect, and from
+    then on the device associates by itself at power-on. Without that,
+    this fails with a connection error from the device.
 
     The engine runs in Docker on this Mac and must be published on all
     interfaces (`-p 50021:50021`), because the device reaches it over

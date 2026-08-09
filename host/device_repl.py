@@ -96,6 +96,16 @@ class Repl(Protocol):
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> None: ...
 
+    # A bytearray, not bytes — that is what mpremote hands back, and
+    # narrowing it here would be a lie the type checker enforces on the
+    # fake and not on the device.
+    def fs_readfile(
+        self,
+        src: str,
+        chunk_size: int = 256,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> bytearray: ...
+
     def fs_stat(self, src: str) -> Stat: ...
 
     def fs_isdir(self, src: str) -> bool: ...

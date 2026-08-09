@@ -15,6 +15,23 @@ immediately, and — the part that matters most here — lets us ask for
 16 kHz instead of the default 24 kHz, which is a third off both the
 transfer and the memory.
 
+### Who brings the radio up
+
+Not this module, and not the app. `/flash/main.py` connects at boot,
+before either exists, using the credentials in `/flash/wifi_event.py` —
+which `host/provision_wifi.py` writes once.
+
+It has to be that way round. Measured on hardware, `connect()` from
+inside the running app is accepted and then never completes: the
+ESP-IDF heap has around 12 KB free in its largest region once the
+bundle is loaded, and bringing a link up wants DRAM. The app inherits a
+link; it cannot make one.
+
+So there is no `net.*` command and nothing here touches `network`. If
+the radio is down, the first POST below fails with an OSError and the
+utterance is lost — which is the correct and only outcome, since this
+end cannot fix it.
+
 ### The two calls
 
     POST /audio_query?text=...&speaker=3   -> a JSON query (~2.7 KB)
@@ -32,7 +49,7 @@ this without a board or a running engine.
 """
 
 import json
-import time
+import struct
 
 _RIFF = b"RIFF"
 _WAVE = b"WAVE"
@@ -52,6 +69,12 @@ _BITS = 16
 _RIFF_HEAD = 12
 # Chunk header: four-byte id + four-byte size.
 _CHUNK_HEAD = 8
+
+# Little-endian chunk size, and the head of a PCM `fmt ` body:
+# format tag, channels, sample rate, byte rate, block align, bits.
+_SIZE = "<I"
+_FMT_BODY = "<HHIIHH"
+_FMT_MIN = struct.calcsize(_FMT_BODY)
 
 
 # Characters RFC 3986 says need no escaping. Everything else in the
@@ -87,14 +110,6 @@ class FetchError(RuntimeError):
     """The engine could not be reached, or gave us something unusable."""
 
 
-def _u16(buf, at):
-    return int.from_bytes(buf[at : at + 2], "little")
-
-
-def _u32(buf, at):
-    return int.from_bytes(buf[at : at + 4], "little")
-
-
 def parse_wav_header(head) -> dict:
     """Locate the samples in the head of a WAV stream.
 
@@ -124,17 +139,20 @@ def parse_wav_header(head) -> dict:
 
     while pos + _CHUNK_HEAD <= len(head):
         cid = bytes(head[pos : pos + 4])
-        size = _u32(head, pos + 4)
+        (size,) = struct.unpack_from(_SIZE, head, pos + 4)
         body = pos + _CHUNK_HEAD
 
         if cid == _FMT:
-            if size < 16 or body + 16 > len(head):
+            if size < _FMT_MIN or body + _FMT_MIN > len(head):
                 raise WavError("truncated fmt chunk")
-            if _u16(head, body) != _FORMAT_PCM:
+            # One unpack rather than four offset reads. `bits` in
+            # particular sits at +14, which is only obvious from the
+            # field list the format string spells out.
+            audiofmt, channels, rate, _byte_rate, _align, bits = struct.unpack_from(
+                _FMT_BODY, head, body
+            )
+            if audiofmt != _FORMAT_PCM:
                 raise WavError("not PCM")
-            channels = _u16(head, body + 2)
-            rate = _u32(head, body + 4)
-            bits = _u16(head, body + 14)
             if channels != _CHANNELS or bits != _BITS:
                 raise WavError(
                     "need 16-bit mono, got " + str(channels) + "ch/" + str(bits) + "-bit"
@@ -158,143 +176,6 @@ def parse_wav_header(head) -> dict:
         pos = body + size + (size & 1)
 
     raise WavError("no data chunk in the first " + str(len(head)) + " bytes")
-
-
-# ----- the radio
-
-# How long to wait for an association before giving up. The launcher's
-# own `wifi_event.py` uses 8 s for a venue AP on a cold boot; 15 s is
-# more patient because this one is asked for explicitly by a host that
-# is watching for the ack, and a false failure costs a round trip.
-_CONNECT_TIMEOUT_MS = 15000
-
-# Between polls of `isconnected()`. Short enough that a fast association
-# is not padded by most of a second, long enough not to spin.
-_POLL_MS = 200
-
-# Association attempts before the driver gives up.
-#
-# This is not a nicety. `connect()` on the esp32 port retries **forever**
-# by default, and while it does, `status()` reads STAT_CONNECTING
-# whether the password is wrong, the AP is absent, or it is simply
-# taking its time. A deadline on this side would expire while the driver
-# carried on, and nothing would ever say why. Three is what M5Stack's
-# own WLAN STA example uses.
-_RECONNECTS = 3
-
-
-def _default_network():
-    """The firmware's network module. Lazy so the host can import this."""
-    import network
-
-    return network
-
-
-def connect_wifi(ssid, psk, timeout_ms=_CONNECT_TIMEOUT_MS, network_mod=None) -> dict:
-    """Associate with an access point. Returns a result, never raises.
-
-    ``{"ok": True, "ssid", "ip", "rssi"}`` or
-    ``{"ok": False, "ssid", "err"}``. The caller puts this straight into
-    an ack, so it must be JSON-safe and must not carry the password.
-
-    Credentials come from the host over USB rather than from flash: the
-    NVS keys UIFlow would use are empty on this device, and the only
-    SSID baked into the bundle belongs to an event venue. See
-    `/flash/wifi_event.py`.
-
-    Idempotent. An association that is already up is reported as success
-    without touching the radio — re-associating before every utterance
-    would add seconds and drop the link in between.
-    """
-    if not ssid:
-        return {"ok": False, "ssid": ssid, "err": "no ssid"}
-
-    net = network_mod if network_mod is not None else _default_network()
-    sta = net.WLAN(net.STA_IF)
-
-    if not sta.active():
-        sta.active(True)
-    if sta.isconnected():
-        return _wifi_ok(sta, ssid)
-
-    # End whatever the launcher started. `main.py` connects to the SSID
-    # in `/flash/wifi_event.py` at boot — an event venue's network, not
-    # present here — and the default forever-retry keeps that attempt
-    # alive indefinitely. A second `connect` into it is refused with
-    # "Wifi Internal State Error". `disconnect` is the documented way to
-    # end it; taking the interface down instead resets the board.
-    try:
-        sta.disconnect()
-    except Exception:
-        # Raises when there is nothing to disconnect from, which is the
-        # ordinary case. The state change is the point, not the call.
-        pass
-
-    try:
-        sta.config(reconnects=_RECONNECTS)
-    except Exception as e:
-        # Older firmware may not have it. Worth continuing without —
-        # the caller's deadline is then the only bound, which is how
-        # this behaved before.
-        print("buddy_tts: reconnects not settable:", e)
-
-    try:
-        sta.connect(ssid, psk)
-    except Exception as e:
-        return {"ok": False, "ssid": ssid, "err": "connect failed: " + str(e)}
-
-    started = time.ticks_ms()
-    while not sta.isconnected():
-        if time.ticks_diff(time.ticks_ms(), started) > timeout_ms:
-            return {
-                "ok": False,
-                "ssid": ssid,
-                "err": "timeout after " + str(timeout_ms) + "ms",
-            }
-        time.sleep_ms(_POLL_MS)
-
-    return _wifi_ok(sta, ssid)
-
-
-def _wifi_ok(sta, ssid) -> dict:
-    ip = "?"
-    try:
-        ip = sta.ifconfig()[0]
-    except Exception as e:
-        print("buddy_tts: ifconfig failed:", e)
-    rssi = None
-    try:
-        rssi = sta.status("rssi")
-    except Exception:
-        # Not every build exposes it, and it is a nicety either way.
-        pass
-    return {"ok": True, "ssid": ssid, "ip": ip, "rssi": rssi}
-
-
-def handle_net_raw(raw, network_mod=None):
-    """Dispatch one wire line if it is a `net.*` command.
-
-    Returns an ack dict, or None when the line is not ours — the same
-    shape `buddy_speak.handle_raw` has, so `claude_buddy.on_line` can
-    treat the two the same way. `net.config` is not a verb the upstream
-    `buddy_protocol.py` knows, which is why it is peeled off before the
-    protocol layer sees it.
-    """
-    try:
-        msg = json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
-    except (ValueError, UnicodeError):
-        return None
-    if not isinstance(msg, dict) or msg.get("cmd") != "net.config":
-        return None
-
-    result = connect_wifi(
-        msg.get("ssid", ""),
-        msg.get("psk", ""),
-        int(msg.get("timeout_ms", _CONNECT_TIMEOUT_MS)),
-        network_mod,
-    )
-    result["ack"] = "net.config"
-    return result
 
 
 # ----- the HTTP side

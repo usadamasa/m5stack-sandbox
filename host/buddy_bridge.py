@@ -38,7 +38,7 @@ from typing import Any, Protocol
 
 import serial
 
-from device_repl import Repl, ReplError, connect_repl, run_and_release
+from device_repl import ReplError, connect_repl, run_and_release
 
 # Keep in sync with _SENTINEL in device/buddy_serial.py.
 SENTINEL = b"\x1eBUDDY1 "
@@ -318,124 +318,23 @@ def say(
 
 # ----- network
 #
-# The device has no usable WiFi credentials of its own: its NVS keys are
-# empty and the only SSID in the bundle belongs to an event venue. So
-# they come down the cable, which also means they are never written to
-# flash.
+# Nothing here brings the radio up, and nothing on the device does
+# either. The credentials live in the bundle's own boot-time connect,
+# written once by `host/provision_wifi.py`, so the device is already on
+# the network before anything in this file runs.
 #
-# They go in before the app does. Measured on hardware: the device
-# associates in well under a second from the REPL and cannot once the
-# app is running — `connect` is accepted, the association never
+# It has to be that way round. Measured on hardware: the device
+# associates in well under a second from the REPL and not at all once
+# the app is running — `connect` is accepted, the association never
 # completes, and 15 s later the driver still says "connecting". The
 # ESP-IDF heap has ~12 KB free in its largest region with nothing but
-# the launcher loaded, and bringing a link up wants DRAM, so the radio
-# goes up first and the app inherits it. `buddy_tts.connect_wifi`
-# reports an association that is already up without touching the radio,
-# which makes a later `net.config` a read-back rather than a reconnect.
-
-# Names for the esp32 port's WLAN.status() codes. The number reaches a
-# human through a log line and nothing else, and 201 and 202 are very
-# different problems.
-_WIFI_STATUS = {
-    200: "beacon timeout",
-    201: "no ap found",
-    202: "wrong password",
-    203: "assoc fail",
-    204: "handshake timeout",
-    1000: "idle",
-    1001: "connecting",
-    1010: "got ip",
-}
-
-# Between polls of isconnected(). The poll runs on the host, one raw-REPL
-# round trip each, rather than as a loop inside a single long-running
-# block: a block that blocks for half a minute has to be reconciled with
-# the transport's own exec timeout, and there is nothing to reconcile if
-# every call returns immediately.
-_WIFI_POLL_S = 0.5
-
-# Association attempts before the driver gives up. `connect()` on the
-# esp32 port retries forever by default, and while it does `status()`
-# reads STAT_CONNECTING regardless of the reason — so a deadline here
-# would expire while the driver carried on, and nothing would say why.
-# Three is what M5Stack's own WLAN STA example uses.
-_WIFI_RECONNECTS = 3
-
-# Associating from the REPL has been measured at well under a second.
-# The budget is for a retry or two, not for a link that is coming up
-# slowly.
-_WIFI_TIMEOUT_S = 25.0
-
-
-def _wifi_connect_source(ssid: str, psk: str) -> str:
-    """The statements that start an association. Returns immediately.
-
-    The credentials are embedded with `repr`, not concatenated: this is
-    Python source about to be compiled on the device, and an apostrophe
-    in a passphrase would close the literal and run the remainder as
-    code.
-    """
-    return (
-        "import network\n"
-        "_w = network.WLAN(network.STA_IF)\n"
-        "_w.active(True)\n"
-        # End the launcher's boot-time attempt on the event SSID. Its
-        # forever-retry keeps that attempt alive, and a second connect()
-        # into it is refused with "Wifi Internal State Error".
-        "try:\n"
-        "    _w.disconnect()\n"
-        "except Exception:\n"
-        "    pass\n"
-        f"_w.config(reconnects={_WIFI_RECONNECTS})\n"
-        f"_w.connect({ssid!r}, {psk!r})\n"
-    )
-
-
-def join_wifi(repl: Repl, ssid: str, psk: str, timeout_s: float = _WIFI_TIMEOUT_S) -> Message:
-    """Associate from the raw REPL and report what happened.
-
-    Runs before the app starts; see the note above. Never returns the
-    passphrase, which is the one value in this exchange that must not
-    end up in a log line.
-    """
-    if not ssid:
-        raise ValueError("no ssid")
-    try:
-        repl.exec(_wifi_connect_source(ssid, psk))
-    except Exception as exc:
-        # The device's own traceback, minus anything we sent it. `exec`
-        # raises TransportExecError carrying only stderr, so the source
-        # — and the passphrase in it — is not in the message.
-        return {"ok": False, "err": f"connect refused: {exc}"}
-
-    deadline = time.monotonic() + timeout_s
-    while not repl.eval("_w.isconnected()"):
-        if time.monotonic() >= deadline:
-            break
-        time.sleep(_WIFI_POLL_S)
-
-    connected, ip, code = repl.eval("(_w.isconnected(), _w.ifconfig()[0], _w.status())")
-    return {"ok": bool(connected), "ip": ip, "status": _WIFI_STATUS.get(code, str(code))}
-
-
-# The device polls for an association for up to 15 s before answering.
-_NET_TIMEOUT_S = 25.0
-
-
-def net_config(link: Requester, ssid: str, psk: str, timeout: float = _NET_TIMEOUT_S) -> Message:
-    """Point the device's radio at an access point.
-
-    Idempotent on the device side: an association that is already up is
-    reported as success without touching the radio.
-    """
-    if not ssid:
-        raise ValueError("no ssid")
-    ack = link.request(
-        {"cmd": "net.config", "ssid": ssid, "psk": psk}, "net.config", timeout=timeout
-    )
-    if not ack.get("ok"):
-        raise RuntimeError(f"device could not join {ssid!r}: {ack.get('err', ack)}")
-    return ack
+# the launcher loaded, and bringing a link up wants DRAM. The app
+# inherits a link; it cannot make one.
+#
+# So there is no `net.*` verb, no `--wifi`, and no credential on this
+# path at all. A device that will not speak has not been provisioned
+# (or the engine is down) — `host/provision_wifi.py --verify` says
+# which.
 
 
 # ----- speech
@@ -974,20 +873,12 @@ def main() -> int:
         metavar="TEXT",
         help="Have the device fetch TEXT from VOICEVOX and play it. Repeatable.",
     )
-    ap.add_argument(
-        "--wifi",
-        metavar="SSID",
-        help=(
-            "Join this network from the REPL, before --start. Password from "
-            "$BUDDY_WIFI_PSK. Needs the device at the REPL, so BtnRST first."
-        ),
-    )
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument(
         "--wait",
         type=float,
         default=180.0,
-        help="Seconds to wait for the REPL when --wifi needs it. Needs a BtnRST press.",
+        help="Seconds to wait for the REPL when --start needs it. Needs a BtnRST press.",
     )
     ap.add_argument(
         "--engine",
@@ -1013,42 +904,6 @@ def main() -> int:
 
     def nudge_repl() -> None:
         print("waiting for the REPL — press BtnRST on the device...")
-
-    if args.wifi:
-        # Before the app and before the link: see the note above
-        # `join_wifi`. The REPL and the running app cannot both own the
-        # port, so this finishes and closes before BuddyLink opens.
-        try:
-            repl = connect_repl(args.port, args.baud, timeout=args.wait, on_wait=nudge_repl)
-        except ReplError as e:
-            sys.stderr.write(f"{e}\n")
-            return 1
-        try:
-            result = join_wifi(repl, args.wifi, os.environ.get("BUDDY_WIFI_PSK", ""))
-        except OSError as e:
-            # The port vanished mid-exchange: the board reset and
-            # re-enumerated. Bringing the radio up is the current spike
-            # of this whole exchange — a few hundred mA on transmit —
-            # and this board browns out under it when the battery is
-            # low. Worth saying, because the bare errno reads like a
-            # cable fault.
-            sys.stderr.write(
-                f"device dropped off USB while joining WiFi ({e}). Powering the "
-                "radio draws a few hundred mA and this board browns out on it "
-                "when the battery is low; leave it on USB for a while and retry.\n"
-            )
-            return 1
-        finally:
-            # Back to the friendly REPL before letting go: --start
-            # interrupts and pastes into it, and a port left in raw mode
-            # would swallow that silently.
-            with contextlib.suppress(Exception):
-                repl.exit_raw_repl()
-            repl.close()
-        print("wifi:", json.dumps({"ssid": args.wifi, **result}, ensure_ascii=False))
-        if not result.get("ok"):
-            sys.stderr.write(f"could not join {args.wifi!r}\n")
-            return 1
 
     link = BuddyLink(args.port, baud=args.baud)
     if args.start:
