@@ -39,6 +39,14 @@ A fixed interval reads as a metronome and grates within minutes. Every
 gap is drawn fresh from a range instead, and so is the silence that
 counts as idle, so the device is quiet for a while and then says two
 things close together — the shape an actual person in the room has.
+
+### Two agents, two models
+
+Claude Code and Codex both drive this. The device does not care which,
+but the lines have to come from a model the machine can actually reach,
+and that differs: Claude Code's has application-default credentials for
+Vertex AI, Codex's has a configured Codex CLI. `RoutingLineSource` picks
+by whoever is connected — see `buddy_agent` for how that is decided.
 """
 
 from __future__ import annotations
@@ -47,7 +55,9 @@ import json
 import os
 import random
 import socket
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections import deque
@@ -58,6 +68,7 @@ from pathlib import Path
 from queue import Empty, Full, Queue
 from typing import Any, Protocol, cast
 
+from buddy_agent import CLAUDE_CODE, CODEX, AgentIdentity
 from buddy_bridge import DEFAULT_RATE, ZUNDAMON, Message, say, speak, voicevox_url
 
 # host/mcp/src/buddy_chatter.py -> repo root. The MCP server is launched
@@ -121,16 +132,33 @@ class ChatLink(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class Event:
-    """Something the hook saw, reduced to what a line can be built from."""
+    """Something the hook saw, reduced to what a line can be built from.
+
+    `agent` is who saw it, as the hook named itself. Empty when the
+    sender did not say, which is not a problem — it only means this
+    event is not a witness and the identity stands as it was.
+    """
 
     kind: str
     detail: str = ""
+    agent: str = ""
 
 
 class LineSource(Protocol):
     """Where the next thing to say comes from."""
 
     def next_line(self, context: Sequence[Event]) -> str | None: ...
+
+
+# What both generators ask their model for. One object, one array of
+# strings — small enough that either backend's structured-output support
+# is enough to enforce it, which is what keeps the parsing trivial.
+LINES_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"lines": {"type": "array", "items": {"type": "string"}}},
+    "required": ["lines"],
+    "additionalProperties": False,
+}
 
 
 def _float_env(env: Mapping[str, str], name: str, fallback: float) -> float:
@@ -174,9 +202,24 @@ class ChatterConfig:
     # Lines produced per generation. One call covers several minutes,
     # which is what keeps this cheap.
     batch: int = 6
+    # Who to assume is driving before anyone says. Only used until the
+    # MCP handshake or a hook datagram settles it.
+    agent: str = CLAUDE_CODE
+    # ----- Vertex, used when Claude Code is driving
     model: str = "claude-opus-5"
     project_id: str = ""
     region: str = "us"
+    # ----- the Codex CLI, used when Codex is driving
+    #
+    # An empty model means "whatever `~/.codex/config.toml` already
+    # says", which is the right default: the point of going through the
+    # CLI is to inherit the setup Codex is already running on.
+    codex_bin: str = "codex"
+    codex_model: str = ""
+    # Generous. A `codex exec` turn is a whole agent loop and nothing is
+    # waiting on it, so the timeout is a stuck-process guard rather than
+    # a latency budget.
+    codex_timeout: float = 180.0
     speaker: int = ZUNDAMON
     rate: int = DEFAULT_RATE
     engine: str = ""
@@ -205,9 +248,13 @@ class ChatterConfig:
             idle_max=_float_env(env, "BUDDY_CHATTER_IDLE_MAX", 180.0),
             voice_every=max(1, _int_env(env, "BUDDY_CHATTER_VOICE_EVERY", 1)),
             batch=max(1, _int_env(env, "BUDDY_CHATTER_BATCH", 6)),
+            agent=env.get("BUDDY_CHATTER_AGENT", CLAUDE_CODE),
             model=env.get("BUDDY_CHATTER_MODEL", "claude-opus-5"),
             project_id=env.get("ANTHROPIC_VERTEX_PROJECT_ID", ""),
             region=env.get("CLOUD_ML_REGION", "us"),
+            codex_bin=env.get("BUDDY_CHATTER_CODEX_BIN", "codex"),
+            codex_model=env.get("BUDDY_CHATTER_CODEX_MODEL", ""),
+            codex_timeout=_float_env(env, "BUDDY_CHATTER_CODEX_TIMEOUT", 180.0),
             speaker=_int_env(env, "BUDDY_CHATTER_SPEAKER", ZUNDAMON),
             rate=_int_env(env, "BUDDY_CHATTER_RATE", DEFAULT_RATE),
             engine=env.get("VOICEVOX_URL", ""),
@@ -236,9 +283,14 @@ def parse_event(payload: bytes) -> Event | None:
     detail = obj.get("detail", "")
     if not isinstance(detail, str):
         detail = ""
+    agent = obj.get("agent", "")
+    if not isinstance(agent, str):
+        agent = ""
     # The detail is pasted into a prompt, so it is clamped here rather
-    # than trusting the sender to have been reasonable about it.
-    return Event(kind, " ".join(detail.split())[:120])
+    # than trusting the sender to have been reasonable about it. The
+    # agent name never reaches a prompt, but it is a stranger's string
+    # all the same and only the first few characters can ever matter.
+    return Event(kind, " ".join(detail.split())[:120], agent[:40])
 
 
 def _clean(line: object, limit: int) -> str:
@@ -259,8 +311,8 @@ def describe(context: Sequence[Event]) -> str:
     return "\n".join(f"- {ev.kind}: {ev.detail}" if ev.detail else f"- {ev.kind}" for ev in context)
 
 
-class VertexLineSource:
-    """Generates lines with Claude on Vertex AI, a batch at a time.
+class BatchedLineSource:
+    """Batching, caching, cleanup and failure handling for a generator.
 
     Generating one line per utterance would be a round trip every time
     the device opens its mouth. A batch covers several minutes, and the
@@ -271,17 +323,29 @@ class VertexLineSource:
     when it ran dry, so later lines in a batch lag what is going on.
     That is the trade being made deliberately: this is muttering, not
     commentary.
+
+    Subclasses supply `_generate`. Everything it can raise is caught
+    here and counted: a chatter that goes silent is acceptable, a
+    chatter that takes a thread down with it is not.
     """
+
+    # Which model family answered. Reported in `status()` so that "the
+    # device is saying odd things" can be traced to a backend.
+    backend = "none"
 
     def __init__(self, cfg: ChatterConfig, rng: random.Random | None = None) -> None:
         self._cfg = cfg
         self._rng = rng or random.Random()
         self._cache: deque[str] = deque()
-        self._client: Any = None
         self._prompt: str | None = None
         self.generated = 0
         self.failures = 0
         self.last_error = ""
+
+    @property
+    def model(self) -> str:
+        """The model this will ask, for reporting. May be empty."""
+        return ""
 
     def _system_prompt(self) -> str:
         """The persona, read from `cfg.prompt_path` once.
@@ -294,6 +358,48 @@ class VertexLineSource:
         if self._prompt is None:
             self._prompt = self._cfg.prompt_path.read_text(encoding="utf-8")
         return self._prompt
+
+    def _user_prompt(self, context: Sequence[Event]) -> str:
+        return f"直近の出来事:\n{describe(context)}\n\n独り言を {self._cfg.batch} 個。"
+
+    def next_line(self, context: Sequence[Event]) -> str | None:
+        if not self._cache:
+            self._fill(context)
+        if not self._cache:
+            return _clean(self._rng.choice(_FALLBACK_LINES), self._cfg.max_chars)
+        return self._cache.popleft()
+
+    def _fill(self, context: Sequence[Event]) -> None:
+        try:
+            lines = self._generate(context)
+        except Exception as exc:  # the chatter degrades, it does not raise
+            self.failures += 1
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            return
+
+        for raw in lines:
+            cleaned = _clean(raw, self._cfg.max_chars)
+            if cleaned:
+                self._cache.append(cleaned)
+                self.generated += 1
+
+    def _generate(self, context: Sequence[Event]) -> Sequence[object]:
+        """One batch of raw lines. Free to raise; `_fill` counts it."""
+        raise NotImplementedError
+
+
+class VertexLineSource(BatchedLineSource):
+    """Generates lines with Claude on Vertex AI. Claude Code's backend."""
+
+    backend = "vertex"
+
+    def __init__(self, cfg: ChatterConfig, rng: random.Random | None = None) -> None:
+        super().__init__(cfg, rng)
+        self._client: Any = None
+
+    @property
+    def model(self) -> str:
+        return self._cfg.model
 
     def _ensure_client(self) -> Any:  # noqa: ANN401 — the SDK ships no public client alias
         """Build the Vertex client on first use.
@@ -323,57 +429,195 @@ class VertexLineSource:
                 self._client = AnthropicVertex(region=self._cfg.region)
         return self._client
 
-    def next_line(self, context: Sequence[Event]) -> str | None:
-        if not self._cache:
-            self._fill(context)
-        if not self._cache:
-            return _clean(self._rng.choice(_FALLBACK_LINES), self._cfg.max_chars)
-        return self._cache.popleft()
+    def _generate(self, context: Sequence[Event]) -> Sequence[object]:
+        reply = self._ensure_client().messages.create(
+            model=self._cfg.model,
+            max_tokens=2048,
+            # Thinking stays on. Turning it off on this model is a
+            # documented way to get `<thinking>` text leaking into the
+            # answer, and nothing here is waiting on latency, so the
+            # effort knob is the right one to turn down.
+            thinking={"type": "adaptive"},
+            output_config={
+                "effort": "low",
+                "format": {"type": "json_schema", "schema": LINES_SCHEMA},
+            },
+            system=self._system_prompt(),
+            messages=[{"role": "user", "content": self._user_prompt(context)}],
+        )
+        body = next(block.text for block in reply.content if block.type == "text")
+        return cast("Sequence[object]", json.loads(body)["lines"])
 
-    def _fill(self, context: Sequence[Event]) -> None:
-        try:
-            reply = self._ensure_client().messages.create(
-                model=self._cfg.model,
-                max_tokens=2048,
-                # Thinking stays on. Turning it off on this model is a
-                # documented way to get `<thinking>` text leaking into
-                # the answer, and nothing here is waiting on latency, so
-                # the effort knob is the right one to turn down.
-                thinking={"type": "adaptive"},
-                output_config={
-                    "effort": "low",
-                    "format": {
-                        "type": "json_schema",
-                        "schema": {
-                            "type": "object",
-                            "properties": {"lines": {"type": "array", "items": {"type": "string"}}},
-                            "required": ["lines"],
-                            "additionalProperties": False,
-                        },
-                    },
-                },
-                system=self._system_prompt(),
-                messages=[
-                    {
-                        "role": "user",
-                        "content": (
-                            f"直近の出来事:\n{describe(context)}\n\n独り言を {self._cfg.batch} 個。"
-                        ),
-                    }
-                ],
+
+class CodexLineSource(BatchedLineSource):
+    """Generates lines by running one `codex exec` turn. Codex's backend.
+
+    ### Why the CLI and not an SDK
+
+    "The model Codex uses" is not a fixed endpoint. It is whatever
+    `~/.codex/config.toml` resolves to — a `model_provider` that may be
+    a local proxy, and credentials that may be a rotating ChatGPT token
+    rather than an API key. Reproducing that resolution here would mean
+    reimplementing Codex's config and auth and then keeping up with
+    them. Spawning the CLI inherits both by construction, and costs a
+    process on a thread that has minutes to spare.
+
+    ### Why a sandboxed, ephemeral turn
+
+    `codex exec` is a whole agent, tools included, and this wants a
+    sentence. `--sandbox read-only` and `--ephemeral` reduce it to what
+    is actually needed: no writes, no session file, nothing left behind.
+    `--output-schema` gets the same `{"lines": [...]}` the Vertex path
+    asks for, so both sides parse identically.
+
+    The prompt is one blob rather than a system/user pair — `codex exec`
+    has no system slot. The persona goes first, which is the same order
+    the API would have applied it in.
+    """
+
+    backend = "codex"
+
+    def __init__(
+        self,
+        cfg: ChatterConfig,
+        rng: random.Random | None = None,
+        run: Callable[[str], str] | None = None,
+    ) -> None:
+        super().__init__(cfg, rng)
+        # Injectable so the tests do not need a Codex install, and so a
+        # different launcher can be dropped in without touching parsing.
+        self._run = run if run is not None else self._run_codex
+
+    @property
+    def model(self) -> str:
+        return self._cfg.codex_model or "codex-default"
+
+    def _generate(self, context: Sequence[Event]) -> Sequence[object]:
+        prompt = f"{self._system_prompt()}\n\n---\n\n{self._user_prompt(context)}"
+        return cast("Sequence[object]", json.loads(self._run(prompt))["lines"])
+
+    def _run_codex(self, prompt: str) -> str:
+        """Run one turn and return the final message. Raises on trouble."""
+        with tempfile.TemporaryDirectory(prefix="buddy-chatter-") as tmp:
+            work = Path(tmp)
+            schema = work / "schema.json"
+            schema.write_text(json.dumps(LINES_SCHEMA), encoding="utf-8")
+            answer = work / "lines.json"
+            argv = [
+                self._cfg.codex_bin,
+                "exec",
+                "--ephemeral",
+                "--skip-git-repo-check",
+                "--sandbox",
+                "read-only",
+                "--color",
+                "never",
+                "--output-schema",
+                str(schema),
+                "--output-last-message",
+                str(answer),
+            ]
+            if self._cfg.codex_model:
+                argv += ["--model", self._cfg.codex_model]
+            # `-` reads the prompt from stdin, which keeps a persona of
+            # any length off the argument list.
+            argv.append("-")
+            proc = subprocess.run(
+                argv,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=self._cfg.codex_timeout,
+                # The turn is read-only and ephemeral; give it the empty
+                # directory rather than wherever the server was launched
+                # from, so no project config or AGENTS.md steers it.
+                cwd=tmp,
+                check=False,
             )
-            body = next(block.text for block in reply.content if block.type == "text")
-            lines = json.loads(body)["lines"]
-        except Exception as exc:  # the chatter degrades, it does not raise
-            self.failures += 1
-            self.last_error = f"{type(exc).__name__}: {exc}"
-            return
+            if not answer.is_file():
+                # stderr is where a missing login, an unreachable
+                # provider and a config error all land. Truncated
+                # because this ends up in a status field.
+                detail = " ".join((proc.stderr or proc.stdout or "").split())[-300:]
+                raise RuntimeError(f"codex exec wrote no answer (rc {proc.returncode}): {detail}")
+            return answer.read_text(encoding="utf-8")
 
-        for raw in lines:
-            cleaned = _clean(raw, self._cfg.max_chars)
-            if cleaned:
-                self._cache.append(cleaned)
-                self.generated += 1
+
+def line_source_for(agent: str, cfg: ChatterConfig, rng: random.Random | None = None) -> LineSource:
+    """The generator that goes with an agent. The pairing is fixed.
+
+    Deliberately not a 2x2: each agent gets the model its machine is
+    already set up and paying for, and offering the cross combinations
+    would mean supporting credentials nobody has.
+    """
+    if agent == CODEX:
+        return CodexLineSource(cfg, rng)
+    return VertexLineSource(cfg, rng)
+
+
+class RoutingLineSource:
+    """Delegates to whichever backend matches the agent now connected.
+
+    Built once and kept for the life of the chatter, because the
+    identity can change under it: the standalone runner starts with no
+    witness at all, and the MCP server learns who its client is at the
+    handshake rather than at import.
+
+    Backends are constructed on first use and then kept. Construction
+    touches credentials — the Vertex client resolves ADC — so a session
+    that never speaks as Codex never looks for a Codex install.
+    """
+
+    def __init__(
+        self,
+        cfg: ChatterConfig,
+        identity: AgentIdentity,
+        rng: random.Random | None = None,
+        factory: Callable[[str, ChatterConfig, random.Random | None], LineSource] | None = None,
+    ) -> None:
+        self._cfg = cfg
+        self._identity = identity
+        self._rng = rng
+        self._factory = factory if factory is not None else line_source_for
+        self._sources: dict[str, LineSource] = {}
+        self._active: LineSource | None = None
+
+    @property
+    def agent(self) -> str:
+        return self._identity.current
+
+    @property
+    def backend(self) -> str:
+        active = self._active
+        if active is not None:
+            return getattr(active, "backend", "")
+        # Nothing built yet: name what would be, without building it.
+        return "codex" if self.agent == CODEX else "vertex"
+
+    @property
+    def model(self) -> str:
+        return getattr(self._active, "model", "") if self._active is not None else ""
+
+    @property
+    def generated(self) -> int:
+        return sum(int(getattr(s, "generated", 0)) for s in self._sources.values())
+
+    @property
+    def failures(self) -> int:
+        return sum(int(getattr(s, "failures", 0)) for s in self._sources.values())
+
+    @property
+    def last_error(self) -> str:
+        return str(getattr(self._active, "last_error", "")) if self._active is not None else ""
+
+    def next_line(self, context: Sequence[Event]) -> str | None:
+        agent = self.agent
+        source = self._sources.get(agent)
+        if source is None:
+            source = self._factory(agent, self._cfg, self._rng)
+            self._sources[agent] = source
+        self._active = source
+        return source.next_line(context)
 
 
 class ChatterService:
@@ -385,6 +629,11 @@ class ChatterService:
 
     `device_lock` is the MCP server's — held blocking by tool calls, and
     taken here only if it is free.
+
+    `identity` is who is driving. The MCP server writes to it from the
+    handshake and the chatter writes to it from any event that names a
+    sender; the default source reads it to pick a model. Passed in
+    rather than owned so the server and the chatter share one.
     """
 
     def __init__(
@@ -395,11 +644,13 @@ class ChatterService:
         source: LineSource | None = None,
         rng: random.Random | None = None,
         clock: Callable[[], float] = time.monotonic,
+        identity: AgentIdentity | None = None,
     ) -> None:
         self._cfg = cfg
         self._link = link_provider
         self._lock = device_lock
-        self._source = source if source is not None else VertexLineSource(cfg, rng)
+        self._identity = identity if identity is not None else AgentIdentity(cfg.agent)
+        self._source = source if source is not None else RoutingLineSource(cfg, self._identity, rng)
         self._rng = rng or random.Random()
         self._clock = clock
 
@@ -429,6 +680,11 @@ class ChatterService:
     def cfg(self) -> ChatterConfig:
         """The settings in force. Frozen — retune by rebuilding the service."""
         return self._cfg
+
+    @property
+    def identity(self) -> AgentIdentity:
+        """Who is driving. Shared with the MCP server, which also writes it."""
+        return self._identity
 
     # ----- pacing
 
@@ -492,6 +748,11 @@ class ChatterService:
 
     def step(self, ev: Event | None) -> None:
         """One turn of the worker. Public so the tests can drive it."""
+        if ev is not None and ev.agent:
+            # Before the due check, not after: an event that arrives
+            # inside the gap says nothing worth speaking to, but it
+            # still tells us who is at the keyboard.
+            self._identity.observe(ev.agent)
         trigger = self._due(ev)
         if trigger is None:
             return
@@ -639,7 +900,10 @@ class ChatterService:
             "next_gap_s": round(self._gap, 1),
             "next_idle_s": round(self._idle, 1),
             "voice_every": self._cfg.voice_every,
-            "model": self._cfg.model,
+            "agent": self._identity.current,
+            "client": self._identity.client_name,
+            "backend": getattr(source, "backend", ""),
+            "model": getattr(source, "model", "") or self._cfg.model,
             "last_line": self.last_line,
             "last_error": self.last_error,
             "generated": getattr(source, "generated", None),
@@ -677,6 +941,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--gap-max", type=float, default=None)
     parser.add_argument("--voice-every", type=int, default=None)
     parser.add_argument(
+        "--agent",
+        choices=(CLAUDE_CODE, CODEX),
+        default=None,
+        help="which backend writes the lines; there is no MCP handshake to ask",
+    )
+    parser.add_argument(
         "--once", action="store_true", help="say one line, report, and exit — a smoke test"
     )
     args = parser.parse_args(argv)
@@ -688,6 +958,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         cfg = replace(cfg, gap_max=args.gap_max)
     if args.voice_every is not None:
         cfg = replace(cfg, voice_every=max(1, args.voice_every))
+    if args.agent is not None:
+        cfg = replace(cfg, agent=args.agent)
 
     link = ResidentLink(args.port)
     link.connect()
