@@ -38,10 +38,11 @@ say so out loud. That exercises the import, the inherited WiFi link, the
 VOICEVOX round trip and `M5.Speaker` in one go, and the confirmation is
 audible from across the room rather than being another line of output.
 
-The cost is the REPL: launching is one-way, because the app disables
-Ctrl-C once its transport is up. The device is left running the app, and
-the next deploy starts by asking for a BtnRST press. `--no-speak` keeps
-the old behaviour of stopping at the REPL.
+The device is left running the app afterwards. That is no longer a dead
+end: Ctrl-C works again (see the "Ctrl-C" section of
+`device/buddy_serial.py`), so the next deploy interrupts its way back to
+the REPL instead of asking for a BtnRST press. `--no-speak` still stops
+at the REPL without launching at all.
 
 ### Why the timeout lives in here
 
@@ -57,9 +58,9 @@ on rather than being killed from outside with no idea where it was.
     uv run python host/buddy_deploy.py --compile-only    # no board
 
 Whoever holds the port holds it exclusively — disconnect the MCP server
-(`buddy_disconnect`) first. The device must be at the REPL; if the Buddy
-app is running it has disabled Ctrl-C, so this waits for a BtnRST press
-rather than failing straight away.
+(`buddy_disconnect`) first. The device must be at the REPL; a running
+Buddy app is interrupted out of the way by the handshake, and the wait
+below covers the case where that does not take.
 """
 
 from __future__ import annotations
@@ -104,6 +105,11 @@ MPY_CROSS_ABI = "6.3"
 OVERLAY: tuple[str, ...] = (
     "buddy_serial.py",
     "buddy_chat.py",
+    # Shipped but never imported: the app pulls it in only when a `dbg.*`
+    # frame arrives and drops it again on `dbg.off`, so it costs flash
+    # and no heap. Leaving it off the device would mean the one bundle
+    # that cannot be inspected is the one already misbehaving.
+    "buddy_debug.py",
     "buddy_speak.py",
     "buddy_tts.py",
     "apps/claude_buddy.py",
@@ -149,8 +155,9 @@ DEFAULT_VENDOR = REPO / "vendor" / "device"
 # button.
 DEFAULT_TIMEOUT_S = 300.0
 
-# How long to wait for the REPL. Long enough to reach over and press
-# BtnRST, short enough that an unattended device fails the command.
+# How long to wait for the REPL when the interrupt does not get us one.
+# Long enough to reach over and press BtnRST, short enough that an
+# unattended device fails the command.
 DEFAULT_WAIT_S = 45.0
 
 # Read timeout on the port once it is open. mpremote's own default is
@@ -508,8 +515,8 @@ def engine_url(engine: str | None) -> str:
     """Where the device should fetch speech from.
 
     Resolved before the launch, deliberately: after it the console
-    belongs to the app, so a bad engine address discovered then costs a
-    BtnRST press to get back from.
+    belongs to the app, and a bad engine address discovered then costs a
+    round trip through the interrupt to get back from.
     """
     try:
         return voicevox_url(engine)
@@ -537,8 +544,8 @@ def verify_by_speech(
     a failed import is not lost in the gap — and the caller must not
     close the transport afterwards.
 
-    One-way, like every other launch: the app disables Ctrl-C, so the
-    device stays out of the REPL until someone presses BtnRST.
+    The device is left running the app. Ctrl-C brings it back — see
+    `BuddyLink.interrupt` — so this is no longer the dead end it was.
     """
     log(f"launching the app to confirm out loud (engine: {url})")
 
@@ -609,7 +616,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--wait",
         type=float,
         default=DEFAULT_WAIT_S,
-        help="Seconds to wait for the REPL. Getting there needs a BtnRST press.",
+        help="Seconds to wait for the REPL if the interrupt does not get us one.",
     )
     ap.add_argument(
         "--no-speak",
@@ -741,8 +748,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             repl.close()
 
     _log(
-        f"done, and the device said so: {args.speak_text!r}. The app is running now, "
-        "so the next deploy needs a BtnRST press."
+        f"done, and the device said so: {args.speak_text!r}. The app is running now; "
+        "the next deploy will interrupt it back to the REPL on its own."
     )
     return 0
 

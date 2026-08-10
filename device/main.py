@@ -21,7 +21,14 @@ source and never looks for main.mpy. Keeping it short is the substitute.
 """
 
 import M5
+import micropython
 import wifi_event
+
+# Reserved before anything can fail. An exception raised in an interrupt
+# or a scheduled callback cannot allocate, so without this buffer those
+# report as "no memory to create exception" with no traceback at all —
+# and callbacks are where this bundle's hardest failures live.
+micropython.alloc_emergency_exception_buf(100)
 
 _LCD = M5.Lcd
 _W = 240

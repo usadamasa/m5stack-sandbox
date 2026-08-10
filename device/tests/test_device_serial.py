@@ -34,7 +34,7 @@ class HandleLineTest(unittest.TestCase):
         self.addCleanup(setattr, buddy_serial, "time", self._real_time)
 
         # Bypass __init__: it registers the real stdin with a poller and
-        # disables Ctrl-C, neither of which belongs in a unit test.
+        # reasserts kbd_intr, neither of which belongs in a unit test.
         self.t = BuddySerial.__new__(BuddySerial)
         self.lines: list[bytes] = []
         self.states: list[str] = []

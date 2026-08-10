@@ -144,6 +144,14 @@ class CompileTest(unittest.TestCase):
                 self.assertEqual(size, built.stat().st_size)
                 self.assertEqual(mpy_abi_of(built.read_bytes()), int(MPY_CROSS_ABI.split(".")[0]))
 
+    def test_the_debug_module_ships(self) -> None:
+        # It is never imported unless a dbg.* frame arrives, so a bundle
+        # missing it looks perfectly healthy right up to the moment
+        # somebody needs to inspect a device that is misbehaving. Flash
+        # is not the scarce resource here; heap is, and lazily importing
+        # already costs it nothing.
+        self.assertIn("buddy_debug.py", OVERLAY)
+
     def test_the_launcher_compiles_even_though_it_ships_as_source(self) -> None:
         # /flash/main.py is executed as source and never looked up as
         # main.mpy, so this compile exists only to put the launcher in
@@ -544,8 +552,8 @@ class SpeechConfirmationTest(unittest.TestCase):
         )
 
     def test_a_loopback_engine_is_refused_before_the_repl_is_spent(self) -> None:
-        # Reachable from this Mac and from nowhere else. Discovered after
-        # the launch it would cost a BtnRST press to try again.
+        # Reachable from this Mac and from nowhere else. Discovered
+        # after the launch it costs another round trip to try again.
         with self.assertRaises(DeployError):
             engine_url("http://127.0.0.1:50021")
 
@@ -630,8 +638,8 @@ class NoSpeakTest(unittest.TestCase):
     """
 
     def test_it_leaves_the_device_at_the_repl(self) -> None:
-        # The REPL is what the next deploy needs, and getting it back
-        # costs a BtnRST press once the app has the console.
+        # The REPL is what the next deploy needs. Getting it back once
+        # the app has the console costs an interrupt and a teardown.
         bench = _Bench(self)
         bench.seed_unconverted()
         self.assertEqual(bench.deploy("--no-speak"), 0)

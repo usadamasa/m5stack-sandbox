@@ -64,8 +64,14 @@ uv workspace の 4 member: `device/` (デバイスの上で動く overlay)、`ho
 
 - **ポートは 1 プロセスしか掴めない。** `buddy_deploy.py` や `esptool` を使う前に MCP の
   `buddy_disconnect` を呼ぶ
-- **アプリ起動は片道。** transport が上がると `micropython.kbd_intr(-1)` で Ctrl-C が
-  無効になる。REPL に戻すには本体背面の BtnRST を押してもらう
+- **アプリ起動は片道ではない。** Ctrl-C は有効なままで、アプリがそれを捕まえて reboot せずに
+  REPL で止まる。MCP なら `buddy_interrupt`、CLI なら `--interrupt`。REPL を要求するツールは
+  自分で Ctrl-C を打ってから入る。BtnRST は、それでも応答しないときの最後の手段
+- **走っているアプリは `buddy_debug` で覗ける。** `dbg.*` verb が既存のシリアル経路に乗る。
+  デバイス側のモジュールは使うまで import されないので、覗いていない間の heap は減らない。
+  初回の `dbg.*` でデバイスが喋る。詳細は `buddy-debug` skill
+- **大きい出力は ack ではなく log に出る。** `dbg.frag` のヒープマップも traceback も
+  `print()` 経由。ack の `ok: true` だけ見て終わらせない
 - **MCP server はセッション開始時に host のコードを import 済み。** `buddy_bridge.py` を
   直しても走っているサーバには反映されない。実機検証は `uv run` の別プロセスで行うか、
   セッションを再起動する

@@ -81,7 +81,7 @@ docker compose up -d
 ```bash
 PORT=/dev/cu.usbmodem101
 
-# overlay を転送する (REPL に居ることが前提。居なければ BtnRST を待つ)
+# overlay を転送する (走っているアプリは Ctrl-C で REPL に戻される)
 # 転送後はアプリが起動して喋る。喋らせないなら --no-speak
 uv run python host/tools/src/buddy_deploy.py --port $PORT
 
@@ -104,15 +104,33 @@ uv run python host/tools/src/provision_wifi.py --port $PORT --ssid MyNetwork --v
 
 # 実機のフォント一覧と実測メトリクスを取る (REPL が要る、read-only、JSON)
 uv run python host/tools/src/probe_device.py --port $PORT
+
+# 走っているアプリの中を覗く (止めない)
+uv run python host/link/src/buddy_bridge.py --port $PORT --dbg mem
+uv run python host/link/src/buddy_bridge.py --port $PORT --dbg eval --dbg-src 'chat.active'
+
+# アプリを畳んで REPL に戻す (reboot しない。画面に REPL と出る)
+uv run python host/link/src/buddy_bridge.py --port $PORT --interrupt
 ```
 
-`--start` は片道。アプリは transport 起動時に `micropython.kbd_intr(-1)` で Ctrl-C を
-無効化するため、REPL に戻るには本体背面の BtnRST を押す。
-
 REPL を要求するもの (`buddy_deploy.py`、`provision_wifi.py`、`buddy_bridge.py --start`、
-`probe_device.py`) は BtnRST が押されるまでポーリングして待つ。待ち時間は `--wait` 秒
-(既定 180、0 で待たない)。MCP の `buddy_start_app` だけはツール呼び出しを長時間ブロック
-しないよう既定 15 秒。
+`probe_device.py`) は、走っているアプリを Ctrl-C で畳んでから入る。それでも応答しない
+デバイスのために BtnRST 待ちのポーリングが残っている。待ち時間は `--wait` 秒 (既定 180、
+0 で待たない)。MCP の `buddy_start_app` だけはツール呼び出しを長時間ブロックしないよう
+既定 15 秒。
+
+### 動作確認とデバッグ
+
+アプリが上がっている間もデバイス側に REPL は無い。代わりに `dbg.*` verb が既存の
+シリアル経路に乗る。デバイス側の `buddy_debug` は **使うまで import されない**ので、
+覗いていない間の heap コストは実測 64 バイト。初回の `dbg.*` でデバイスが
+「デバッグモードに入ったのだ」と喋る (`--dbg-silent` で黙る)。
+
+アプリを止めたいときは Ctrl-C が効く。`micropython.kbd_intr(-1)` はもう掛けていない —
+host が流すのは `json.dumps` の出力だけで、制御文字は `\uXXXX` に逃げるため。アプリは
+`KeyboardInterrupt` を捕まえて reboot せずに REPL で止まる。
+
+詳しくは `buddy-debug` skill にある。
 
 ### MCP 経由
 
@@ -130,6 +148,8 @@ REPL を要求するもの (`buddy_deploy.py`、`provision_wifi.py`、`buddy_bri
 | `buddy_chat_clear` | 会話ログを消してダッシュボードへ戻す |
 | `buddy_chat_info` | パネルが選んだフォントと行数・幅 |
 | `buddy_events` | 前回の呼び出し以降にデバイスが発した全て (protocol + ログ) |
+| `buddy_debug` | 走っているアプリの中を覗く (`mem` / `frag` / `gc` / `state` / `eval` / `exec` / `off`) |
+| `buddy_interrupt` | Ctrl-C でアプリを畳んで REPL に戻す。reboot はしない |
 | `buddy_chatter_start` / `_stop` / `_status` | 作業中の独り言 (下記) の開始・停止・様子見 |
 
 `buddy_say` は分割したパートの間に既定で 2 秒空ける (`pace`)。画面は末尾 4 行しか映らないので、

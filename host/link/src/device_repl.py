@@ -23,10 +23,19 @@ problems into non-problems: `exec` either completes or raises, and
 ### Why the wait loop is still ours
 
 `mpremote`'s own `wait=` retries `open()`, which covers a port that has
-not re-enumerated yet. It does not cover this board's actual obstacle:
-the Buddy app calls `micropython.kbd_intr(-1)`, so the port opens fine
-and Ctrl-C does nothing. The only way back is a physical BtnRST press,
-and the loop below exists to wait for a human to make it.
+not re-enumerated yet. It does not cover this board's other obstacle: a
+device that opens fine and does not answer the handshake.
+
+That used to be the normal state — the Buddy app called
+`micropython.kbd_intr(-1)`, so the Ctrl-C `enter_raw_repl` leads with
+did nothing and only a physical BtnRST press got us back. The app now
+leaves the interrupt enabled and catches it (see the "Ctrl-C" section of
+`device/buddy_serial.py`), so the ordinary handshake reaches the prompt
+on its own. Teardown takes a moment, which is the other reason this
+polls rather than trying once.
+
+The BtnRST wait stays for what is left: a device wedged below the Python
+level, and any bundle old enough to still disable the interrupt.
 """
 
 from __future__ import annotations
@@ -244,8 +253,9 @@ def connect_repl(
             if time.monotonic() >= deadline:
                 tail = f"\nlast heard: {last_noise.strip() or exc}"
                 raise ReplError(
-                    f"device never reached the REPL within {timeout:.0f}s. The Buddy "
-                    "app disables Ctrl-C while its serial transport is up, so this "
-                    f"needs a BtnRST press on the device.{tail}"
+                    f"device never reached the REPL within {timeout:.0f}s. Ctrl-C "
+                    "should have been enough — a device that ignores it is wedged "
+                    "below the Python level, or is running a bundle old enough to "
+                    f"disable it. Either way this needs a BtnRST press.{tail}"
                 ) from None
             time.sleep(_POLL_S)

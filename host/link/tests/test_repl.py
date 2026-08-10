@@ -1,9 +1,10 @@
-"""Getting to the REPL, which needs a human to press a button.
+"""Getting to the REPL, which sometimes needs a human to press a button.
 
 The transfer itself is mpremote's and is not retested here. What is ours
-is the wait loop, and it exists because the Buddy app calls
-`micropython.kbd_intr(-1)`: the port opens, Ctrl-C does nothing, and the
-only way back is BtnRST. Failing and telling the operator to run the
+is the wait loop. It used to be the normal path — the Buddy app called
+`micropython.kbd_intr(-1)`, so the port opened and Ctrl-C did nothing —
+and is now the fallback for a device wedged below the Python level or
+running an older bundle. Failing and telling the operator to run the
 command again makes them do the work twice, and in an agent-driven
 session it costs a whole round trip for something the port can report.
 """

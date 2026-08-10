@@ -11,7 +11,7 @@ Three failures matter and only one is obvious from the far end:
 * a block handed to `playRaw` that is not exactly the block size — an
   audible click, or a shifted stream for everything after it;
 * a source that waits forever on a socket that has died, which freezes
-  the app's 40 ms tick with no way back but BtnRST;
+  the app's 40 ms tick and takes an interrupt to get out of;
 * a stream cut short being reported as a successful utterance.
 
 All three are covered here without a board, a speaker or an engine.
