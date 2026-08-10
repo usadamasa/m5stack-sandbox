@@ -103,16 +103,35 @@ _MAX_DRAIN = 512
 _MAX_LINE = 4096
 
 
-def _binary_streams() -> tuple:
+def _binary_streams():
     """Return (stdin_reader, stdout_writer) as byte streams.
 
     MicroPython exposes ``.buffer`` on the std streams for the esp32
     port, but the attribute is absent on some builds. Fall back to the
     text stream and let the encode/decode happen at the edges.
+
+    No return annotation: `getattr` with a concrete default already gives
+    basedpyright a real (if permissive) type for each stream, and a bare
+    ``-> tuple:`` here would throw that away in favour of ``Unknown``.
     """
     stdin = getattr(sys.stdin, "buffer", sys.stdin)
     stdout = getattr(sys.stdout, "buffer", sys.stdout)
     return stdin, stdout
+
+
+def _noop_line(_line):
+    # type: (bytes) -> None
+    return None
+
+
+def _noop_passkey(_pk):
+    # type: (int) -> None
+    return None
+
+
+def _noop_state(_st):
+    # type: (str) -> None
+    return None
 
 
 class BuddySerial:
@@ -124,10 +143,21 @@ class BuddySerial:
     # same branch the stripped UIFlow 2.0 BLE build takes.
     pairing_supported = False
 
-    def __init__(self, name_prefix="Claude", on_line=None, on_passkey=None, on_state=None) -> None:
-        self._on_line = on_line or (lambda _line: None)
-        self._on_passkey = on_passkey or (lambda _pk: None)
-        self._on_state = on_state or (lambda _st: None)
+    def __init__(
+        self,
+        name_prefix="Claude",  # type: str
+        # on_line/on_passkey/on_state are duck-typed callbacks. MicroPython has
+        # no `typing`, so there is no builtin name that spells a callable's
+        # signature (see tests/test_device_constraints.py) — these three stay
+        # Unknown to basedpyright, and so does everything assigned from them
+        # below. Ignored per-line rather than left to cascade silently.
+        on_line=None,  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType]
+        on_passkey=None,  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType]
+        on_state=None,  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType]
+    ) -> None:
+        self._on_line = on_line or _noop_line  # pyright: ignore[reportUnknownMemberType]
+        self._on_passkey = on_passkey or _noop_passkey  # pyright: ignore[reportUnknownMemberType]
+        self._on_state = on_state or _noop_state  # pyright: ignore[reportUnknownMemberType]
 
         self._name = name_prefix + "_serial"
         self._rx_buf = bytearray()
@@ -172,7 +202,8 @@ class BuddySerial:
     # a host it may relax exactly the behaviour `sec` exists to gate.
     encrypted = False
 
-    def send_line(self, payload) -> bool:
+    def send_line(self, payload):
+        # type: (bytes | bytearray | str) -> bool
         """Push one JSON line to the host. Returns False if no session."""
         if self._shutting_down or not self._host_seen:
             return False
@@ -210,8 +241,8 @@ class BuddySerial:
             # also the path a future transport that *did* disable it
             # would come through.
             micropython.kbd_intr(3)
-        self._on_line = lambda _line: None
-        self._on_state = lambda _st: None
+        self._on_line = _noop_line  # pyright: ignore[reportUnknownMemberType]
+        self._on_state = _noop_state  # pyright: ignore[reportUnknownMemberType]
         print("buddy_serial: down")
 
     # ----- inbound pump
@@ -273,17 +304,22 @@ class BuddySerial:
         if not self._host_seen:
             self._host_seen = True
             self._emit_state("connected")
-        self._on_line(payload)
+        self._on_line(payload)  # pyright: ignore[reportUnknownMemberType]
 
     def _emit_state(self, state: str) -> None:
         try:
-            self._on_state(state)
+            self._on_state(state)  # pyright: ignore[reportUnknownMemberType]
         except Exception as e:
             print("buddy_serial: on_state error:", e)
 
     def _write(self, raw: bytes) -> None:
         try:
-            self._stdout.write(raw)
+            # Deliberately duck-typed: this is bytes-mode on the buffer stream
+            # and wrong-type on the text-mode fallback, which is exactly the
+            # TypeError caught below. basedpyright sees only the text-mode
+            # branch's `write(s: str)` and flags the mismatch it's meant to
+            # provoke.
+            self._stdout.write(raw)  # pyright: ignore[reportArgumentType]
         except TypeError:
             # Text-mode fallback when .buffer was unavailable.
             self._stdout.write(raw.decode("utf-8"))

@@ -121,7 +121,14 @@ _DBG_TAG = b'"dbg.'
 # region by the time we run — so nothing here touches `network`.
 
 
-def _make_transport(**kw):
+def _make_transport(**kw):  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType]
+    # `kw`'s values are heterogeneous (a str name_prefix, several
+    # callables) and MicroPython has no `typing` to spell that, so `kw`
+    # stays unannotated; the resulting Unknown at the call below is
+    # ignored per-line. No return annotation, though: leaving it to infer
+    # keeps the concrete BuddySerial return type intact (needed below in
+    # run()) instead of forcing everything through `object`.
+    #
     # Serial only. buddy_ble was the largest module in the bundle and
     # pulled the NimBLE stack in behind it; both are off the device now,
     # because the ESP-IDF heap they reserved is what the speech path
@@ -136,7 +143,7 @@ def _make_transport(**kw):
         raise RuntimeError("buddy_ble is not installed; _TRANSPORT must be 'serial'")
     import buddy_serial
 
-    return buddy_serial.BuddySerial(**kw)
+    return buddy_serial.BuddySerial(**kw)  # pyright: ignore[reportUnknownArgumentType]
 
 
 # ---- battery stub
@@ -150,6 +157,7 @@ def _make_transport(**kw):
 # A follow-up can swap this for the real AXP2101/AW9523 reader once
 # someone digs out the register map.
 def _stub_battery():
+    # type: () -> dict[str, object]
     return {"pct": 100, "mV": 0, "mA": 0, "usb": True}
 
 
@@ -166,6 +174,7 @@ _INTENT_QUIT = "quit"
 
 
 def _intent_for_key(k):
+    # type: (int | str | bytes | bytearray | None) -> str | None
     """Return an intent string or None for an unrecognized key.
 
     MatrixKeyboard.get_key() on this UIFlow 2.0 build hands back the
@@ -234,7 +243,10 @@ def run():
     # it needs the radio, because that is where the speech comes from
     # now (see buddy_tts.py). Taking WiFi down here would leave
     # `speak.say` with nothing to reach the engine over.
-    if _TRANSPORT == "ble":
+    # Provably dead while _TRANSPORT == "serial" is the only installed
+    # option — kept anyway so the diff against upstream stays readable
+    # (see the "transport selection" section above).
+    if _TRANSPORT == "ble":  # pyright: ignore[reportUnnecessaryComparison]
         try:
             import network
             sta = network.WLAN(network.STA_IF)
@@ -279,7 +291,7 @@ def run():
     # forget_bonds), and BLE needs the on_line callback which needs the
     # protocol. Same indirection trick as the Basic: stash the protocol
     # in a 1-slot dict that the callback reads at event time.
-    proto_holder = {"p": None}
+    proto_holder = {"p": None}  # type: dict[str, object]
 
     # Set when a chat command changed what should be on screen. Drawing
     # happens in the main loop rather than here for the same reason the
@@ -292,9 +304,14 @@ def run():
     # One slot holding buddy_debug once something has asked for it. A
     # list rather than a `global` so the closure can rebind it, same
     # pattern as proto_holder above.
-    dbg_holder = {"m": None}  # type: dict
+    dbg_holder = {"m": None}  # type: dict[str, object]
 
     def on_dbg(raw):
+        # type: (bytes | bytearray | str) -> dict[str, object] | None
+        # `dbg_holder["m"]` is declared `object` so it can hold either
+        # None or the buddy_debug module — the mailbox pattern above
+        # loses the concrete module type across calls, so reading it back
+        # here is ignored per-line rather than left to cascade.
         mod = dbg_holder["m"]
         # True only on the frame that pulled the module in. The host
         # cannot work this out for itself — a fresh CLI process has no
@@ -325,12 +342,12 @@ def run():
                     "ui": ui,
                 }
             )
-        ack = mod.handle_raw(raw)
-        if ack is not None and entered and not ack.get("unload"):
+        ack = mod.handle_raw(raw)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+        if ack is not None and entered and not ack.get("unload"):  # pyright: ignore[reportUnknownMemberType]
             # A `dbg.off` that had to import the module in order to
             # unload it has not entered anything, so it does not say so.
             ack["entered"] = True
-        if ack is not None and ack.get("unload"):
+        if ack is not None and ack.get("unload"):  # pyright: ignore[reportUnknownMemberType]
             # Every reference has to go before the collect, or the
             # number in the ack is measured against a heap the module
             # is still sitting in. `mod` is the one that is easy to
@@ -342,9 +359,13 @@ def run():
                 del sys.modules["buddy_debug"]
             gc.collect()
             ack["free"] = gc.mem_free()
-        return ack
+        return ack  # pyright: ignore[reportUnknownVariableType]
 
     def on_line(raw):
+        # type: (bytes) -> None
+        # Always bytes here: buddy_serial._handle_line() decodes nothing
+        # before calling on_line, unlike the wider bytes|bytearray|str
+        # accepted by chat/speech/dbg's own handle_raw() below.
         if _CHAT_TAG in raw and ble is not None:
             ack = chat.handle_raw(raw)
             if ack is not None:
@@ -368,9 +389,13 @@ def run():
             if ack is not None:
                 ble.send_line(json.dumps(ack, separators=(",", ":")).encode("utf-8"))
                 return
+        # `proto_holder["p"]` is declared `object` so the mailbox can hold
+        # None before the protocol exists; reading it back loses the
+        # concrete BuddyProtocol type, so the call below is ignored
+        # per-line rather than left to cascade.
         p = proto_holder["p"]
         if p is not None:
-            p.on_line(raw)
+            p.on_line(raw)  # pyright: ignore[reportUnknownMemberType]
 
     # BLE callbacks dispatch from micropython.schedule context, which
     # runs between bytecodes on the main thread. That means a
@@ -386,7 +411,7 @@ def run():
     pending_state = [None]  # type: list[str | None]
     pending_passkey = [None]  # type: list[int | None]
 
-    def on_passkey(pk):
+    def on_passkey(pk: int) -> None:
         pending_passkey[0] = pk
 
     # Pre-bind so on_state_change's closure can resolve `ble` even if
@@ -404,7 +429,7 @@ def run():
     # NameError inside the IRQ.
     speech = None
 
-    def on_state_change(s):
+    def on_state_change(s: str) -> None:
         # The stripped UIFlow 2.0 BLE build doesn't fire
         # _IRQ_ENCRYPTION_UPDATE, so "connected" is terminal. Remap
         # it to "encrypted" so the UI advances past the PAIR... badge
@@ -417,7 +442,7 @@ def run():
         if effective == "encrypted":
             p = proto_holder["p"]
             if p is not None:
-                p.send_hello()
+                p.send_hello()  # pyright: ignore[reportUnknownMemberType]
 
     # Run a full GC pass before NimBLE init. The controller
     # allocates several large chunks during active(True) — bonding
@@ -616,7 +641,9 @@ def run():
         # than re-raised because the reset ends the process either way,
         # and re-raising only risks a second unprintable exception.
         print("claude_buddy: unhandled exception in the main loop")
-        sys.print_exception(e)
+        # MicroPython-only; not in CPython's real `sys` (which typeshed
+        # models here), so the attribute itself is Unknown to basedpyright.
+        sys.print_exception(e)  # pyright: ignore[reportUnknownMemberType]
     finally:
         # Mirror buddy_app.py's teardown ordering: BLE first so a late
         # async disconnect event can't repaint Buddy chrome on top of

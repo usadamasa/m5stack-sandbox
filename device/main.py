@@ -42,12 +42,13 @@ _GRAY_MID = 0x777777
 _RED = 0xFF0000
 
 
-def _centred(text, y, colour):
+def _centred(text: str, y: int, colour: int) -> None:
     _LCD.setTextColor(colour, _BLACK)
     _LCD.drawString(text, (_W - _LCD.textWidth(text)) // 2, y)
 
 
 def _report(result):
+    # type: (dict[str, object]) -> None
     _LCD.fillScreen(_BLACK)
     _LCD.setTextSize(1)
     if result.get("ok"):
@@ -68,7 +69,7 @@ except Exception as e:
     print("main: M5.begin() warning:", e)
 
 try:
-    status = wifi_event.connect()
+    status = wifi_event.connect()  # type: dict[str, object]
 except Exception as e:
     # wifi_event imports network at call time, so a build without a
     # working network module raises here rather than at import.

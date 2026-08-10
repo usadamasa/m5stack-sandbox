@@ -41,8 +41,21 @@ addopts = "--strict-markers --strict-config"
 pythonVersion = "3.13"
 include = ["src", "tests"]
 exclude = ["**/__pycache__"]
-extraPaths = ["src"]
-typeCheckingMode = "standard"
+extraPaths = ["src", "../link/src"]
+typeCheckingMode = "strict"
+# host/link (buddy_bridge, device_repl) は同じ workspace の自前パッケージだが、
+# editable install は hatchling の import hook 経由なので basedpyright からは
+# 見えない。extraPaths でソースを直接指すと import 解決先が「stub の無い外部
+# ライブラリ」ではなく通常のソースファイルになるので、reportMissingTypeStubs
+# は出ない。include に含めていないので host/link 自身の診断はここには出ない。
+
+# tests/ は module 内部の状態 (`_device_lock` / `_link` / `_chatter` 等) を
+# 直接覗く white-box テストが前提の設計。reportPrivateUsage はここでは
+# 無効化する — アンダースコア接頭辞はモジュール外の一般利用者への注意書きで
+# あって、同じ package のテストに対するものではない。
+[[tool.basedpyright.executionEnvironments]]
+root = "tests"
+reportPrivateUsage = false
 
 # -------------------------------------------------------------- coverage
 

@@ -52,8 +52,14 @@ addopts = "--strict-markers --strict-config"
 pythonVersion = "3.13"
 include = ["src", "tests"]
 exclude = ["**/__pycache__"]
-extraPaths = ["src"]
-typeCheckingMode = "standard"
+extraPaths = ["src", "../link/src"]
+typeCheckingMode = "strict"
+# host/link (buddy_bridge, device_repl, fake_repl) は同じ workspace の自前
+# パッケージだが、editable install は hatchling の import hook 経由なので
+# basedpyright からは見えない。extraPaths でソースを直接指すと import 解決先が
+# 「stub の無い外部ライブラリ」ではなく通常のソースファイルになるので、
+# reportMissingTypeStubs は出ない。include に含めていないので host/link 自身の
+# 診断はここには出ない。
 
 # -------------------------------------------------------------- coverage
 

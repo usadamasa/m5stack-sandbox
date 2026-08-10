@@ -46,6 +46,7 @@ import sys
 import urllib.error
 import urllib.request
 from http.client import HTTPResponse, IncompleteRead
+from typing import NotRequired, TypedDict
 
 MANIFEST_URL = "https://m5burner-api.m5stack.com/api/firmware"
 BINARY_BASE = "https://m5burner.m5stack.com/firmware/"
@@ -134,19 +135,46 @@ def _open_https(url: str | urllib.request.Request, timeout: float = 30.0) -> HTT
     return urllib.request.urlopen(url, timeout=timeout, context=ctx)
 
 
+class FirmwareVersion(TypedDict, total=False):
+    """M5Burner の manifest エントリが持つバージョン 1 件分の形。
+
+    レスポンスは緩く、どのフィールドも欠けうるので total=False にしてある。
+    """
+
+    version: str
+    file: str
+    published_at: str
+    published: bool
+
+
+class ManifestEntry(TypedDict, total=False):
+    """M5Burner の manifest が返すカタログの 1 エントリ (ボードファミリー単位)。
+
+    `file` の値は Aliyun OSS 上の不透明なオブジェクトキーであり、32桁の
+    16進数に見えてもコンテンツハッシュではない。整合性はダウンロード時に
+    CDN が返す Content-MD5 ヘッダで検証する。
+    """
+
+    name: str
+    category: str
+    tags: list[str]
+    versions: list[FirmwareVersion]
+
+
+class VariantSpec(TypedDict):
+    """VARIANTS の値の形。variant 名から manifest 上のエントリを引く鍵。"""
+
+    category: str
+    entry_name: str
+    version_suffix: str
+    version_must_not: NotRequired[tuple[str, ...]]
+
+
 # Map each supported variant to the exact (category, entry name, version
 # suffix) tuple that identifies its firmware in the M5Burner manifest.
 # version_suffix is matched against the `version` field of each published
 # version — empty string means "any version, pick the latest stable".
-#
-# Schema of a manifest entry:
-#   {"name": str, "category": str, "tags": [...],
-#    "versions": [{"version": str, "file": "<opaque-cdn-key>.bin",
-#                  "published_at": "...", "published": bool}]}
-# The `file` value is an opaque object key on Aliyun OSS — NOT a content
-# hash, despite the 32-hex-char shape. Integrity is verified at download
-# time against the Content-MD5 header the CDN returns.
-VARIANTS = {
+VARIANTS: dict[str, VariantSpec] = {
     "basic-16mb": {
         "category": "core",
         "entry_name": "UIFlow2.0",
@@ -192,7 +220,7 @@ VARIANTS = {
 }
 
 
-def fetch_manifest(max_attempts: int = 6) -> list:
+def fetch_manifest(max_attempts: int = 6) -> list[ManifestEntry]:
     """Read the catalog, resuming with Range if the connection is cut short.
 
     The manifest is ~2.5 MB and the endpoint (or an on-path proxy) will
@@ -231,7 +259,7 @@ def fetch_manifest(max_attempts: int = 6) -> list:
     )
 
 
-def _find_entry(manifest: list, spec: dict) -> dict:
+def _find_entry(manifest: list[ManifestEntry], spec: VariantSpec) -> ManifestEntry:
     cat = spec["category"].lower()
     name = spec["entry_name"]
     for e in manifest:
@@ -243,16 +271,16 @@ def _find_entry(manifest: list, spec: dict) -> dict:
     )
 
 
-def _pick_version(entry: dict, spec: dict) -> dict:
+def _pick_version(entry: ManifestEntry, spec: VariantSpec) -> FirmwareVersion:
     """Pick the newest stable version matching the variant's suffix.
 
     Stable = version tag without rc/alpha/beta/hotfix. Falls back to
     the newest non-stable if nothing clean matches, so preview/RC
     releases are still flashable when that's all that exists.
     """
-    suffix = spec.get("version_suffix", "")
+    suffix = spec["version_suffix"]
     must_not = spec.get("version_must_not", ())
-    candidates = []
+    candidates: list[FirmwareVersion] = []
     for v in entry.get("versions", []):
         if v.get("published") is False:
             continue
@@ -276,7 +304,9 @@ def _pick_version(entry: dict, spec: dict) -> dict:
     return (stable or candidates)[-1]
 
 
-def pick_firmware(manifest: list, variant: str) -> tuple[dict, dict]:
+def pick_firmware(
+    manifest: list[ManifestEntry], variant: str
+) -> tuple[ManifestEntry, FirmwareVersion]:
     """Return (entry, version) for the chosen variant."""
     if variant not in VARIANTS:
         raise SystemExit(f"Unknown variant '{variant}'. Known: {list(VARIANTS)}")
@@ -294,7 +324,7 @@ def _md5_file(path: str) -> bytes:
     return h.digest()
 
 
-def download(entry: dict, version: dict, dest_dir: str | None = None) -> str:
+def download(entry: ManifestEntry, version: FirmwareVersion, dest_dir: str | None = None) -> str:
     if dest_dir is None:
         dest_dir = _cache_dir()
     file_field = version.get("file")

@@ -83,7 +83,12 @@ from buddy_bridge import (
     speak,
     voicevox_url,
 )
-from device_repl import Repl, ReplError, connect_repl, run_and_release
+from device_repl import (
+    Repl,
+    ReplError,
+    connect_repl,
+    run_and_release,
+)
 
 # host/tools/src/buddy_deploy.py から 3 つ上。デバイスへ載せるソースは
 # workspace member をまたいで device/ の下にあるので、member 単位ではなく
@@ -244,7 +249,8 @@ class Job:
 
 def _mpy_cross_binary() -> str:
     try:
-        import mpy_cross
+        # PyPI 版の mpy-cross に型情報が無く、stub パッケージも存在しない。
+        import mpy_cross  # pyright: ignore[reportMissingTypeStubs]
     except ImportError:
         raise DeployError(
             "mpy-cross is not installed. It is in the dev dependency group: run `uv sync`."
@@ -678,7 +684,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             # directory is a snapshot of flash and holds files nothing
             # here pushes, including a launcher that must not be turned
             # into a main.mpy sitting next to the pushable modules.
-            missing = []
+            missing: list[str] = []
             for name in UPSTREAM:
                 src = vendor / f"{name}.py"
                 if not src.is_file():

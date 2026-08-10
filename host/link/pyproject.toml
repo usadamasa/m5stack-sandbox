@@ -54,7 +54,7 @@ exclude = ["**/__pycache__"]
 # editable install が入っていれば venv 経由でも引けるが、hatchling の
 # editable は import hook なので静的解析からは見えないことがある。
 extraPaths = ["src"]
-typeCheckingMode = "standard"
+typeCheckingMode = "strict"
 
 # -------------------------------------------------------------- coverage
 

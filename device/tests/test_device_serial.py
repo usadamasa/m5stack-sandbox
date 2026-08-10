@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 """Inbound framing tests for the device-side transport.
 
 `device/buddy_serial.py` runs on MicroPython, but its line classifier is
@@ -7,6 +8,11 @@ regression fails in CI instead of on the bench.
 
 Only `_handle_line` is covered: `poll()` reads the real stdin, which a
 unit test has no business touching.
+
+Whitebox by design: `BuddySerial.__new__` skips `__init__` and the tests
+below poke `_on_line` / `_host_seen` / `_handle_line` directly, so
+basedpyright's private-member check is switched off for this file rather
+than silenced at each of the many call sites.
 """
 
 import unittest

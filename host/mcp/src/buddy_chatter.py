@@ -56,7 +56,7 @@ from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Empty, Full, Queue
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from buddy_bridge import DEFAULT_RATE, ZUNDAMON, Message, say, speak, voicevox_url
 
@@ -222,11 +222,14 @@ def parse_event(payload: bytes) -> Event | None:
     out, so there is nowhere for an error to go.
     """
     try:
-        obj = json.loads(payload)
+        raw: Any = json.loads(payload)
     except (ValueError, UnicodeDecodeError):
         return None
-    if not isinstance(obj, dict):
+    if not isinstance(raw, dict):
         return None
+    # `isinstance` alone narrows `raw` to `dict[Unknown, Unknown]`; the
+    # cast gives `.get` below a concrete value type to work with.
+    obj = cast("dict[str, Any]", raw)
     kind = obj.get("kind")
     if not isinstance(kind, str) or kind not in KINDS:
         return None
