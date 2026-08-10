@@ -5,6 +5,7 @@
 name = "buddy-host-mcp"
 version = "0.1.0"
 description = "MCP server exposing the Cardputer-Adv to Claude Code."
+license = "Apache-2.0"
 requires-python = ">=3.13"
 dependencies = [
     "anthropic[vertex]>=0.69",

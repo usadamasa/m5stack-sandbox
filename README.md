@@ -55,6 +55,19 @@ uv sync --all-packages
 `.venv` が 1 つ作られる。以降のコマンドは `uv run` を通す (シリアルポートを開く
 `tcsetattr` が sandbox で拒否されるため)。
 
+### CLI ツール
+
+ライセンス検査に `trivy` を使う。バージョンは `aqua.yaml` が持つ。
+
+```bash
+aqua install
+direnv allow   # 対話シェルから trivy を直接叩くとき
+```
+
+`aqua` と `direnv` 自体は別途入れておく (`brew install aqua direnv`)。`poe license` は
+`aqua exec` 越しに呼ぶので direnv は要らない。`.envrc` が要るのは、シェルから `trivy` を
+そのまま打ちたいときだけ。
+
 ### VOICEVOX ENGINE
 
 喋らせるのに要る。デバイスが LAN 越しに叩く。
@@ -206,9 +219,11 @@ uv run ruff format
 uv run --directory host/link pytest --cov      # member ごと (device / host/link / host/mcp / host/tools)
 uv run --directory host/link basedpyright      # 同上
 uv run python host/tools/src/buddy_deploy.py --compile-only
+uv run poe license        # 依存のライセンスを trivy の分類で検査する
+uv run poe license-list   # 依存が名乗るライセンスを一覧するだけ
 ```
 
-同じものが GitHub Actions で回る。デバイスは要らない。最後のひとつが要るのは、`ruff` と
+同じものが GitHub Actions で回る。デバイスは要らない。`--compile-only` が要るのは、`ruff` と
 `basedpyright` が通っても MicroPython のパーサが受け取るとは限らないから。
 
 ## 既知の制約

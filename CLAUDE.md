@@ -15,7 +15,16 @@ uv sync --all-packages         # .venv を作る (全 member + dev グループ)
 uv run ruff check              # lint。ルートから 1 回で全 member を見る
 uv run ruff format             # format。同上
 uv run python host/tools/src/buddy_deploy.py --compile-only   # device/ が MicroPython で通るか
+uv run poe license                                            # 依存のライセンスを trivy の分類で検査する
 ```
+
+タスクランナーは poethepoet。定義はルートの `pyproject.toml` の `[tool.poe.tasks]`、一覧は
+`uv run poe --help`。CI に書くのはタスク名だけにして、コマンドと根拠は pyproject 側に置く。
+
+`poe license` は `aqua exec` 越しに `trivy` を呼ぶ。バージョンは `aqua.yaml` が持つ。
+`aqua exec` を挟むのは PATH に依存しないためで、`.envrc` が通す PATH は direnv を hook した
+対話シェルにしか効かない (Claude Code の Bash からは見えない)。trivy は `.venv` の
+site-packages を読むため、`uv sync` の後でないと何も検出しない。
 
 pytest と basedpyright は **member ごと**に回す。どちらも 1 プロセス 1 プロジェクトで、
 member の設定を読むにはそこで動かすしかない (`device` / `host/link` / `host/mcp` /
@@ -59,6 +68,9 @@ uv workspace の 4 member: `device/` (デバイスの上で動く overlay)、`ho
   ものがデバイスの `/flash/` にあり、本リポジトリには置かない
 - テストは全て実機不要。`device` の dev グループに host-link が入っているのは、
   `device/tests/test_chat.py` と `test_speak.py` が両側の定数を突き合わせる契約テストだから
+- 依存を足したら `poe license` が弾くことがある。copyleft や分類不能のライセンスが来たら、
+  除外に足す前にそれを使ってよいかを先に決める。GPL-2.0+ の `esptool` だけは既に除外済みで、
+  理由は `[tool.poe.tasks.license]` の上に書いてある
 
 ## デバイスを触るときの前提
 
