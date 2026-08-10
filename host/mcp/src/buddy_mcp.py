@@ -39,8 +39,8 @@ chatter only ever takes that lock when it is already free.
 
 `BUDDY_PORT` selects the device (default `/dev/cu.usbmodem101`).
 `BUDDY_CHATTER=0` turns the chatter off. Registered via `.mcp.json` at
-the repo root for Claude Code, and `[mcp_servers.buddy]` in
-`~/.codex/config.toml` for Codex — see `codex/README.md`.
+the repo root for Claude Code, and `[mcp_servers.buddy]` in the
+project-local `.codex/config.toml` for Codex — see `README.md`.
 """
 
 from __future__ import annotations

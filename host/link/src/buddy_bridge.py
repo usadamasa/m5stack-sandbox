@@ -594,7 +594,7 @@ def announce_debug_entry(link: SpeechLink, ack: Message, url: str | None = None)
 # The collect matters as much as the delete. The previous run's UI,
 # transport and speech objects are unreachable once run() has returned
 # but are not yet gone, and re-importing on top of them is what the
-# "MemoryError: memory allocation failed" in CLAUDE.md was.
+# "MemoryError: memory allocation failed" in AGENTS.md was.
 LAUNCH_SOURCE = (
     "import sys, gc\n"
     "for _p in ('/flash', '/flash/apps'):\n"

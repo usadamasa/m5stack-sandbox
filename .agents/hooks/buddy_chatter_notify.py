@@ -7,10 +7,10 @@ happened.
 
 ### One script, both agents
 
-Claude Code and Codex use the same hook schema: the same event names,
-the same `{"type": "command", ...}` registration, and the same payload
-on stdin. So this is registered from `.claude/settings.json` and from
-`~/.codex/hooks.json` unchanged, apart from `--agent`.
+Claude Code and Codex share the command-handler shape and the common
+event fields on stdin. Their event sets are not identical, so each
+product keeps a thin registration file. Both registrations call this
+script unchanged, apart from `--agent`.
 
 That flag is the point of the difference. It rides along in the datagram
 and is how the server knows which model should write the muttering —
@@ -43,7 +43,7 @@ import socket
 import sys
 from pathlib import Path
 
-# .claude/hooks/buddy_chatter_notify.py -> repo root. Must agree with
+# .agents/hooks/buddy_chatter_notify.py -> repo root. Must agree with
 # DEFAULT_SOCKET in host/mcp/src/buddy_chatter.py.
 SOCKET = os.environ.get("BUDDY_CHATTER_SOCKET") or str(
     Path(__file__).resolve().parents[2] / "tmp" / "buddy-chatter.sock"

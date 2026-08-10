@@ -1,7 +1,7 @@
 """Contract tests for the hook that feeds the chatter.
 
-The hook lives in `.claude/hooks/` rather than in this package, because
-that is where an agent looks for it. It is loaded here by path anyway:
+The hook lives in the shared `.agents/hooks/` rather than in this package.
+It is loaded here by path anyway:
 what it puts on the wire and what `parse_event` takes off it are two
 halves of one format, and nothing else checks that they still agree.
 
@@ -19,7 +19,7 @@ from typing import Any, cast
 
 from buddy_chatter import Event, parse_event
 
-HOOK_PATH = Path(__file__).resolve().parents[3] / ".claude" / "hooks" / "buddy_chatter_notify.py"
+HOOK_PATH = Path(__file__).resolve().parents[3] / ".agents" / "hooks" / "buddy_chatter_notify.py"
 
 
 def _load_hook() -> tuple[
@@ -48,7 +48,7 @@ agent_from, classify = _load_hook()
 
 class HookExistsTests(unittest.TestCase):
     def test_the_registered_path_is_the_one_tested(self) -> None:
-        # Both `.claude/settings.json` and the Codex registration name
+        # Both `.claude/settings.json` and `.codex/hooks.json` name
         # this path; a rename that misses one of them is silent.
         self.assertTrue(HOOK_PATH.is_file(), HOOK_PATH)
 

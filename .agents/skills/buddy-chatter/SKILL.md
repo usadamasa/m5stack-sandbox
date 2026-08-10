@@ -1,6 +1,6 @@
 ---
 name: buddy-chatter
-description: 作業中に Cardputer-Adv が独り言を言う機能 (host/mcp/src/buddy_chatter.py と .claude/hooks/buddy_chatter_notify.py) を扱うときに使う。喋らない・喋りすぎる・台詞が変、hook が届いていない、chatter を直したのに反映されないときに参照する。Claude Code と Codex のどちらで動いているか、どちらの LLM が台詞を書くかの判定もここ。ポートの所有権と、タスクをブロックしない設計の根拠もここ。
+description: 作業中に Cardputer-Adv が独り言を言う機能 (host/mcp/src/buddy_chatter.py と .agents/hooks/buddy_chatter_notify.py) を扱うときに使う。喋らない・喋りすぎる・台詞が変、hook が届いていない、chatter を直したのに反映されないときに参照する。Claude Code と Codex のどちらで動いているか、どちらの LLM が台詞を書くかの判定もここ。ポートの所有権と、タスクをブロックしない設計の根拠もここ。
 ---
 
 # 作業中の独り言 (chatter)
@@ -10,7 +10,7 @@ description: 作業中に Cardputer-Adv が独り言を言う機能 (host/mcp/sr
 
 ```
 hooks ─datagram─> tmp/buddy-chatter.sock ─> MCP server
-  .claude/hooks/                              ├ receiver thread : recvfrom → キュー
+  .agents/hooks/                              ├ receiver thread : recvfrom → キュー
   buddy_chatter_notify.py                     └ worker thread   : ゆらぎ付き間隔で 1 行
   (Claude Code / Codex 共用)                     ├ RoutingLineSource
                                                  │   ├ claude-code → VertexLineSource
@@ -30,7 +30,7 @@ Claude Code と Codex の両方から使う。**違うのは台詞を書く LLM 
 | 経路 | いつ | どこ |
 | --- | --- | --- |
 | MCP の `initialize` の `clientInfo.name` | 接続直後 | `buddy_mcp._ClientProbe` (middleware) |
-| hook datagram の `agent` | イベントごと | `.claude/hooks/` の `--agent` |
+| hook datagram の `agent` | イベントごと | `.agents/hooks/` の `--agent` |
 
 どちらも同じ `AgentIdentity` に書き、**後から観測したものが勝つ**。どちらも来なければ
 `BUDDY_CHATTER_AGENT` (既定 `claude-code`)。認識できない名前は無視され、既に判っている
@@ -44,7 +44,7 @@ identity を消さない。
    これ。chatter は自分からポートを開けないので、`buddy_start_app` か `buddy_connect` が要る
 2. **hook が届いているか。** `queued` と各カウンタが全部 0 のままなら socket に何も来ていない。
    手で叩ける:
-   `echo '{"hook_event_name":"Stop"}' | python3 .claude/hooks/buddy_chatter_notify.py --agent claude-code`
+   `echo '{"hook_event_name":"Stop"}' | python3 .agents/hooks/buddy_chatter_notify.py --agent claude-code`
 3. **backend が合っているか。** `backend` が思っているのと違うなら、hook の `--agent` か
    MCP の `clientInfo` のどちらかが嘘をついている。`client` に生の名前が出る
 4. **台詞が作れているか。** `generation_failures` が立っていたら `generation_error` を読む。
@@ -74,7 +74,7 @@ uv run python host/mcp/src/buddy_chatter.py --port $PORT          # 常駐 (発�
 **ポートは 1 プロセスしか掴めない。** 単体で動かす前に `buddy_disconnect` を呼ぶ。動いている
 間は MCP の `buddy_*` からデバイスに触れない。終わったら止めて `buddy_connect` に戻す。
 
-hook の設定 (`.claude/settings.json`、Codex なら `~/.codex/hooks.json`) を足した直後も、
+hook の設定 (`.claude/settings.json`、Codex なら `.codex/hooks.json`) を足した直後も、
 セッションを再起動するまでは発火しないことがある。その間も idle のタイマーだけは動くので、
 独り言そのものは出る。Codex は新しい hook を初回に trust させる (`New hook - review
 required`)。trust するまでは発火しない。
@@ -113,8 +113,9 @@ required`)。trust するまでは発火しない。
 
 ## 環境変数
 
-MCP server の環境から読む (`.mcp.json` の `env`、Codex なら `[mcp_servers.buddy] env`、
-または起動したシェル)。読むのは起動時 1 回なので、変えたらセッションを再起動する。
+MCP server の環境から読む (`.mcp.json` の `env`、Codex なら
+`.codex/config.toml` の `[mcp_servers.buddy] env`、または起動したシェル)。
+読むのは起動時 1 回なので、変えたらセッションを再起動する。
 `buddy_chatter_start` の引数だけはその場で効く。
 
 | 変数 | 既定 | |

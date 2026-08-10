@@ -1,0 +1,60 @@
+{
+  "description": "Buddy chatter に Codex の作業イベントを通知する。",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.agents/hooks/buddy_chatter_notify.py\" --agent codex",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.agents/hooks/buddy_chatter_notify.py\" --agent codex",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.agents/hooks/buddy_chatter_notify.py\" --agent codex",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.agents/hooks/buddy_chatter_notify.py\" --agent codex",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.agents/hooks/buddy_chatter_notify.py\" --agent codex",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
