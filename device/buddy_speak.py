@@ -124,6 +124,7 @@ def _default_speaker():
 
 
 def _boost_volume(spk):
+    # type: (object) -> int | None
     """Turn `spk` up by `_VOLUME_GAIN`. Returns the volume now set.
 
     Called once, when the player is built. That is once per boot, which
@@ -134,22 +135,27 @@ def _boost_volume(spk):
     Never raises. A board whose build has no volume control still plays
     audio, and losing the utterance over the setting for it would be the
     wrong trade.
+
+    `spk` is duck-typed — the real M5.Speaker or a test double, and
+    MicroPython has no `typing.Protocol` to name what the two have in
+    common — so every call through it below is ignored per-line rather
+    than left to cascade.
     """
     try:
-        before = spk.getVolume()
+        before = spk.getVolume()  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
     except Exception as e:
         print("buddy_speak: getVolume failed:", e)
         return None
-    after = before * _VOLUME_GAIN
+    after = before * _VOLUME_GAIN  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
     if after > _MAX_VOLUME:
         after = _MAX_VOLUME
     try:
-        spk.setVolume(after)
+        spk.setVolume(after)  # pyright: ignore[reportUnknownMemberType]
     except Exception as e:
         print("buddy_speak: setVolume failed:", e)
-        return before
-    print("buddy_speak: volume", before, "->", after)
-    return after
+        return before  # pyright: ignore[reportUnknownVariableType]
+    print("buddy_speak: volume", before, "->", after)  # pyright: ignore[reportUnknownArgumentType]
+    return after  # pyright: ignore[reportUnknownVariableType]
 
 
 def _default_fetch():
@@ -172,10 +178,14 @@ class _StreamSource:
     zero when the last of the declared payload has been handed over.
     """
 
-    def __init__(self, stream, total, response=None) -> None:
+    def __init__(self, stream, total, response=None):
+        # type: (object, int, object | None) -> None
+        # `stream`/`response` are duck-typed sockets or test doubles — no
+        # `typing.Protocol` on MicroPython to name what they have in
+        # common, so their member accesses below are ignored per-line.
         self._stream = stream
         self._response = response
-        self._acc = b""
+        self._acc = b""  # type: bytes
         self.left = total
         self.dead = False
         self._last_progress = time.ticks_ms()
@@ -191,6 +201,7 @@ class _StreamSource:
                 print("buddy_speak: settimeout failed:", e)
 
     def read_block(self, size):
+        # type: (int) -> bytes | None
         """One complete block of `size` bytes, or None if not here yet.
 
         Never short: `pump()` hands the result straight to `playRaw`,
@@ -228,9 +239,13 @@ class _StreamSource:
 
         had = len(self._acc)
         ended = False
-        while len(self._acc) < want:
+        while len(self._acc) < want:  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
             try:
-                chunk = stream.read(want - len(self._acc))
+                # `stream` is duck-typed (see __init__), so `.read()`'s
+                # result is unavoidably Unknown, and folding it into `_acc`
+                # below taints every read of `_acc` for the rest of this
+                # method — ignored per-line rather than left to cascade.
+                chunk = stream.read(want - len(self._acc))  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType, reportUnknownArgumentType]
             except OSError:
                 # Timed out, or would block. Indistinguishable from a
                 # slow AP at this layer, and both want the same answer:
@@ -242,22 +257,22 @@ class _StreamSource:
             if not chunk:
                 ended = True
                 break
-            self._acc += chunk
+            self._acc += chunk  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType, reportUnknownArgumentType]
 
-        if len(self._acc) > had:
+        if len(self._acc) > had:  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
             self._last_progress = time.ticks_ms()
 
-        if len(self._acc) >= want:
-            block = self._acc[:want]
+        if len(self._acc) >= want:  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            block = self._acc[:want]  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
             # Rebind rather than slice-delete: MicroPython's bytes are
             # immutable and its bytearray has no `del b[:n]`.
-            self._acc = self._acc[want:]
+            self._acc = self._acc[want:]  # pyright: ignore[reportUnknownMemberType]
             # By the real bytes, not the padding — this is what tells
             # `pump()` the utterance is over.
             self.left -= want
-            if len(block) < size:
-                block = block + _PAD * (size - len(block))
-            return block
+            if len(block) < size:  # pyright: ignore[reportUnknownArgumentType]
+                block = block + _PAD * (size - len(block))  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
+            return block  # pyright: ignore[reportUnknownVariableType]
 
         if ended:
             print("buddy_speak: stream ended", self.left, "bytes short")
@@ -275,7 +290,7 @@ class _StreamSource:
             if obj is None:
                 continue
             try:
-                obj.close()
+                obj.close()  # pyright: ignore[reportUnknownMemberType]
             except Exception as e:
                 print("buddy_speak: close failed:", e)
         self._stream = None
@@ -285,25 +300,41 @@ class _StreamSource:
 class SpeechPlayer:
     """Fetches one utterance at a time and streams it into the speaker."""
 
-    def __init__(self, transport, speaker=None, fetch=None) -> None:
+    # `transport`/`speaker`/`fetch` are duck-typed dependencies (real
+    # objects or test doubles) — no `typing.Protocol` on MicroPython to
+    # name what the two sides of each have in common, so `transport`,
+    # `speaker` and `fetch` stay unannotated and every use of them, or of
+    # a field built from them, is ignored per-line below rather than left
+    # to cascade silently.
+    def __init__(
+        self,
+        transport,  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType]
+        speaker=None,  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType]
+        fetch=None,  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType]
+    ) -> None:
         self._t = transport
-        self._spk = speaker if speaker is not None else _default_speaker()
-        self._fetch = fetch if fetch is not None else None
-        self.volume = _boost_volume(self._spk)
+        self._spk = speaker if speaker is not None else _default_speaker()  # pyright: ignore[reportUnknownMemberType]
+        self._fetch = fetch if fetch is not None else None  # pyright: ignore[reportUnknownMemberType]
+        self.volume = _boost_volume(self._spk)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
 
         self.active = False
         self.text = ""
-        self._rate = _DEFAULT_RATE
-        self._block = _DEFAULT_BLOCK
+        # Declared plainly (rather than left to infer) so that a later
+        # Unknown-tainted store — `self._rate = got["rate"]` in `_say()`,
+        # where `got` is the duck-typed fetch's result — cannot widen what
+        # every other method sees this field as.
+        self._rate = _DEFAULT_RATE  # type: int
+        self._block = _DEFAULT_BLOCK  # type: int
         self._source = None
-        self._blocks_total = 0
-        self._blocks_done = 0
+        self._blocks_total = 0  # type: int
+        self._blocks_done = 0  # type: int
         self._held = []  # type: list[bytes]
-        self._stalls = 0
+        self._stalls = 0  # type: int
 
     # ----- command dispatch
 
     def handle_raw(self, raw):
+        # type: (bytes | bytearray | str) -> dict[str, object] | None
         """Parse one wire line and dispatch it. None if it is not ours."""
         try:
             msg = json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
@@ -311,9 +342,14 @@ class SpeechPlayer:
             return None
         if not isinstance(msg, dict):
             return None
-        return self.handle(msg)
+        # json.loads() is untyped, so isinstance() only narrows `msg` to
+        # dict[Unknown, Unknown] rather than the dict[str, object] handle()
+        # declares. Runtime-safe regardless: the isinstance check above
+        # already guarantees this is a dict.
+        return self.handle(msg)  # pyright: ignore[reportUnknownArgumentType]
 
     def handle(self, msg):
+        # type: (dict[str, object]) -> dict[str, object] | None
         """Dispatch one parsed command. None if the cmd is not ours."""
         cmd = msg.get("cmd")
         if cmd == "speak.say":
@@ -323,13 +359,14 @@ class SpeechPlayer:
             return {"ack": "speak.stop", "ok": True}
         return None
 
-    def _say(self, msg) -> dict:
+    def _say(self, msg):
+        # type: (dict[str, object]) -> dict[str, object]
         text = msg.get("text", "")
         url = msg.get("url", "")
         if not url:
             return {"ack": "speak.say", "ok": False, "err": "no engine url"}
 
-        fetch = self._fetch if self._fetch is not None else _default_fetch()
+        fetch = self._fetch if self._fetch is not None else _default_fetch()  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
 
         # Whatever was playing loses; the host asked for something new.
         # Done before the fetch so the speaker is not still working
@@ -337,28 +374,35 @@ class SpeechPlayer:
         self.stop()
 
         try:
-            got = fetch(
-                url,
-                text,
-                msg.get("speaker", _DEFAULT_SPEAKER),
-                int(msg.get("rate", _DEFAULT_RATE)),
+            # `fetch` is duck-typed (see the class docstring note), so its
+            # result and everything pulled out of it below is ignored
+            # per-line.
+            # msg's values are `object` (see the class docstring's dict[str,
+            # object] note); `fetch`'s real signature wants str/str/int/int,
+            # which they always are on the wire — ignored per-line rather
+            # than narrowed with a `typing.cast` MicroPython does not have.
+            got = fetch(  # pyright: ignore[reportUnknownVariableType]
+                url,  # pyright: ignore[reportArgumentType]
+                text,  # pyright: ignore[reportArgumentType]
+                msg.get("speaker", _DEFAULT_SPEAKER),  # pyright: ignore[reportArgumentType]
+                int(msg.get("rate", _DEFAULT_RATE)),  # pyright: ignore[reportArgumentType]
             )
         except Exception as e:
             return {"ack": "speak.say", "ok": False, "err": str(e)}
 
-        total = got["bytes"]
-        if total < 1 or total > _MAX_BYTES:
+        total = got["bytes"]  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+        if total < 1 or total > _MAX_BYTES:  # pyright: ignore[reportOperatorIssue]
             try:
-                got["response"].close()
+                got["response"].close()  # pyright: ignore[reportUnknownMemberType]
             except Exception:
                 pass
             return {"ack": "speak.say", "ok": False, "err": "length out of range"}
 
-        self._rate = got["rate"]
+        self._rate = got["rate"]  # pyright: ignore[reportUnknownMemberType]
         self._block = _BLOCK
-        self._source = _StreamSource(got["stream"], total, got.get("response"))
+        self._source = _StreamSource(got["stream"], total, got.get("response"))  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType, reportArgumentType]
         # Rounded up: the last block is padded rather than dropped.
-        self._blocks_total = (total + self._block - 1) // self._block
+        self._blocks_total = (total + self._block - 1) // self._block  # pyright: ignore[reportUnknownVariableType, reportOperatorIssue]
         self._blocks_done = 0
         self._stalls = 0
         self.text = text
@@ -375,7 +419,7 @@ class SpeechPlayer:
         self._held = []
         self.text = ""
         try:
-            self._spk.stop()
+            self._spk.stop()  # pyright: ignore[reportUnknownMemberType]
         except Exception as e:
             print("buddy_speak: stop failed:", e)
 
@@ -410,7 +454,11 @@ class SpeechPlayer:
             self._held.append(block)
             self._drain_held()
 
-        if self._source is not None and self._source.left <= 0 and not self._held:
+        # `self._source is None` already returned at the top of this
+        # method, and nothing between there and here can reset it back —
+        # basedpyright agrees, which is how this simplified from an
+        # `is not None and ...` guard that had become redundant.
+        if self._source.left <= 0 and not self._held:
             self._finish(True)
 
     def _drain_held(self) -> None:
@@ -422,14 +470,14 @@ class SpeechPlayer:
             # no slice deletion and mixing the two reads badly.
             self._held = self._held[1:]
 
-    def _play(self, block) -> bool:
+    def _play(self, block: bytes) -> bool:
         try:
-            return bool(self._spk.playRaw(block, self._rate, _MONO, _ONCE, _ANY_CHANNEL, False))
+            return bool(self._spk.playRaw(block, self._rate, _MONO, _ONCE, _ANY_CHANNEL, False))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
         except Exception as e:
             print("buddy_speak: playRaw failed:", e)
             return True  # drop it rather than wedge the queue
 
-    def _finish(self, ok) -> None:
+    def _finish(self, ok: bool) -> None:
         blocks = self._blocks_done
         stalls = self._stalls
         self.active = False
@@ -437,7 +485,7 @@ class SpeechPlayer:
         if self._source is not None:
             self._source.close()
             self._source = None
-        self._t.send_line(
+        self._t.send_line(  # pyright: ignore[reportUnknownMemberType]
             json.dumps(
                 {
                     "ack": "speak.end",

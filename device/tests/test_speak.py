@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 """The speech path: block framing, playback sequencing, and giving up.
 
 The audio no longer arrives over the cable. The device fetches it from a
@@ -15,6 +16,10 @@ Three failures matter and only one is obvious from the far end:
 * a stream cut short being reported as a successful utterance.
 
 All three are covered here without a board, a speaker or an engine.
+
+This is also a whitebox test of `SpeechPlayer`/`_StreamSource`'s private
+internals (`_BLOCK`, `_STALL_MS`, etc.), hence the file-level
+`reportPrivateUsage=false` above.
 """
 
 import json
@@ -82,6 +87,11 @@ class _FakeStream:
 
 def _blk(ch: bytes) -> bytes:
     return ch * _BLOCK
+
+
+def _unused_fetch(*_args: object) -> dict[str, object]:
+    """A `fetch` double for tests that never call it (see VolumeTest)."""
+    return {}
 
 
 class TimeFrozen(unittest.TestCase):
@@ -242,7 +252,7 @@ class SpeechPlayerTest(TimeFrozen):
         self.t = _RecordingTransport()
         self.spk = _FakeSpeaker()
         self.stream = _FakeStream()
-        self.fetched: list[tuple] = []
+        self.fetched: list[tuple[str, str, int, int]] = []
         self.player = SpeechPlayer(self.t, speaker=self.spk, fetch=self._fetch)
         self._rate = 16000
         self._bytes = 2 * _BLOCK
@@ -409,7 +419,7 @@ class VolumeTest(TimeFrozen):
         self.t = _RecordingTransport()
 
     def build(self, spk: object) -> SpeechPlayer:
-        return SpeechPlayer(self.t, speaker=spk, fetch=lambda *_a: {})
+        return SpeechPlayer(self.t, speaker=spk, fetch=_unused_fetch)
 
     def test_the_speaker_is_turned_up_when_the_player_is_built(self) -> None:
         # From a quiet start, so the multiplication is what is being
@@ -446,8 +456,12 @@ class _FakeLink:
     def __init__(
         self, ack: dict[str, Any] | None = None, end: dict[str, Any] | None = None
     ) -> None:
-        self.ack = ack if ack is not None else {"ok": True, "bytes": 81920, "rate": 16000}
-        self.end = end if end is not None else {"ok": True, "blocks": 40, "stalls": 0}
+        self.ack: dict[str, Any] = (
+            ack if ack is not None else {"ok": True, "bytes": 81920, "rate": 16000}
+        )
+        self.end: dict[str, Any] = (
+            end if end is not None else {"ok": True, "blocks": 40, "stalls": 0}
+        )
         self.requests: list[tuple[dict[str, Any], str, float]] = []
         self.waited: list[tuple[str, float]] = []
 

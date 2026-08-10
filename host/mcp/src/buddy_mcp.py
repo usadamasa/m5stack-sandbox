@@ -41,8 +41,9 @@ import sys
 import termios
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from dataclasses import replace
+from typing import Any
 
 # The server is launched by Claude Code from an arbitrary cwd, so make
 # the sibling module importable by absolute path rather than relying on
@@ -105,7 +106,7 @@ def _get_link(port: str | None = None) -> ResidentLink:
 
 
 @contextlib.contextmanager
-def _device(port: str | None = None) -> Iterator[ResidentLink]:
+def _device(port: str | None = None) -> Generator[ResidentLink]:
     """Take the device for one tool call, opening the port if needed."""
     with _device_lock:
         yield _get_link(port)
@@ -133,7 +134,7 @@ def _decode_logs(logs: list[bytes]) -> list[str]:
 
 
 @server.tool()
-def probe_serial(port: str = "") -> dict:
+def probe_serial(port: str = "") -> dict[str, Any]:
     """Check whether this process may issue the ioctl a serial port needs.
 
     Opens the device node, reads its termios attributes and writes them
@@ -142,7 +143,7 @@ def probe_serial(port: str = "") -> dict:
     the sandbox and the MCP approach is not viable.
     """
     target = port or DEFAULT_PORT
-    result: dict = {
+    result: dict[str, Any] = {
         "port": target,
         "open": False,
         "tcgetattr": False,
@@ -177,14 +178,14 @@ def probe_serial(port: str = "") -> dict:
 
 
 @server.tool()
-def buddy_connect(port: str = "") -> dict:
+def buddy_connect(port: str = "") -> dict[str, Any]:
     """Open the serial link and start buffering device output."""
     with _device(port) as link:
         return {"connected": link.connected, "port": link.port}
 
 
 @server.tool()
-def buddy_disconnect() -> dict:
+def buddy_disconnect() -> dict[str, Any]:
     """Release the serial port so other tools (push.py, esptool) can use it."""
     global _link
     # Under the lock: closing the port while the chatter is mid-utterance
@@ -198,7 +199,7 @@ def buddy_disconnect() -> dict:
 
 
 @server.tool()
-def buddy_start_app(settle: float = 8.0, wait: float = 15.0) -> dict:
+def buddy_start_app(settle: float = 8.0, wait: float = 15.0) -> dict[str, Any]:
     """Interrupt to the REPL and launch the Buddy app on the device.
 
     A running app is Ctrl-C'd first, so calling this twice in a row
@@ -218,21 +219,21 @@ def buddy_start_app(settle: float = 8.0, wait: float = 15.0) -> dict:
 
 
 @server.tool()
-def buddy_status(timeout: float = 8.0) -> dict:
+def buddy_status(timeout: float = 8.0) -> dict[str, Any]:
     """Ask the device for its status ack (name, owner, battery, heap, stats)."""
     with _device() as link:
         return link.request({"cmd": "status"}, "status", timeout=timeout)
 
 
 @server.tool()
-def buddy_set_name(name: str, timeout: float = 8.0) -> dict:
+def buddy_set_name(name: str, timeout: float = 8.0) -> dict[str, Any]:
     """Set the device's display name. Persisted in NVS across reboots."""
     with _device() as link:
         return link.request({"cmd": "name", "name": name}, "name", timeout=timeout)
 
 
 @server.tool()
-def buddy_set_owner(owner: str, timeout: float = 8.0) -> dict:
+def buddy_set_owner(owner: str, timeout: float = 8.0) -> dict[str, Any]:
     """Set the owner string shown on the device. Persisted in NVS."""
     with _device() as link:
         return link.request({"cmd": "owner", "owner": owner}, "owner", timeout=timeout)
@@ -244,7 +245,7 @@ def buddy_say(
     role: str = "claude",
     timeout: float = 8.0,
     pace: float = DEFAULT_PACE,
-) -> dict:
+) -> dict[str, Any]:
     """Show `text` on the device's chat panel.
 
     Markdown is flattened (the panel cannot render it and every symbol
@@ -274,7 +275,7 @@ def buddy_speak(
     rate: int = DEFAULT_RATE,
     show: bool = True,
     timeout: float = 10.0,
-) -> dict:
+) -> dict[str, Any]:
     """Say `text` out loud on the device, and by default show it too.
 
     The device fetches its own audio: it calls a VOICEVOX engine over
@@ -307,21 +308,21 @@ def buddy_speak(
 
 
 @server.tool()
-def buddy_chat_clear(timeout: float = 8.0) -> dict:
+def buddy_chat_clear(timeout: float = 8.0) -> dict[str, Any]:
     """Wipe the chat panel and hand the screen back to the dashboard."""
     with _device() as link:
         return link.request({"cmd": "chat.clear"}, "chat.clear", timeout=timeout)
 
 
 @server.tool()
-def buddy_chat_info(timeout: float = 8.0) -> dict:
+def buddy_chat_info(timeout: float = 8.0) -> dict[str, Any]:
     """Report the chat panel's resolved font, CJK support and geometry."""
     with _device() as link:
         return link.request({"cmd": "chat.info"}, "chat.info", timeout=timeout)
 
 
 @server.tool()
-def buddy_events() -> dict:
+def buddy_events() -> dict[str, Any]:
     """Drain everything the device has said since the last call.
 
     Covers both protocol messages the device sent on its own (the `hello`
@@ -348,7 +349,7 @@ def buddy_debug(
     timeout: float = 8.0,
     settle: float = 0.4,
     announce: bool = True,
-) -> dict:
+) -> dict[str, Any]:
     """Inspect the running app in place, without stopping it.
 
     `op` is one of:
@@ -392,7 +393,7 @@ def buddy_debug(
 
 
 @server.tool()
-def buddy_interrupt(settle: float = 1.0) -> dict:
+def buddy_interrupt(settle: float = 1.0) -> dict[str, Any]:
     """Ctrl-C the running app back to the REPL. Does not reboot.
 
     The app tears its transport down and stops at a live prompt with the
@@ -428,7 +429,7 @@ def buddy_chatter_start(
     gap_min: float = -1.0,
     gap_max: float = -1.0,
     voice_every: int = -1,
-) -> dict:
+) -> dict[str, Any]:
     """Start the idle chatter, optionally retuning how often it talks.
 
     Nothing is said until a link is up (`buddy_start_app` or
@@ -463,7 +464,7 @@ def buddy_chatter_start(
 
 
 @server.tool()
-def buddy_chatter_stop() -> dict:
+def buddy_chatter_stop() -> dict[str, Any]:
     """Stop the idle chatter and release its socket."""
     service = _chatter_service()
     service.stop()
@@ -471,7 +472,7 @@ def buddy_chatter_stop() -> dict:
 
 
 @server.tool()
-def buddy_chatter_status() -> dict:
+def buddy_chatter_status() -> dict[str, Any]:
     """Report what the chatter has been doing, and why it has not.
 
     `skipped_offline` counts turns where no link was up, `skipped_busy`

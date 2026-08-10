@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 """Verb dispatch for the on-device debug module.
 
 `device/buddy_debug.py` is the thing you reach for when the device is
@@ -10,10 +11,15 @@ plain Python, and the two firmware modules it touches (`micropython`,
 What is deliberately not covered: `dbg.frag` beyond "it called
 mem_info", because the output goes to stdout and is the host's problem,
 and the real `esp32.idf_heap_info`, which has no CPython counterpart.
+
+Whitebox by design: this pokes `_MAX_REPR` / `_MAX_SOURCE` directly, so
+basedpyright's private-member check is switched off for this file rather
+than silenced at each use.
 """
 
 import json
 import unittest
+from typing import cast
 
 import buddy_debug
 from buddy_debug import _MAX_REPR, _MAX_SOURCE
@@ -86,7 +92,7 @@ class DebugModuleTest(unittest.TestCase):
             self.addCleanup(setattr, buddy_debug, name, getattr(buddy_debug, name))
             setattr(buddy_debug, name, fake)
 
-        self.ns = {"ble": _Probe(True), "chat": _Probe(False), "answer": 42}
+        self.ns: dict[str, object] = {"ble": _Probe(True), "chat": _Probe(False), "answer": 42}
         buddy_debug.bind(self.ns)
         self.addCleanup(buddy_debug.bind, {})
 
@@ -157,7 +163,7 @@ class DebugModuleTest(unittest.TestCase):
     def test_gc_reports_before_and_after(self) -> None:
         ack = buddy_debug.handle({"cmd": "dbg.gc"})
         assert ack is not None
-        self.assertEqual(ack["freed"], ack["after"] - ack["before"])
+        self.assertEqual(ack["freed"], cast(int, ack["after"]) - cast(int, ack["before"]))
 
     # ----- state
 
@@ -193,8 +199,8 @@ class DebugModuleTest(unittest.TestCase):
     def test_eval_clips_a_long_repr(self) -> None:
         ack = buddy_debug.handle({"cmd": "dbg.eval", "src": "'x' * 5000"})
         assert ack is not None
-        self.assertEqual(len(ack["repr"]), _MAX_REPR + 3)
-        self.assertTrue(ack["repr"].endswith("..."))
+        self.assertEqual(len(cast(str, ack["repr"])), _MAX_REPR + 3)
+        self.assertTrue(cast(str, ack["repr"]).endswith("..."))
 
     def test_eval_refuses_an_overlong_source(self) -> None:
         # Compiling at runtime builds a parse tree and bytecode in the GC
@@ -203,7 +209,7 @@ class DebugModuleTest(unittest.TestCase):
         ack = buddy_debug.handle({"cmd": "dbg.eval", "src": "1 + " * _MAX_SOURCE})
         assert ack is not None
         self.assertFalse(ack["ok"])
-        self.assertIn("too long", ack["err"])
+        self.assertIn("too long", cast(str, ack["err"]))
 
     def test_eval_refuses_an_empty_source(self) -> None:
         ack = buddy_debug.handle({"cmd": "dbg.eval"})
@@ -217,7 +223,7 @@ class DebugModuleTest(unittest.TestCase):
         ack = buddy_debug.handle({"cmd": "dbg.eval", "src": "1 / 0"})
         assert ack is not None
         self.assertFalse(ack["ok"])
-        self.assertIn("ZeroDivisionError", ack["err"])
+        self.assertIn("ZeroDivisionError", cast(str, ack["err"]))
 
     def test_eval_reports_a_syntax_error(self) -> None:
         ack = buddy_debug.handle({"cmd": "dbg.eval", "src": "this is not python"})
@@ -234,7 +240,7 @@ class DebugModuleTest(unittest.TestCase):
         ack = buddy_debug.handle({"cmd": "dbg.exec", "src": "raise OSError('nope')"})
         assert ack is not None
         self.assertFalse(ack["ok"])
-        self.assertIn("OSError", ack["err"])
+        self.assertIn("OSError", cast(str, ack["err"]))
 
     # ----- unload
 

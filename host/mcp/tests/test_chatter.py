@@ -248,7 +248,7 @@ class PacingTests(unittest.TestCase):
 
     def test_the_gap_is_redrawn_and_varies(self) -> None:
         service, clock, _ = build(StubLink(), gap_min=10.0, gap_max=200.0)
-        seen = set()
+        seen: set[float] = set()
         for _ in range(8):
             clock.advance(400.0)
             service.step(Event("tool", "Read"))

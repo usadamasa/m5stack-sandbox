@@ -110,7 +110,8 @@ class FetchError(RuntimeError):
     """The engine could not be reached, or gave us something unusable."""
 
 
-def parse_wav_header(head) -> dict:
+def parse_wav_header(head):
+    # type: (bytes) -> dict[str, int]
     """Locate the samples in the head of a WAV stream.
 
     Returns ``{"offset", "bytes", "rate", "channels", "bits"}`` — where
@@ -181,7 +182,7 @@ def parse_wav_header(head) -> dict:
 # ----- the HTTP side
 
 
-def quote(text) -> str:
+def quote(text: str) -> str:
     """Percent-encode `text` for a query parameter.
 
     MicroPython has no `urllib.parse`. The text is Japanese, so nearly
@@ -189,7 +190,7 @@ def quote(text) -> str:
     one parameter into two and have the engine synthesise the wrong
     line rather than fail.
     """
-    out = []
+    out = []  # type: list[str]
     for b in text.encode("utf-8"):
         if b in _UNRESERVED:
             out.append(chr(b))
@@ -198,7 +199,8 @@ def quote(text) -> str:
     return "".join(out)
 
 
-def tune_query(query, rate) -> dict:
+def tune_query(query, rate):
+    # type: (dict[str, object], int) -> dict[str, object]
     """Edit the engine's audio_query in place, and hand it back.
 
     Only the two output settings are touched. `accent_phrases` carries
@@ -223,31 +225,37 @@ class _PrefixedStream:
     an audible click at the start of every line.
     """
 
-    def __init__(self, prefix, rest) -> None:
+    def __init__(self, prefix, rest):
+        # type: (bytes, object) -> None
+        # `rest` is the duck-typed socket handed in by `fetch_speech()`'s
+        # caller (real or test double) — no `typing.Protocol` on
+        # MicroPython to name what the two have in common, so the forwards
+        # below are ignored per-line.
         self._prefix = prefix
         self._rest = rest
 
     def read(self, n):
+        # type: (int) -> bytes
         if self._prefix:
             take = self._prefix[:n]
             # Rebind rather than slice-delete: MicroPython's bytes are
             # immutable and its bytearray has no `del b[:n]`.
             self._prefix = self._prefix[len(take) :]
             return take
-        return self._rest.read(n)
+        return self._rest.read(n)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
-    def settimeout(self, seconds) -> None:
+    def settimeout(self, seconds: float) -> None:
         """Forwarded so the player can stop the socket blocking on it.
 
         `buddy_speak._StreamSource` sets this on whatever stream it is
         handed. Without the forward it would land here and do nothing,
         and the first read past the buffered prefix would block the UI.
         """
-        self._rest.settimeout(seconds)
+        self._rest.settimeout(seconds)  # pyright: ignore[reportUnknownMemberType]
 
     def close(self) -> None:
         try:
-            self._rest.close()
+            self._rest.close()  # pyright: ignore[reportUnknownMemberType]
         except Exception as e:
             print("buddy_tts: stream close failed:", e)
 
@@ -265,38 +273,47 @@ def _default_requests():
 
 
 def _post(req, url, data, headers):
-    """POST with retries. Raises FetchError once the attempts run out."""
+    # type: (object, str, bytes | None, dict[str, str] | None) -> object
+    """POST with retries. Raises FetchError once the attempts run out.
+
+    `req` is the firmware's `requests` module or a test double — no
+    `typing.Protocol` on MicroPython to name what the two have in common,
+    so the calls through it below are ignored per-line, and the response
+    it hands back stays equally duck-typed for the same reason.
+    """
     last = None
     for _ in range(_TRIES):
         try:
-            res = req.post(url, data=data, headers=headers)
+            res = req.post(url, data=data, headers=headers)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
         except Exception as e:  # OSError, and whatever the TLS-less stack raises
             last = e
             continue
-        status = getattr(res, "status_code", 200)
+        status = getattr(res, "status_code", 200)  # pyright: ignore[reportUnknownArgumentType]
         if status != 200:
             last = "HTTP " + str(status)
             try:
-                res.close()
+                res.close()  # pyright: ignore[reportUnknownMemberType]
             except Exception:
                 pass
             continue
-        return res
+        return res  # pyright: ignore[reportUnknownVariableType]
     raise FetchError("POST failed after " + str(_TRIES) + " tries: " + str(last))
 
 
 def _read_exactly(stream, n):
+    # type: (object, int) -> bytes
     """Up to `n` bytes. Short only at end of stream."""
     buf = b""
-    while len(buf) < n:
-        chunk = stream.read(n - len(buf))
+    while len(buf) < n:  # pyright: ignore[reportUnknownArgumentType]
+        chunk = stream.read(n - len(buf))  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType, reportUnknownArgumentType]
         if not chunk:
             break
-        buf += chunk
-    return buf
+        buf += chunk  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
+    return buf  # pyright: ignore[reportUnknownVariableType]
 
 
-def fetch_speech(url, text, speaker=3, rate=16000, requests_mod=None) -> dict:
+def fetch_speech(url, text, speaker=3, rate=16000, requests_mod=None):
+    # type: (str, str, int, int, object | None) -> dict[str, object]
     """Ask VOICEVOX for `text` and return a stream of its samples.
 
     Returns ``{"stream", "bytes", "rate", "response"}``: a reader
@@ -316,16 +333,19 @@ def fetch_speech(url, text, speaker=3, rate=16000, requests_mod=None) -> dict:
     base = url.rstrip("/")
     speaker_arg = "speaker=" + str(int(speaker))
 
+    # `res` is whatever `req.post()` handed back — equally duck-typed, so
+    # every member access on it below is ignored per-line for the same
+    # reason as `_post()`'s own body.
     res = _post(req, base + "/audio_query?text=" + quote(text) + "&" + speaker_arg, None, None)
     try:
-        query = res.json()
+        query = res.json()  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
     finally:
         try:
-            res.close()
+            res.close()  # pyright: ignore[reportUnknownMemberType]
         except Exception:
             pass
 
-    body = json.dumps(tune_query(query, rate)).encode("utf-8")
+    body = json.dumps(tune_query(query, rate)).encode("utf-8")  # pyright: ignore[reportUnknownArgumentType]
     # The query is the largest thing we hold at once. Let it go before
     # the audio starts arriving.
     query = None
@@ -338,26 +358,26 @@ def fetch_speech(url, text, speaker=3, rate=16000, requests_mod=None) -> dict:
     )
     body = None
 
-    raw = res.raw
-    head = _read_exactly(raw, _HEAD_BYTES)
+    raw = res.raw  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+    head = _read_exactly(raw, _HEAD_BYTES)  # pyright: ignore[reportUnknownArgumentType]
     try:
         info = parse_wav_header(head)
     except WavError as e:
         try:
-            res.close()
+            res.close()  # pyright: ignore[reportUnknownMemberType]
         except Exception:
             pass
         raise FetchError("engine did not answer with playable audio: " + str(e))
 
     if info["bytes"] < 1 or info["bytes"] > _MAX_BYTES:
         try:
-            res.close()
+            res.close()  # pyright: ignore[reportUnknownMemberType]
         except Exception:
             pass
         raise FetchError("utterance is " + str(info["bytes"]) + " bytes, out of range")
 
     return {
-        "stream": _PrefixedStream(head[info["offset"] :], raw),
+        "stream": _PrefixedStream(head[info["offset"] :], raw),  # pyright: ignore[reportUnknownArgumentType]
         "bytes": info["bytes"],
         "rate": info["rate"],
         "response": res,

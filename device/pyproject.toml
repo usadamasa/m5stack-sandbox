@@ -62,15 +62,38 @@ addopts = "--strict-markers --strict-config"
 [tool.basedpyright]
 pythonVersion = "3.13"
 include = ["."]
-exclude = ["**/__pycache__"]
-extraPaths = ["."]
-typeCheckingMode = "standard"
+exclude = ["**/__pycache__", "typings"]
+extraPaths = [".", "../host/link/src"]
+stubPath = "typings"
+typeCheckingMode = "strict"
 # device/ imports firmware-provided modules (M5, hardware, micropython) and
 # upstream peers that live on the device's flash, none of which exist here.
-# Their absence is the expected state, not a finding.
+# Their absence is the expected state, not a finding. `typings/` carries
+# hand-written stubs for the ones this repository's code actually touches, so
+# that the values coming back from them still get real types instead of
+# `Unknown` cascading through everything downstream.
 reportMissingImports = "none"
 reportMissingModuleSource = "none"
 reportAttributeAccessIssue = "none"
+
+# host/link (buddy_bridge) は同じ workspace の自前パッケージだが、editable
+# install は hatchling の import hook 経由なので basedpyright からは見えない。
+# extraPaths でソースを直接指すと import 解決先が「stub の無い外部ライブラリ」
+# ではなく通常のソースファイルになるので、reportMissingTypeStubs は出ない。
+# include に含めていないので host/link 自身の診断はここには出ない。
+# tests/test_chat.py と tests/test_speak.py が buddy_bridge をホスト側の
+# 定数突き合わせに使うのはこのため。
+
+# `tests/test_device_constraints.py` enforces, against the AST, that every
+# annotation under device/ (excluding tests/) is a bare builtin name — no
+# subscripted generics (`dict[str, int]`), because MicroPython's parser sees
+# them too and a subscript is a runtime expression, not free syntax like a
+# bare name. A PEP 484 `# type:` comment is never parsed by MicroPython at
+# all, so it is the only place a generic type argument can be spelled — hence
+# both overrides below, which apply to that comment style specifically and to
+# nothing else.
+reportMissingTypeArgument = "none"
+reportTypeCommentUsage = "none"
 
 # -------------------------------------------------------------- coverage
 

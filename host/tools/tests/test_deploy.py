@@ -27,7 +27,13 @@ import unittest.mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from buddy_bridge import DEFAULT_READ_TIMEOUT, LAUNCH_SOURCE, SENTINEL, Message, encode
+from buddy_bridge import (
+    DEFAULT_READ_TIMEOUT,
+    LAUNCH_SOURCE,
+    SENTINEL,
+    Message,
+    encode,
+)
 from buddy_deploy import (
     DEST_ROOT,
     LAUNCHER,

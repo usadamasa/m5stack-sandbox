@@ -142,11 +142,12 @@ class AnnounceTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.spoken: list[str] = []
-        patch = mock.patch.object(
-            buddy_bridge,
-            "speak",
-            side_effect=lambda _link, text, **_kw: self.spoken.append(text) or {"ok": True},
-        )
+
+        def fake_speak(_link: object, text: str, **_kw: object) -> Message:
+            self.spoken.append(text)
+            return {"ok": True}
+
+        patch = mock.patch.object(buddy_bridge, "speak", side_effect=fake_speak)
         patch.start()
         self.addCleanup(patch.stop)
 

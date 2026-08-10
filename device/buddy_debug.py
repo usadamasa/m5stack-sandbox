@@ -84,16 +84,18 @@ _print_exception = getattr(sys, "print_exception", None)
 # The namespace `dbg.eval` runs against and `dbg.state` probes. Populated
 # by bind() from the app's live objects, so an expression can reach the
 # transport, the chat panel and the speech player by name.
-_ns = {}
+_ns = {}  # type: dict[str, object]
 
 
-def bind(ns) -> None:
+def bind(ns):
+    # type: (dict[str, object]) -> None
     """Hand over the app's live objects. Called once after import."""
     global _ns
     _ns = ns
 
 
 def handle_raw(raw):
+    # type: (bytes | bytearray | str) -> dict[str, object] | None
     """Parse one wire line and dispatch it. None if it is not ours."""
     try:
         msg = json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
@@ -101,10 +103,16 @@ def handle_raw(raw):
         return None
     if not isinstance(msg, dict):
         return None
-    return handle(msg)
+    # json.loads() is untyped, so isinstance() only narrows `msg` to
+    # dict[Unknown, Unknown] rather than the dict[str, object] handle()
+    # declares — the same gap `typing.cast` papers over elsewhere, not
+    # available here. Runtime-safe regardless: the isinstance check above
+    # already guarantees this is a dict.
+    return handle(msg)  # pyright: ignore[reportUnknownArgumentType]
 
 
 def handle(msg):
+    # type: (dict[str, object]) -> dict[str, object] | None
     """Dispatch one parsed command. None if the cmd is not ours."""
     cmd = msg.get("cmd")
     if cmd == "dbg.mem":
@@ -134,7 +142,8 @@ def handle(msg):
 # ----- verbs
 
 
-def _mem() -> dict:
+def _mem():
+    # type: () -> dict[str, object]
     """Both heaps. They are separate allocators and fail independently.
 
     `gc.mem_free()` is the MicroPython heap — Python objects. The
@@ -144,7 +153,7 @@ def _mem() -> dict:
     memory from Python's side.
     """
     gc.collect()
-    out = {"ok": True, "free": gc.mem_free(), "alloc": gc.mem_alloc()}
+    out = {"ok": True, "free": gc.mem_free(), "alloc": gc.mem_alloc()}  # type: dict[str, object]
     if esp32 is not None:
         # Each region is (total, free, largest_free_block, min_free_ever).
         regions = esp32.idf_heap_info(esp32.HEAP_DATA)
@@ -157,7 +166,8 @@ def _mem() -> dict:
     return out
 
 
-def _frag() -> dict:
+def _frag():
+    # type: () -> dict[str, object]
     """Dump the heap map. Output goes to the log channel, not the ack."""
     if micropython is None:
         return {"ok": False, "err": "no micropython module on this build"}
@@ -166,21 +176,24 @@ def _frag() -> dict:
     return {"ok": True, "to": "log"}
 
 
-def _gc() -> dict:
+def _gc():
+    # type: () -> dict[str, object]
     before = gc.mem_free()
     gc.collect()
     after = gc.mem_free()
     return {"ok": True, "before": before, "after": after, "freed": after - before}
 
 
-def _off() -> dict:
+def _off():
+    # type: () -> dict[str, object]
     # We cannot drop ourselves: the caller holds the other reference, so
     # this flag is the handshake asking it to.
     return {"ok": True, "unload": True}
 
 
-def _state() -> dict:
-    out = {"ok": True}  # type: dict
+def _state():
+    # type: () -> dict[str, object]
+    out = {"ok": True}  # type: dict[str, object]
     for name, attr in _PROBES:
         obj = _ns.get(name)
         if obj is None:
@@ -192,7 +205,8 @@ def _state() -> dict:
     return out
 
 
-def _run(src, as_statement) -> dict:
+def _run(src, as_statement):
+    # type: (object, bool) -> dict[str, object]
     if not isinstance(src, str) or not src:
         return {"ok": False, "err": "no src"}
     if len(src) > _MAX_SOURCE:
@@ -204,7 +218,7 @@ def _run(src, as_statement) -> dict:
         if as_statement:
             # Arbitrary code by design — see the module docstring.
             exec(src, _ns)
-            out = {"ok": True}
+            out = {"ok": True}  # type: dict[str, object]
         else:
             out = {"ok": True, "repr": _clip(repr(eval(src, _ns)))}
     except Exception as e:
@@ -220,7 +234,8 @@ def _run(src, as_statement) -> dict:
     return out
 
 
-def _clip(text) -> str:
+def _clip(text):
+    # type: (str) -> str
     if len(text) > _MAX_REPR:
         return text[:_MAX_REPR] + "..."
     return text

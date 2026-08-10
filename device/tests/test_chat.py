@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 """Chat panel: wrapping, layout and command dispatch, plus host framing.
 
 `device/buddy_chat.py` runs on MicroPython, but everything interesting
@@ -12,6 +13,9 @@ character, 12 px per wide one — so the expected row contents can be
 worked out by hand instead of by running the code and blessing whatever
 came out. It is *not* the real hardware's metric; the real numbers are
 in `device/buddy_chat.py`, measured by `tmp/probe_metrics.py`.
+
+This is also a whitebox test of `ChatPanel`'s private wrapping
+internals, hence the file-level `reportPrivateUsage=false` above.
 """
 
 import unittest

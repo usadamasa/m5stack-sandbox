@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import unittest
 
+# buddy-host-link は workspace 内の同居パッケージで py.typed が無いため
+# stub 未整備扱いになる。py.typed の追加は host/link 側の担当範囲。
 from fake_repl import FakeRepl
 from probe_device import (
     CANDIDATE_FONTS,

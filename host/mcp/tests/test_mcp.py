@@ -12,6 +12,7 @@ chatter's link provider never opens a port of its own.
 
 import os
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, ClassVar
@@ -20,6 +21,29 @@ from unittest import mock
 import buddy_bridge
 import buddy_mcp
 from buddy_bridge import Message
+
+
+def _recording_speak(store: list[str]) -> Callable[..., Message]:
+    """A stand-in for `buddy_bridge.speak` that records the text and acks.
+
+    A plain lambda cannot carry parameter annotations, so `mock.patch.object`
+    would otherwise see `side_effect` as an untyped callable.
+    """
+
+    def fake(_link: object, text: str, **_kwargs: object) -> Message:
+        store.append(text)
+        return {"ok": True}
+
+    return fake
+
+
+def _silent_speak(store: list[str]) -> Callable[..., None]:
+    """A stand-in for `buddy_bridge.speak` that records nothing was said."""
+
+    def fake(*_args: object, **_kwargs: object) -> None:
+        store.append("")
+
+    return fake
 
 
 class StubLink:
@@ -193,11 +217,7 @@ class DebugToolTest(_McpTestCase):
         # The device sets `entered` on the frame that imported its debug
         # module. Only it knows which one that was.
         spoken: list[str] = []
-        with mock.patch.object(
-            buddy_bridge,
-            "speak",
-            side_effect=lambda _link, text, **_kw: spoken.append(text) or {"ok": True},
-        ):
+        with mock.patch.object(buddy_bridge, "speak", side_effect=_recording_speak(spoken)):
             buddy_mcp.buddy_connect()
             StubLink.instances[0].ack_extra = {"entered": True}
             result = buddy_mcp.buddy_debug("mem", settle=0.0)
@@ -206,18 +226,14 @@ class DebugToolTest(_McpTestCase):
 
     def test_later_calls_say_nothing(self) -> None:
         spoken: list[str] = []
-        with mock.patch.object(
-            buddy_bridge, "speak", side_effect=lambda *_a, **_k: spoken.append("")
-        ):
+        with mock.patch.object(buddy_bridge, "speak", side_effect=_silent_speak(spoken)):
             result = buddy_mcp.buddy_debug("mem", settle=0.0)
         self.assertEqual(spoken, [])
         self.assertFalse(result["announced"])
 
     def test_announce_false_keeps_it_quiet(self) -> None:
         spoken: list[str] = []
-        with mock.patch.object(
-            buddy_bridge, "speak", side_effect=lambda *_a, **_k: spoken.append("")
-        ):
+        with mock.patch.object(buddy_bridge, "speak", side_effect=_silent_speak(spoken)):
             buddy_mcp.buddy_connect()
             StubLink.instances[0].ack_extra = {"entered": True}
             buddy_mcp.buddy_debug("mem", announce=False, settle=0.0)

@@ -19,7 +19,7 @@ import urllib.request
 from http.client import IncompleteRead
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import fetch_firmware
 
@@ -61,11 +61,14 @@ class FakeResponse:
 
 class ManifestResumeTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.manifest = [{"name": "UIFlow2.0", "category": "cardputer", "versions": []}]
+        self.manifest: list[fetch_firmware.ManifestEntry] = [
+            {"name": "UIFlow2.0", "category": "cardputer", "versions": []}
+        ]
         self.body = json.dumps(self.manifest).encode()
         self.requests: list[str | urllib.request.Request] = []
 
-        real = fetch_firmware._open_https
+        # テストのために非公開のフックを差し替える。private だが意図的な用法。
+        real = fetch_firmware._open_https  # pyright: ignore[reportPrivateUsage]
         self.addCleanup(setattr, fetch_firmware, "_open_https", real)
 
     def _install(self, responses: list[FakeResponse]) -> None:
@@ -75,7 +78,7 @@ class ManifestResumeTest(unittest.TestCase):
             self.requests.append(url)
             return queue.pop(0)
 
-        fetch_firmware._open_https = fake_open  # pyright: ignore[reportAttributeAccessIssue]
+        fetch_firmware._open_https = fake_open  # pyright: ignore[reportAttributeAccessIssue, reportPrivateUsage]
 
     def _range_headers(self) -> list[str | None]:
         return [
@@ -122,7 +125,7 @@ class ManifestResumeTest(unittest.TestCase):
 
 
 class PickFirmwareTest(unittest.TestCase):
-    MANIFEST: ClassVar[list[dict[str, Any]]] = [
+    MANIFEST: ClassVar[list[fetch_firmware.ManifestEntry]] = [
         {
             "category": "Cardputer",
             "name": "UIFlow2.0 Cardputer-Adv",
@@ -139,11 +142,11 @@ class PickFirmwareTest(unittest.TestCase):
         # Manifest order is chronological, and an rc must not win over a
         # release that shipped after it.
         _entry, version = fetch_firmware.pick_firmware(self.MANIFEST, "cardputer-adv")
-        self.assertEqual(version["version"], "v2.4.0")
+        self.assertEqual(version.get("version"), "v2.4.0")
 
     def test_unpublished_versions_are_skipped(self) -> None:
         _entry, version = fetch_firmware.pick_firmware(self.MANIFEST, "cardputer-adv")
-        self.assertNotEqual(version["version"], "v2.5.0")
+        self.assertNotEqual(version.get("version"), "v2.5.0")
 
     def test_unknown_variant_lists_the_known_ones(self) -> None:
         with self.assertRaises(SystemExit) as caught:
@@ -163,10 +166,11 @@ class DownloadTest(unittest.TestCase):
         self.dest_dir = self._tmp.name
         self.body = b"firmware-bytes" * 100
         self.md5 = base64.b64encode(hashlib.md5(self.body).digest()).decode()
-        self.version = {"file": "e" * 32 + ".bin"}
+        self.version: fetch_firmware.FirmwareVersion = {"file": "e" * 32 + ".bin"}
         self.requests: list[str | urllib.request.Request] = []
 
-        real = fetch_firmware._open_https
+        # テストのために非公開のフックを差し替える。private だが意図的な用法。
+        real = fetch_firmware._open_https  # pyright: ignore[reportPrivateUsage]
         self.addCleanup(setattr, fetch_firmware, "_open_https", real)
 
     def _install(self, responses: list[FakeResponse]) -> None:
@@ -176,7 +180,7 @@ class DownloadTest(unittest.TestCase):
             self.requests.append(url)
             return queue.pop(0)
 
-        fetch_firmware._open_https = fake_open  # pyright: ignore[reportAttributeAccessIssue]
+        fetch_firmware._open_https = fake_open  # pyright: ignore[reportAttributeAccessIssue, reportPrivateUsage]
 
     def test_writes_the_binary_and_its_sidecar(self) -> None:
         self._install([FakeResponse(self.body, headers={"Content-MD5": self.md5})])
@@ -221,12 +225,15 @@ class FileFieldTest(unittest.TestCase):
     # The manifest's `file` value lands in both a URL and a filesystem
     # path, so the allow-list is load-bearing rather than cosmetic.
     def test_accepts_the_shape_the_cdn_actually_serves(self) -> None:
-        self.assertTrue(fetch_firmware._FILE_FIELD_RE.match("0123456789abcdef" * 2 + ".bin"))
+        # 正規表現そのものを検証するテストなので非公開シンボルに直接触る。
+        pattern = fetch_firmware._FILE_FIELD_RE  # pyright: ignore[reportPrivateUsage]
+        self.assertTrue(pattern.match("0123456789abcdef" * 2 + ".bin"))
 
     def test_rejects_traversal_and_url_tricks(self) -> None:
+        pattern = fetch_firmware._FILE_FIELD_RE  # pyright: ignore[reportPrivateUsage]
         for bad in ("../etc/passwd", "a/b.bin", "a\r\nHost: evil", "", "x" * 257):
             with self.subTest(bad=bad):
-                self.assertIsNone(fetch_firmware._FILE_FIELD_RE.match(bad))
+                self.assertIsNone(pattern.match(bad))
 
 
 if __name__ == "__main__":

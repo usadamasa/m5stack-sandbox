@@ -36,7 +36,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import serial
 
@@ -92,7 +92,10 @@ def decode(payload: bytes) -> Message:
     parsed: Any = json.loads(payload.decode("utf-8"))
     if not isinstance(parsed, dict):
         raise ValueError(f"protocol payload is not an object: {parsed!r}")
-    return parsed
+    # json.loads の戻りは Any なので isinstance では dict[Unknown, Unknown] にしか
+    # 絞り込めない。キーが str であることまでは isinstance で保証できないが、
+    # プロトコル上の契約として str キーの object しか送られてこない。
+    return cast(Message, parsed)
 
 
 class Requester(Protocol):

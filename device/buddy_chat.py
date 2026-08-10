@@ -121,12 +121,14 @@ _NARROW_FONTS = ("DejaVu12", "DejaVu9")
 # out of every bracketed section.
 _BASE_FONT = "DejaVu9"
 
-# prefix, prefix colour, body colour.
+# prefix, prefix colour, body colour. Keyed on `object` rather than `str`:
+# `role` is whatever the wire handed us, and `.get()` has to accept that
+# without narrowing the key type first.
 _ROLE_STYLE = {
     "claude": ("> ", _ORANGE, _CREAM),
     "user": ("< ", _CYAN, _GRAY_MID),
     "sys": ("! ", _RED, _GRAY_MID),
-}
+}  # type: dict[object, tuple[str, int, int]]
 _DEFAULT_ROLE = "claude"
 
 # Above this codepoint a glyph is wide enough — and, more importantly,
@@ -142,15 +144,19 @@ def _default_lcd():
     return M5.Lcd
 
 
-def _role_style(role) -> tuple:
-    return _ROLE_STYLE.get(role, _ROLE_STYLE[_DEFAULT_ROLE])
+def _role_style(role):
+    # type: (object) -> tuple[str, int, int]
+    # `role` is whatever the wire handed us in a "role" field — dict.get()
+    # works with any hashable key, so a malformed non-str value still
+    # resolves to the default style rather than raising.
+    return _ROLE_STYLE.get(role, _ROLE_STYLE[_DEFAULT_ROLE])  # pyright: ignore[reportCallIssue, reportUnknownVariableType, reportArgumentType]
 
 
-def _is_wide(ch) -> bool:
+def _is_wide(ch: str) -> bool:
     return ord(ch) >= _WIDE_FROM
 
 
-def _can_break_between(prev, ch) -> bool:
+def _can_break_between(prev: str, ch: str) -> bool:
     """True if a line may be split between these two characters."""
     if prev == " ":
         return True
@@ -160,15 +166,19 @@ def _can_break_between(prev, ch) -> bool:
 class ChatPanel:
     """A transcript rendered into the Buddy dashboard's main panel."""
 
-    def __init__(self, lcd=None) -> None:
-        self._lcd = lcd if lcd is not None else _default_lcd()
-        self._messages = []  # type: list[dict]
+    # `lcd`, when passed explicitly, is a test double standing in for
+    # M5.Lcd — no `typing.Protocol` on MicroPython to name what the two
+    # have in common — so it stays unannotated and every access through
+    # `self._lcd` below is ignored per-line.
+    def __init__(self, lcd=None) -> None:  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType]
+        self._lcd = lcd if lcd is not None else _default_lcd()  # pyright: ignore[reportUnknownMemberType]
+        self._messages = []  # type: list[dict[str, object]]
         self.active = False
 
         # Per-character advance widths under the chat font. Populated on
         # demand inside a _push_font bracket; a CJK transcript repeats
         # the same few hundred glyphs, so this converges fast.
-        self._char_w = {}
+        self._char_w = {}  # type: dict[str, int]
         self._indent_w = None  # type: int | None
         self._line_h = None  # type: int | None
 
@@ -179,15 +189,16 @@ class ChatPanel:
 
         self._font_name = None  # type: str | None
         self._wide_name = None  # type: str | None
-        self._wide_font = None
+        self._wide_font = None  # type: object | None
         self._narrow_name = None  # type: str | None
-        self._narrow_font = None
-        self._base_font = None
+        self._narrow_font = None  # type: object | None
+        self._base_font = None  # type: object | None
         self._resolve_fonts()
 
     # ----- transcript
 
-    def say(self, role, text) -> int:
+    def say(self, role, text):
+        # type: (object, object) -> int
         """Append one message. Returns how many rows it wraps to."""
         if not isinstance(text, str):
             text = str(text)
@@ -210,7 +221,8 @@ class ChatPanel:
         self._has_wide = False
         self.active = False
 
-    def info(self) -> dict:
+    def info(self):
+        # type: () -> dict[str, object]
         """Font and geometry, for the host to sanity-check against.
 
         `cjk` reports whether this build *has* a Japanese face, not
@@ -239,8 +251,12 @@ class ChatPanel:
         would cost two rows for nothing.
         """
         for msg in self._messages:
-            for ch in msg.get("text", ""):
-                if _is_wide(ch):
+            # `text` is always a str on the wire; msg's value type is the
+            # generic `object` from dict[str, object], so the iteration
+            # below is ignored per-line rather than narrowed with a
+            # `typing.cast` MicroPython does not have.
+            for ch in msg.get("text", ""):  # pyright: ignore[reportUnknownVariableType, reportGeneralTypeIssues]
+                if _is_wide(ch):  # pyright: ignore[reportUnknownArgumentType]
                     self._has_wide = True
                     return
         self._has_wide = False
@@ -248,6 +264,7 @@ class ChatPanel:
     # ----- command dispatch
 
     def handle_raw(self, raw):
+        # type: (bytes | bytearray | str) -> dict[str, object] | None
         """Parse one wire line and dispatch it. None if it is not ours.
 
         Deliberately quiet about malformed input: `buddy_protocol` is
@@ -260,14 +277,19 @@ class ChatPanel:
             return None
         if not isinstance(msg, dict):
             return None
-        return self.handle(msg)
+        # json.loads() is untyped, so isinstance() only narrows `msg` to
+        # dict[Unknown, Unknown] rather than the dict[str, object] handle()
+        # declares. Runtime-safe regardless: the isinstance check above
+        # already guarantees this is a dict.
+        return self.handle(msg)  # pyright: ignore[reportUnknownArgumentType]
 
     def handle(self, msg):
+        # type: (dict[str, object]) -> dict[str, object] | None
         """Dispatch one parsed command. None if the cmd is not ours."""
         cmd = msg.get("cmd")
         if cmd == "chat.say":
             rows = self.say(msg.get("role", _DEFAULT_ROLE), msg.get("text", ""))
-            ack = {"ack": "chat.say", "ok": True, "wrapped": rows}
+            ack = {"ack": "chat.say", "ok": True, "wrapped": rows}  # type: dict[str, object]
         elif cmd == "chat.clear":
             self.clear()
             ack = {"ack": "chat.clear", "ok": True}
@@ -285,7 +307,8 @@ class ChatPanel:
 
     # ----- layout
 
-    def layout(self, max_rows) -> list:
+    def layout(self, max_rows):
+        # type: (int) -> list[tuple[str, int, str, int]]
         """Rows to paint, oldest first, clipped to the newest `max_rows`.
 
         Each row is ``(prefix, prefix_colour, body, body_colour)``; the
@@ -295,11 +318,11 @@ class ChatPanel:
         Must be called inside a _push_font bracket — it measures.
         """
         avail = self._body_width()
-        out = []
+        out = []  # type: list[tuple[str, int, str, int]]
         for msg in self._messages:
             prefix, prefix_color, body_color = _role_style(msg.get("role"))
             first = True
-            for row in self._wrap(msg.get("text", ""), avail):
+            for row in self._wrap(msg.get("text", ""), avail):  # pyright: ignore[reportArgumentType]
                 out.append((prefix if first else "", prefix_color, row, body_color))
                 first = False
         if max_rows > 0 and len(out) > max_rows:
@@ -308,26 +331,29 @@ class ChatPanel:
 
     def render(self) -> None:
         """Repaint the whole panel. Cheap enough to call unconditionally."""
-        lcd = self._lcd
+        # `self._lcd` is duck-typed (see __init__), so every call through
+        # `lcd` below is ignored per-line.
+        lcd = self._lcd  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
         self._push_font()
         try:
             rows = self.layout(self._max_rows())
-            lcd.fillRect(0, _Y0, _W, _Y1 - _Y0, _BLACK)
+            lcd.fillRect(0, _Y0, _W, _Y1 - _Y0, _BLACK)  # pyright: ignore[reportUnknownMemberType]
             y = _Y0
             line_h = self._line_height()
             for prefix, prefix_color, body, body_color in rows:
                 if prefix:
-                    lcd.setTextColor(prefix_color, _BLACK)
-                    lcd.drawString(prefix, _X0, y)
-                lcd.setTextColor(body_color, _BLACK)
-                lcd.drawString(body, _X0 + self._indent_width(), y)
+                    lcd.setTextColor(prefix_color, _BLACK)  # pyright: ignore[reportUnknownMemberType]
+                    lcd.drawString(prefix, _X0, y)  # pyright: ignore[reportUnknownMemberType]
+                lcd.setTextColor(body_color, _BLACK)  # pyright: ignore[reportUnknownMemberType]
+                lcd.drawString(body, _X0 + self._indent_width(), y)  # pyright: ignore[reportUnknownMemberType]
                 y += line_h
         finally:
             self._pop_font()
 
     # ----- wrapping
 
-    def _wrap(self, text, avail) -> list:
+    def _wrap(self, text, avail):
+        # type: (str, int) -> list[str]
         """Break `text` into rows no wider than `avail` pixels.
 
         Greedy, with two kinds of break opportunity: after a space, and
@@ -340,7 +366,7 @@ class ChatPanel:
         hard-broken at the last character that fits rather than allowed
         to overflow.
         """
-        rows = []
+        rows = []  # type: list[str]
         for para in text.replace("\r", "").split("\n"):
             if not para.strip():
                 rows.append("")
@@ -369,14 +395,14 @@ class ChatPanel:
                 rows.append(line)
         return rows
 
-    def _advance(self, ch) -> int:
+    def _advance(self, ch: str) -> int:
         w = self._char_w.get(ch)
         if w is None:
-            w = self._lcd.textWidth(ch)
+            w = self._lcd.textWidth(ch)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
             self._char_w[ch] = w
-        return w
+        return w  # pyright: ignore[reportUnknownVariableType]
 
-    def _measure(self, text) -> int:
+    def _measure(self, text: str) -> int:
         total = 0
         for ch in text:
             total += self._advance(ch)
@@ -395,7 +421,7 @@ class ChatPanel:
     def _line_height(self) -> int:
         line_h = self._line_h
         if line_h is None:
-            font_height = getattr(self._lcd, "fontHeight", None)
+            font_height = getattr(self._lcd, "fontHeight", None)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
             height = int(font_height()) if font_height is not None else 0
             line_h = (height + _LEADING) if height else _FALLBACK_LINE_H
             self._line_h = line_h
@@ -407,7 +433,7 @@ class ChatPanel:
     # ----- font bracketing
 
     def _resolve_fonts(self) -> None:
-        fonts = getattr(self._lcd, "FONTS", None)
+        fonts = getattr(self._lcd, "FONTS", None)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
         if fonts is None:
             return
         self._base_font = getattr(fonts, _BASE_FONT, None)
@@ -421,14 +447,16 @@ class ChatPanel:
         if self._narrow_font is None and self._wide_font is None:
             print("buddy_chat: no known font on this build, using the driver default")
 
-    def _first_font(self, fonts, names) -> tuple:
+    def _first_font(self, fonts, names):
+        # type: (object, tuple[str, ...]) -> tuple[str, object] | tuple[None, None]
         for name in names:
             font = getattr(fonts, name, None)
             if font is not None:
                 return name, font
         return None, None
 
-    def _select_font(self) -> tuple:
+    def _select_font(self):
+        # type: () -> tuple[str | None, object | None]
         """The (name, font) the current transcript should be drawn in."""
         if self._has_wide and self._wide_font is not None:
             return self._wide_name, self._wide_font
@@ -447,7 +475,7 @@ class ChatPanel:
         if font is None:
             return
         try:
-            self._lcd.setFont(font)
+            self._lcd.setFont(font)  # pyright: ignore[reportUnknownMemberType]
         except Exception as e:
             print("buddy_chat: setFont failed:", e)
 
@@ -455,6 +483,6 @@ class ChatPanel:
         if self._base_font is None:
             return
         try:
-            self._lcd.setFont(self._base_font)
+            self._lcd.setFont(self._base_font)  # pyright: ignore[reportUnknownMemberType]
         except Exception as e:
             print("buddy_chat: font restore failed:", e)

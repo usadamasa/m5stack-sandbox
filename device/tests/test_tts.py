@@ -15,6 +15,7 @@ of PCM for a 2.56 s utterance at `outputSamplingRate=16000`.
 import json
 import struct
 import unittest
+from typing import Any, cast
 
 from buddy_tts import (
     FetchError,
@@ -160,7 +161,7 @@ class TuneQueryTest(unittest.TestCase):
     def test_leaves_the_rest_of_the_query_untouched(self) -> None:
         # accent_phrases carries the engine's own reading of the text.
         # Rebuilding it here would change how the line is pronounced.
-        query = {
+        query: dict[str, object] = {
             "accent_phrases": [{"moras": ["a"]}],
             "speedScale": 1.0,
             "outputSamplingRate": 24000,
@@ -271,7 +272,7 @@ class FetchSpeechTest(unittest.TestCase):
         req = self._ok(pcm_bytes=64)
         got = fetch_speech("http://host:50021", "あ", speaker=3, rate=16000, requests_mod=req)
         self.assertEqual(got["bytes"], 64)
-        self.assertEqual(got["stream"].read(4), b"\x00\x00\x00\x00")
+        self.assertEqual(cast(Any, got["stream"]).read(4), b"\x00\x00\x00\x00")
 
     def test_retries_a_call_that_throws(self) -> None:
         # WiFi drops a request now and then and the engine is a laptop
@@ -321,7 +322,7 @@ class FetchSpeechTest(unittest.TestCase):
         # seam would drop or repeat audio exactly once per utterance.
         req = self._ok(pcm_bytes=4096)
         got = fetch_speech("http://host:50021", "あ", speaker=3, rate=16000, requests_mod=req)
-        stream = got["stream"]
+        stream = cast(Any, got["stream"])
         first = b""
         while len(first) < 600:
             chunk = stream.read(600 - len(first))
