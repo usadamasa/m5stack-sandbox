@@ -1,3 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MAS Event + Design, LLC
+# Copyright 2026 usadamasa
+#
+# The `UPSTREAM` fixture below is a trimmed excerpt of wifi_event.py from
+# moremas/build-with-claude.
 """Rewriting the credentials the device auto-connects with at boot.
 
 The interesting part is not the transfer — that is `mpremote`'s, and

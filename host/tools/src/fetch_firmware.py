@@ -1,3 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MAS Event + Design, LLC
+# Copyright 2026 usadamasa
+#
+# Modified from moremas/build-with-claude: `Range: bytes=N-` resumption in
+# `fetch_manifest()` and `download()`. See the docstring.
 """Pull a UIFlow 2.0 firmware binary from M5Burner's manifest API.
 
 The manifest endpoint returns the full catalog; we filter by device
