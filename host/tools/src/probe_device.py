@@ -14,9 +14,10 @@ what the device needs to fetch its own audio from VOICEVOX.
 
     uv run python host/probe_device.py --port /dev/cu.usbmodem101
 
-The device must be sitting at the REPL — press BtnRST if the Buddy app
-is running, since it disables Ctrl-C. Read-only: nothing is written to
-flash and no state is touched.
+The device must be sitting at the REPL. A running Buddy app is
+interrupted its way out of by the handshake, so BtnRST is only needed
+when that does not take. Read-only: nothing is written to flash and no
+state is touched.
 
 Every measurement comes back as a Python object rather than as text to
 be scraped, because the raw REPL hands `eval` the `repr` of what ran and
@@ -152,7 +153,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--wait",
         type=float,
         default=180.0,
-        help="Seconds to wait for the REPL, which needs a BtnRST press. 0 to not wait.",
+        help="Seconds to wait for the REPL, if it takes a BtnRST press. 0 to not wait.",
     )
     args = ap.parse_args(argv)
 

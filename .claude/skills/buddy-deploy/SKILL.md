@@ -44,8 +44,8 @@ uv run python host/tools/src/buddy_deploy.py --compile-only            # 実機�
   `verify_by_speech` が import・継承した WiFi link・VOICEVOX 往復・`M5.Speaker` を一度に通す。
   engine の URL はランチ前に解決する (後で分かってもポートはもう返らない)。失敗は exit 1 で、
   断った層を名指しする
-- **デプロイ後、デバイスはアプリを走らせたままになる。** 次のデプロイは BtnRST から始まる。
-  REPL に残したいときだけ `--no-speak`
+- **デプロイ後、デバイスはアプリを走らせたままになる。** 次のデプロイは Ctrl-C で
+  そのアプリを畳んでから始まる。転送せず REPL に残したいときだけ `--no-speak`
 
 ## REPL は mpremote に任せる
 
@@ -65,12 +65,14 @@ Python の値をそのまま返す (デバイス側で `print(repr(...))` して
 
 - **`enter_raw_repl(soft_reset=False)` を使う。** 既定の `soft_reset=True` は
   boot.py / main.py を走らせ直すので、UIFlow のランチャーが再起動してしまう
-- **BtnRST 待ちのループだけは自前。** `mpremote` の `wait=` は `open()` の失敗しかリトライせず、
-  アプリが `kbd_intr(-1)` で Ctrl-C を殺している状態 (ポートは開くが応答しない) を待てない
+- **待ちのループだけは自前。** `mpremote` の `wait=` は `open()` の失敗しかリトライしない。
+  ポートは開くのに応答しない状態 — アプリの teardown 中、あるいは Python の下で刺さった
+  デバイス — を待てない。かつてはアプリが `kbd_intr(-1)` で Ctrl-C を殺していたのでこれが
+  常態だったが、今は Ctrl-C が効くので通常はハンドシェイクだけで REPL に入る
 
 ## アプリの起動 (`launch_app`)
 
-アプリは起動するとコンソールを乗っ取る (Ctrl-C 無効 + 同じ線で sentinel protocol)。
+アプリは起動するとコンソールを乗っ取る (同じ線で sentinel protocol を喋る)。
 だから **REPL のポートをそのままリンクへ渡す**。
 
 ```

@@ -221,9 +221,9 @@ class StartAppTest(unittest.TestCase):
         self.assertEqual(bytes(self.repl.serial.written), encode({"cmd": "status"}))
 
     def test_the_repl_wait_is_short_enough_for_a_tool_call(self) -> None:
-        # Getting to the REPL needs a BtnRST press. An MCP call that
-        # blocks for three minutes waiting for one is worse than one
-        # that says so.
+        # The interrupt normally gets us there, but when it does not the
+        # fallback is a BtnRST press. An MCP call that blocks for three
+        # minutes waiting for one is worse than one that says so.
         captured: list[float] = []
 
         def connect_repl(_port: str, _baud: int, timeout: float = 180.0, **_kw: object) -> FakeRepl:

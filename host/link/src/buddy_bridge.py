@@ -15,10 +15,12 @@ is passed through as log output. `SENTINEL` must stay byte-identical to
 ### CLI
 
     python host/buddy_bridge.py --port /dev/cu.usbmodem101 --start --status
+    python host/buddy_bridge.py --port /dev/cu.usbmodem101 --dbg mem
+    python host/buddy_bridge.py --port /dev/cu.usbmodem101 --interrupt
 
-`--start` launches the app over the REPL. Note that the device disables
-Ctrl-C (`micropython.kbd_intr(-1)`) while the serial transport is up, so
-once the app is running the only way back to the REPL is BtnRST.
+`--start` launches the app over the REPL, interrupting a running one to
+get there. `--dbg` asks the running app about itself without stopping
+it; `--interrupt` stops it and leaves the device at a prompt.
 """
 
 from __future__ import annotations
@@ -502,22 +504,100 @@ class LineDemux:
         return out
 
 
+# ----- debug
+#
+# Verbs `device/buddy_debug.py` answers. Bare here, `dbg.`-prefixed on
+# the wire, and the device sets the ack name equal to the command name —
+# which is what lets one helper cover all of them without a table.
+#
+# The device does not import that module until the first of these
+# arrives, so the first call of a session pays an import and the ones
+# after it do not. `off` drops it again.
+DEBUG_OPS = ("mem", "frag", "gc", "state", "eval", "exec", "off")
+
+# The two that compile a string on the device, and so the two that need
+# one.
+_DEBUG_OPS_WITH_SOURCE = ("eval", "exec")
+
+
+def debug(link: Requester, op: str, src: str = "", timeout: float = 8.0) -> Message:
+    """Ask the running app one question about itself.
+
+    Bulky answers do not come back through here. `frag` prints its heap
+    map, and a failing `eval` prints its traceback, to the log channel —
+    drain the link afterwards to read them.
+    """
+    if op not in DEBUG_OPS:
+        raise ValueError(f"unknown debug op {op!r}; expected one of {', '.join(DEBUG_OPS)}")
+    if op in _DEBUG_OPS_WITH_SOURCE and not src:
+        raise ValueError(f"dbg.{op} needs a `src` to run")
+    cmd = f"dbg.{op}"
+    obj: Message = {"cmd": cmd}
+    if op in _DEBUG_OPS_WITH_SOURCE:
+        obj["src"] = src
+    return link.request(obj, cmd, timeout=timeout)
+
+
+# What the device says when the debug module is first pulled in. Audio
+# only: the chat panel may well be the thing being inspected, and
+# overwriting it to announce that somebody is looking at it would be a
+# poor trade.
+DEBUG_ENTER_TEXT = "デバッグモードに入ったのだ"
+
+
+def announce_debug_entry(link: SpeechLink, ack: Message, url: str | None = None) -> bool:
+    """Say "debug mode" out loud, if this ack is the one that entered it.
+
+    Only the device knows which call that was — it sets `entered` on the
+    frame that imported `buddy_debug`, because a fresh host process
+    cannot tell whether an earlier one already loaded it.
+
+    Returns whether anything was actually said. Failure is swallowed on
+    purpose: a silent engine, a dropped WiFi link or an unplugged speaker
+    are all reasons for the announcement not to happen and none of them
+    are reasons for the inspection to fail.
+    """
+    if not ack.get("entered"):
+        return False
+    try:
+        speak(link, DEBUG_ENTER_TEXT, url=url)
+    except Exception as e:
+        print(f"  (could not announce debug mode: {e})")
+        return False
+    return True
+
+
 # ----- launching the app
 #
-# The app takes the console over: once its transport is up it disables
-# Ctrl-C and speaks the sentinel protocol on the same wire. So the launch
-# happens through the REPL, and the port that the REPL was using is
-# handed straight to the link rather than closed and reopened — the
-# device says whatever it is going to say about a failed import in that
-# gap, and reopening would miss it.
+# The app takes the console over: once its transport is up it speaks the
+# sentinel protocol on the same wire. So the launch happens through the
+# REPL, and the port that the REPL was using is handed straight to the
+# link rather than closed and reopened — the device says whatever it is
+# going to say about a failed import in that gap, and reopening would
+# miss it.
 
 # Imported rather than exec'd: the launcher uses the same path, and
 # compiling an 18 KB source string in one go is a poor fit for the
 # ~65 KB of free heap this bundle leaves behind.
+#
+# The module is dropped from the cache first. `claude_buddy` calls run()
+# from its module body, so a second `import` of a module still in
+# sys.modules is a no-op — and the app that was running a moment ago put
+# it there. Before Ctrl-C worked this could not happen: every exit went
+# through machine.reset() and took sys.modules with it. Now the common
+# case is a device that was interrupted back to the REPL, where a plain
+# import launches nothing and says nothing about why.
+#
+# The collect matters as much as the delete. The previous run's UI,
+# transport and speech objects are unreachable once run() has returned
+# but are not yet gone, and re-importing on top of them is what the
+# "MemoryError: memory allocation failed" in CLAUDE.md was.
 LAUNCH_SOURCE = (
-    "import sys\n"
+    "import sys, gc\n"
     "for _p in ('/flash', '/flash/apps'):\n"
     "    if _p not in sys.path: sys.path.insert(0, _p)\n"
+    "if 'claude_buddy' in sys.modules: del sys.modules['claude_buddy']\n"
+    "gc.collect()\n"
     "import claude_buddy\n"
 )
 
@@ -535,9 +615,11 @@ def launch_app(
 ) -> SerialPort:
     """Import the Buddy app on the device. Returns the port to read it on.
 
-    One-way: the app disables Ctrl-C once its transport is up, so a
-    second call will not find a REPL to talk to. Getting there needs a
-    BtnRST press, which is what `wait` is for.
+    Needs a REPL on the far end, and a running app is not one. Send
+    `interrupt()` first to drop it back to the prompt; `wait` is how long
+    a BtnRST press is waited for when that is not possible — a device
+    wedged below the Python level, or a bundle old enough to still
+    disable Ctrl-C.
 
     Hand the result to `BuddyLink.open(adopt=...)` or
     `ResidentLink.connect(adopt=...)`; whoever takes it owns it.
@@ -602,6 +684,21 @@ class BuddyLink:
 
     def send(self, obj: Message) -> None:
         self._io.write(encode(obj))
+        self._io.flush()
+
+    def interrupt(self) -> None:
+        """Ctrl-C the device, dropping a running app back to the REPL.
+
+        One raw byte, deliberately outside the sentinel framing: 0x03 is
+        taken by MicroPython's console reader before any Python on the
+        device sees it, so framing it would only make it invisible.
+
+        Nothing acks this. The app catches the KeyboardInterrupt, tears
+        its transport down and stops *without* rebooting, so the port
+        stays open and the prompt on the other end is live. What it says
+        on the way out arrives as log lines — `pump()` for them.
+        """
+        self._io.write(b"\x03")
         self._io.flush()
 
     def _read_available(self) -> None:
@@ -787,6 +884,18 @@ class ResidentLink:
             self._io.write(encode(obj))
             self._io.flush()
 
+    def interrupt(self) -> None:
+        """Ctrl-C the device. See `BuddyLink.interrupt`.
+
+        Under the write lock like any other write, so it cannot land in
+        the middle of a frame somebody else is putting on the wire. The
+        reader thread stays on the port: the app's parting words, and
+        the REPL banner behind them, are what tells you it worked.
+        """
+        with self._write_lock:
+            self._io.write(b"\x03")
+            self._io.flush()
+
     def await_ack(self, expect: str, timeout: float = 5.0) -> Message:
         """Wait for the reader thread to surface a matching ack."""
         deadline = time.monotonic() + timeout
@@ -826,10 +935,19 @@ class ResidentLink:
         reader collects the startup output, including a traceback from a
         failed import, for `events()`.
 
-        `wait` is short on purpose. Getting to the REPL needs a BtnRST
-        press, and a tool call that blocks for three minutes waiting for
-        one is worse than one that says so.
+        A running app is interrupted first — that is what gets us a REPL
+        without anyone touching the board. `wait` covers the case where
+        it does not answer, and is short on purpose: a tool call that
+        blocks for three minutes waiting for a BtnRST press is worse
+        than one that says it needs one.
         """
+        if self.connected:
+            # Best-effort. A device already at the REPL ignores it, and
+            # a port that has gone away is about to be reported by the
+            # launch anyway.
+            with contextlib.suppress(Exception):
+                self.interrupt()
+                time.sleep(0.5)
         self.disconnect()
         ser = launch_app(self.port, self.baud, self.read_timeout, wait=wait)
         self.connect(adopt=ser)
@@ -878,7 +996,7 @@ def main() -> int:
         "--wait",
         type=float,
         default=180.0,
-        help="Seconds to wait for the REPL when --start needs it. Needs a BtnRST press.",
+        help="Seconds to wait for the REPL when --start cannot interrupt its way there.",
     )
     ap.add_argument(
         "--engine",
@@ -896,6 +1014,29 @@ def main() -> int:
         "--no-show",
         action="store_true",
         help="Do not also put spoken text on the chat panel.",
+    )
+    ap.add_argument(
+        "--interrupt",
+        action="store_true",
+        help="Ctrl-C a running app back to the REPL. Runs before everything else.",
+    )
+    ap.add_argument(
+        "--dbg",
+        action="append",
+        default=[],
+        metavar="OP",
+        help=f"Ask the app about itself. One of: {', '.join(DEBUG_OPS)}. Repeatable.",
+    )
+    ap.add_argument(
+        "--dbg-src",
+        default="",
+        metavar="SRC",
+        help="Expression or statement for --dbg eval / --dbg exec.",
+    )
+    ap.add_argument(
+        "--dbg-silent",
+        action="store_true",
+        help="Do not have the device announce that it entered debug mode.",
     )
     ap.add_argument("--watch", type=float, default=0.0, help="Read traffic for N seconds and exit.")
     ap.add_argument("--timeout", type=float, default=5.0)
@@ -927,8 +1068,26 @@ def main() -> int:
             if args.start:
                 # The reader is already on the port the launch handed
                 # over, so this is just letting the device talk.
-                link.pump(args.settle)
-                _dump(*link.drain())
+                # `pump` drains as it returns; a second `drain()` would
+                # get an empty batch and the startup output — including
+                # the traceback from a failed import — would be gone.
+                _dump(*link.pump(args.settle))
+
+            if args.interrupt:
+                # Ahead of everything else: whatever follows wants the
+                # REPL, and this is what frees it.
+                link.interrupt()
+                _dump(*link.pump(1.0))
+
+            for op in args.dbg:
+                ack = debug(link, op, src=args.dbg_src, timeout=args.timeout)
+                print(f"dbg.{op}:", json.dumps(ack, ensure_ascii=False))
+                if not args.dbg_silent and announce_debug_entry(link, ack, url=args.engine):
+                    print(f"  (said {DEBUG_ENTER_TEXT!r})")
+                # frag's heap map and a failed eval's traceback come back
+                # as log lines, not in the ack. Give them a moment to
+                # arrive so they print next to the ack they belong to.
+                _dump(*link.pump(0.3))
 
             if args.status:
                 ack = link.request({"cmd": "status"}, "status", timeout=args.timeout)
@@ -982,7 +1141,7 @@ def main() -> int:
 
             if args.watch:
                 print(f"watching for {args.watch:.1f}s...")
-                link.pump(args.watch)
+                _dump(*link.pump(args.watch))
         finally:
             _dump(*link.drain())
             if link.dropped:

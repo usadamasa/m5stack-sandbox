@@ -40,6 +40,7 @@ import os
 import sys
 import termios
 import threading
+import time
 from collections.abc import Iterator
 from dataclasses import replace
 
@@ -51,10 +52,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mcp.server.mcpserver import MCPServer
 
 from buddy_bridge import (
+    DEBUG_OPS,
     DEFAULT_PACE,
     DEFAULT_RATE,
     ZUNDAMON,
     ResidentLink,
+    announce_debug_entry,
+    debug,
     say,
     speak,
     voicevox_url,
@@ -71,9 +75,9 @@ server = MCPServer(
         "Talks to an M5Stack Cardputer-Adv running the Claude Buddy app over "
         "USB serial. Call probe_serial first on a new machine or after a "
         "sandbox settings change; if it reports tcsetattr failure, no other "
-        "tool here will work. buddy_start_app is one-way — the device "
-        "disables Ctrl-C while its serial transport is up, so returning to "
-        "the REPL needs a physical BtnRST press."
+        "tool here will work. The running app has no REPL of its own — use "
+        "buddy_debug to inspect it in place, and buddy_interrupt to drop it "
+        "back to a prompt without touching the board."
     ),
 )
 
@@ -197,10 +201,10 @@ def buddy_disconnect() -> dict:
 def buddy_start_app(settle: float = 8.0, wait: float = 15.0) -> dict:
     """Interrupt to the REPL and launch the Buddy app on the device.
 
-    One-way: the app disables Ctrl-C once its transport is up, so getting
-    back to the REPL afterwards requires pressing BtnRST on the device —
-    and so does calling this a second time. `wait` bounds how long that
-    press is waited for before giving up.
+    A running app is Ctrl-C'd first, so calling this twice in a row
+    works. `wait` bounds how long a BtnRST press is waited for when that
+    does not get us a prompt — a device wedged below the Python level, or
+    a bundle old enough to still disable the interrupt.
 
     Returns the startup output, which is where a launch traceback lands.
     """
@@ -327,6 +331,89 @@ def buddy_events() -> dict:
         msgs, logs = link.events()
         dropped = link.dropped
     return {"messages": msgs, "logs": _decode_logs(logs), "dropped": dropped}
+
+
+# ----- debug
+#
+# The app owns the console for the length of its run, so the REPL that
+# would answer "what is the heap doing" is not there while the state
+# worth looking at exists. These two are the way in: one asks the running
+# app, the other ends it and hands the prompt back.
+
+
+@server.tool()
+def buddy_debug(
+    op: str = "mem",
+    src: str = "",
+    timeout: float = 8.0,
+    settle: float = 0.4,
+    announce: bool = True,
+) -> dict:
+    """Inspect the running app in place, without stopping it.
+
+    `op` is one of:
+
+      mem    both heaps. `free`/`alloc` are MicroPython's; `idf_free` and
+             `idf_largest` are the ESP-IDF heap that sockets come out of,
+             and the one a failing `buddy_speak` is usually short of.
+      frag   dump the heap map. Arrives in `logs`, not in `ack`.
+      gc     collect, and report the free heap either side of it.
+      state  the transport, chat panel and speech player at a glance.
+      eval   evaluate `src` against the app's live objects (`ble`, `chat`,
+             `speech`, `state`, `ui`, `proto`, `chars`). Capped at 192
+             characters — it compiles on the device.
+      exec   run `src` as a statement. Output goes to `logs`.
+      off    unload the debug module and report the heap it gave back.
+
+    The device imports its debug module on the first of these and drops
+    it on `off`, so a long inspection session is worth closing out. Bulky
+    answers and tracebacks come back in `logs`; `settle` is how long we
+    wait for them after the ack.
+
+    That first call is also said out loud, so the room knows the device
+    is being poked at rather than working. `announce=False` skips it —
+    the announcement costs a VOICEVOX round trip and a second of
+    playback, which is a long time to add to a tight measurement loop.
+    """
+    if op not in DEBUG_OPS:
+        return {"ok": False, "error": f"unknown op {op!r}; expected one of {', '.join(DEBUG_OPS)}"}
+    with _device() as link:
+        try:
+            ack = debug(link, op, src=src, timeout=timeout)
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        # Inside the lock: the announcement is another exchange with the
+        # device, and letting the chatter in between would cross the acks.
+        announced = announce and announce_debug_entry(link, ack)
+        if settle:
+            time.sleep(settle)
+        _msgs, logs = link.events()
+    return {"ok": True, "ack": ack, "announced": announced, "logs": _decode_logs(logs)}
+
+
+@server.tool()
+def buddy_interrupt(settle: float = 1.0) -> dict:
+    """Ctrl-C the running app back to the REPL. Does not reboot.
+
+    The app tears its transport down and stops at a live prompt with the
+    screen reading "REPL"; the port stays open and this link keeps
+    reading it. Use it before `buddy_start_app`, or before handing the
+    port to `buddy_deploy.py` — though that one needs `buddy_disconnect`
+    as well, since only one process can hold the port.
+
+    Refuses to open a port of its own: with nothing connected there is no
+    app to interrupt, and claiming the port to find that out would lock
+    out the tool that does need it.
+    """
+    with _device_lock:
+        link = _live_link()
+        if link is None:
+            return {"ok": False, "error": "not connected; nothing to interrupt"}
+        link.interrupt()
+        if settle:
+            time.sleep(settle)
+        _msgs, logs = link.events()
+    return {"ok": True, "logs": _decode_logs(logs)}
 
 
 # ----- chatter

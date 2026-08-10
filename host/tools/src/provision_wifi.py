@@ -264,8 +264,9 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=float,
         default=180.0,
         help=(
-            "Seconds to wait for the REPL. Getting there needs a BtnRST press, "
-            "so this polls rather than failing straight away. 0 to not wait."
+            "Seconds to wait for the REPL. A running app is interrupted out of "
+            "the way, and this covers the case where that does not take — it "
+            "polls rather than failing straight away. 0 to not wait."
         ),
     )
     ap.add_argument(

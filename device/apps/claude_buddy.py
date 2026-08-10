@@ -103,6 +103,11 @@ _TRANSPORT = "serial"
 # pay for a second JSON parse — see buddy_chat.py for the commands.
 _CHAT_TAG = b'"chat.'
 _SPEAK_TAG = b'"speak.'
+# Same trick again for the debug verbs, and here the pre-filter is the
+# entire resident cost of the feature: `buddy_debug` is not imported
+# until one of these arrives, and is dropped again on `dbg.off`. See
+# that module's docstring for why it is kept off the heap.
+_DBG_TAG = b'"dbg.'
 # There is deliberately no net.* verb. main.py connects at boot from the
 # credentials in wifi_event.py (written by host/provision_wifi.py), and
 # this app inherits that link. `connect()` from in here is accepted and
@@ -278,6 +283,61 @@ def run():
     # write with no LCD involvement, so that goes out immediately.
     chat_dirty = [False]  # type: list[bool]
 
+    # One slot holding buddy_debug once something has asked for it. A
+    # list rather than a `global` so the closure can rebind it, same
+    # pattern as proto_holder above.
+    dbg_holder = {"m": None}  # type: dict
+
+    def on_dbg(raw):
+        mod = dbg_holder["m"]
+        # True only on the frame that pulled the module in. The host
+        # cannot work this out for itself — a fresh CLI process has no
+        # idea whether a previous one already loaded it — so the
+        # transition is reported rather than inferred, and the host
+        # decides what to do about it (currently: say so out loud).
+        entered = mod is None
+        if mod is None:
+            try:
+                import buddy_debug
+            except ImportError as e:
+                # A bundle deployed before buddy_debug existed. Say so in
+                # an ack rather than letting the ImportError escape into
+                # the transport callback and take the loop down.
+                return {"ack": "dbg", "ok": False, "err": "buddy_debug not on flash: " + str(e)}
+            mod = dbg_holder["m"] = buddy_debug
+            # The live objects an expression should be able to name.
+            # `speech` and `proto` are read through the enclosing scope,
+            # so both are already assigned by the time a frame arrives.
+            mod.bind(
+                {
+                    "ble": ble,
+                    "chars": chars,
+                    "chat": chat,
+                    "proto": proto_holder["p"],
+                    "speech": speech,
+                    "state": state,
+                    "ui": ui,
+                }
+            )
+        ack = mod.handle_raw(raw)
+        if ack is not None and entered and not ack.get("unload"):
+            # A `dbg.off` that had to import the module in order to
+            # unload it has not entered anything, so it does not say so.
+            ack["entered"] = True
+        if ack is not None and ack.get("unload"):
+            # Every reference has to go before the collect, or the
+            # number in the ack is measured against a heap the module
+            # is still sitting in. `mod` is the one that is easy to
+            # miss: it outlives the other two until this function
+            # returns.
+            mod = None
+            dbg_holder["m"] = None
+            if "buddy_debug" in sys.modules:
+                del sys.modules["buddy_debug"]
+            gc.collect()
+            ack["free"] = gc.mem_free()
+        return ack
+
     def on_line(raw):
         if _CHAT_TAG in raw and ble is not None:
             ack = chat.handle_raw(raw)
@@ -292,6 +352,13 @@ def run():
         # response headers are in.
         if _SPEAK_TAG in raw and ble is not None and speech is not None:
             ack = speech.handle_raw(raw)
+            if ack is not None:
+                ble.send_line(json.dumps(ack, separators=(",", ":")).encode("utf-8"))
+                return
+        # Last of the pre-filters: debug traffic is rare, and putting it
+        # behind the two that are not keeps the common path unchanged.
+        if _DBG_TAG in raw and ble is not None:
+            ack = on_dbg(raw)
             if ack is not None:
                 ble.send_line(json.dumps(ack, separators=(",", ":")).encode("utf-8"))
                 return
@@ -383,6 +450,17 @@ def run():
     proto_holder["p"] = proto
 
     ui.update_footer(state.stats(), _stub_battery())
+
+    # Everything large is allocated by now, so this is the right moment
+    # to tell the collector to run early rather than late. The default
+    # is to collect when an allocation fails, which on a heap this
+    # fragmented is the point at which it is already too late — the
+    # MemoryError that took `import buddy_ui_cp` down had 55 KB free.
+    # The docs' recipe: collect once a quarter of the free heap has been
+    # handed out.
+    gc.collect()
+    gc.threshold(gc.mem_alloc() + gc.mem_free() // 4)
+    print("claude_buddy: gc threshold set, free=", gc.mem_free())
     print("Claude Buddy up as", ble.advertised_name)
 
     # Keyboard: debounce 400 ms before polling so the key used to pick
@@ -402,6 +480,12 @@ def run():
     # callback and needs this loop to drain stdin for it. Resolve once —
     # BuddyBLE has no poll() and we don't want a getattr every 40 ms.
     pump = getattr(ble, "poll", None)
+
+    # Set by the Ctrl-C handler below. It is the one exit that does not
+    # reboot: the point of pressing it is to get the REPL, and a reset
+    # would spend ten seconds bringing WiFi back up before handing over
+    # the same prompt.
+    to_repl = False
 
     try:
         while True:
@@ -512,6 +596,21 @@ def run():
             # tick(), so no additional delay is needed for the input
             # path specifically.
             time.sleep_ms(40)
+    except KeyboardInterrupt:
+        # Reachable again. `buddy_serial` used to disable Ctrl-C because
+        # a JSON payload could carry a 0x03; the host escapes control
+        # bytes and the binary bulk mode that needed the raw channel is
+        # gone, so the interrupt is back and this is where it lands.
+        to_repl = True
+        print("claude_buddy: interrupted")
+    except Exception as e:
+        # The `finally` below reboots, and a reboot is faster than the
+        # console: without this the traceback that explains the crash is
+        # cut off mid-line, or never printed at all. Swallowed rather
+        # than re-raised because the reset ends the process either way,
+        # and re-raising only risks a second unprintable exception.
+        print("claude_buddy: unhandled exception in the main loop")
+        sys.print_exception(e)
     finally:
         # Mirror buddy_app.py's teardown ordering: BLE first so a late
         # async disconnect event can't repaint Buddy chrome on top of
@@ -533,12 +632,29 @@ def run():
             M5.Lcd.fillScreen(buddy_ui.BLACK)
         except Exception as e:
             print("claude_buddy: screen-clear warning:", e)
+        if to_repl:
+            # A black screen and no reboot is indistinguishable from a
+            # bricked board across the desk. One word is enough to say
+            # which of the two it is.
+            try:
+                M5.Lcd.setTextColor(buddy_ui.GRAY_DIM, buddy_ui.BLACK)
+                M5.Lcd.drawString("REPL", 8, 8)
+            except Exception as e:
+                print("claude_buddy: repl banner warning:", e)
         # UIFlow has no launcher-return API; machine.reset() is the
         # only way back to App List. Same pattern hello_cardputer.py
         # uses. Brief pause so any trailing BLE log doesn't get
         # truncated mid-line on the USB console.
         time.sleep_ms(200)
-        machine.reset()
+        if to_repl:
+            # deinit() has already put Ctrl-C back and dropped the
+            # transport's hold on stdin, so returning from run() lands on
+            # a live prompt with the app's objects collectable. That is
+            # the whole point of the interrupt — resetting here would
+            # throw away a REPL that took a keypress to reach.
+            print("claude_buddy: at the REPL. machine.reset() to restart.")
+        else:
+            machine.reset()
 
 
 # UIFlow 2.4.x's App List has been observed to invoke apps both as

@@ -40,11 +40,26 @@ test_device_constraints.py` enforces that mechanically.
 ### Ctrl-C
 
 Host and device share one USB CDC channel, and MicroPython treats an
-inbound 0x03 on it as ``KeyboardInterrupt``. A JSON payload containing
-that byte would kill the app mid-loop, so ``__init__`` disables the
-interrupt with ``micropython.kbd_intr(-1)`` and ``deinit`` restores it.
-While a session is up there is no Ctrl-C escape hatch — recovery is
-BtnRST.
+inbound 0x03 on it as ``KeyboardInterrupt``. This used to disable the
+interrupt with ``micropython.kbd_intr(-1)``, because a JSON payload
+carrying that byte would have killed the app mid-loop, and recovering
+from a running app meant a physical BtnRST press.
+
+Neither half of that holds any more:
+
+  - everything the host puts on the wire comes out of ``json.dumps``
+    (``host/link/src/buddy_bridge.py``), whose ``ensure_ascii`` default
+    escapes 0x00..0x1F as ``\\uXXXX``. There is no path from a message
+    payload to a raw 0x03.
+  - the bulk mode that did send raw bytes is gone, as the section below
+    records.
+
+So the interrupt stays enabled, and ``apps/claude_buddy.py`` catches the
+``KeyboardInterrupt`` to tear down and stop at the REPL instead of
+rebooting. That is the only way back into a running app without touching
+the board, and it costs no memory to have. Anything that reintroduces a
+raw binary mode on this channel has to take ``kbd_intr(-1)`` back with
+it.
 
 ### One byte at a time
 
@@ -124,9 +139,12 @@ class BuddySerial:
         self._poller = select.poll()
         self._poller.register(self._stdin, select.POLLIN)
 
-        # Must happen before the first inbound byte can arrive.
+        # Ctrl-C is deliberately left enabled — see the module docstring.
+        # Asserted rather than assumed: whatever ran before us may have
+        # turned it off, and the escape hatch is only worth having if it
+        # is reliably there.
         if micropython is not None:
-            micropython.kbd_intr(-1)
+            micropython.kbd_intr(3)
 
         print("buddy_serial: up as", self._name)
 
@@ -188,7 +206,9 @@ class BuddySerial:
         except (OSError, KeyError):
             pass
         if micropython is not None:
-            # Restore the Ctrl-C escape hatch for whatever runs next.
+            # Idempotent with __init__ now, and kept because deinit is
+            # also the path a future transport that *did* disable it
+            # would come through.
             micropython.kbd_intr(3)
         self._on_line = lambda _line: None
         self._on_state = lambda _st: None
