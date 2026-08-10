@@ -15,6 +15,7 @@ members = [
 [dependency-groups]
 dev = [
     "basedpyright>=1.31.0",
+    "poethepoet>=0.38.0",
     "pytest>=8.4.0",
     "pytest-cov>=6.2.0",
     "ruff>=0.14.0",
@@ -68,3 +69,48 @@ known-first-party = [
 # member ごとに回す (`uv run --directory host/link pytest` のように)。
 # ruff だけはここから 1 回で足りる — 上に書いたとおり、member の設定は
 # ruff 自身が階層で拾う。
+
+# ----------------------------------------------------------------- poe
+
+# ライセンス名の羅列を持たずに済ませるため、判定は trivy の分類に任せる。
+# trivy は SPDX に正規化したうえで forbidden / restricted / reciprocal /
+# notice / permissive に分ける。落とすのはそのうち上位 3 つ (CRITICAL/HIGH/
+# MEDIUM) で、AGPL は forbidden、GPL と LGPL は restricted に入る。
+#
+# UNKNOWN も落とす。trivy の分類表に無いライセンスが素通りするのを避けるため。
+# 通しているものは下の `--ignored-licenses` に SPDX ID で並ぶ。中身はいずれも
+# permissive だと確認したもので、増えるのは新しい名前が来たときだけ。
+# "CUSTOM License: MIT License ..." は rich-click の METADATA が License 欄に
+# MIT 全文を入れているせいで trivy が分類できないもの。trivy がその全文を
+# 31 文字に切った文字列がそのまま名前になっている。
+#
+# esptool は GPL-2.0+ で restricted。ファームウェアを焼くときに別プロセスで叩く
+# だけの CLI で、import もしなければ再配布もしないため、Apache-2.0 のこのツリーに
+# 伝播しない。除外の理由が変わったら (ライブラリとして import する等) ここを
+# 外して判断し直すこと。esptool の依存は除外していない。
+#
+# `rootfs` なのは `fs` が site-packages を読まないため。読ませるには
+# インストール済みの `.venv` が要る。`--table-mode detailed` は成功時に
+# 何も出させないためで、落ちたときだけ該当パッケージの表が出る。
+#
+# `aqua exec` を挟むのは PATH に依存しないため。.envrc が通す PATH は
+# direnv を hook した対話シェルにしか効かず、そこを踏まない経路 (CI、
+# エディタ、Claude Code の Bash) から叩くと trivy が見つからない。
+[tool.poe.tasks.license]
+help = "依存のライセンスを trivy の分類で検査する"
+env = { TRIVY_CACHE_DIR = "tmp/trivy-cache" }
+cmd = """
+aqua exec -- trivy rootfs .venv
+  --scanners license
+  --severity CRITICAL,HIGH,MEDIUM,UNKNOWN
+  --exit-code 1
+  --table-mode detailed
+  --quiet
+  --skip-dirs "**/esptool*"
+  --ignored-licenses "BlueOak-1.0.0,PSF-2.0,MIT-0,MPL-2.0,CUSTOM License: MIT License ..."
+"""
+
+[tool.poe.tasks.license-list]
+help = "依存が名乗るライセンスを分類つきで一覧する (判定はしない)"
+env = { TRIVY_CACHE_DIR = "tmp/trivy-cache" }
+cmd = "aqua exec -- trivy rootfs .venv --scanners license --quiet --table-mode detailed"

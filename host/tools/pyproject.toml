@@ -7,6 +7,7 @@
 name = "buddy-host-tools"
 version = "0.1.0"
 description = "Deploy, provisioning and probing tools for the Cardputer-Adv."
+license = "Apache-2.0"
 requires-python = ">=3.13"
 dependencies = [
     "buddy-host-link",

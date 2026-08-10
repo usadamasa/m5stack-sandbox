@@ -109,6 +109,24 @@ jobs:
               assert u.find_spec(name) is None, f"{name} leaked into the mcp environment"
           PY
 
+  # trivy は .venv の site-packages を読むので、sync が先に要る。
+  # `--all-groups` を付けるのはここだけ。flash グループ (esptool とその依存) は
+  # opt-in で入るぶん、他のジョブからは見えない。
+  license:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # trivy のバージョンは aqua.yaml が持つ。手元と同じものが入る。
+      - uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
+        with:
+          aqua_version: v2.62.3
+      - run: aqua install
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked --all-packages --all-groups
+      - run: uv run poe license
+
   # The single required status check. Branch protection points at this
   # job and nothing else, so adding or renaming a job above only means
   # editing `needs` here — no repository-settings change, and no way to
@@ -120,7 +138,7 @@ jobs:
   # condition and the job fails on purpose.
   ci-status-check:
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, mpy-build, test, isolation]
+    needs: [lint, typecheck, mpy-build, test, isolation, license]
     permissions: {}
     if: failure() || cancelled()
     steps:

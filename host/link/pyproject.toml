@@ -6,6 +6,9 @@
 name = "buddy-host-link"
 version = "0.1.0"
 description = "USB serial transport and client for the Cardputer-Adv."
+# リポジトリの LICENSE と同じ。CI の license ジョブは allow-list 方式で、
+# ライセンス未宣言のパッケージは UNKNOWN として落ちる。自分の member も例外ではない。
+license = "Apache-2.0"
 requires-python = ">=3.13"
 dependencies = [
     # MicroPython's own remote-control tool. Used as a library, not a CLI:
