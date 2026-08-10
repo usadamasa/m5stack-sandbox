@@ -1,15 +1,16 @@
 # m5stack-sandbox
 
-M5Stack Cardputer-Adv を Claude Code から操作するための実験リポジトリ。
+M5Stack Cardputer-Adv をコーディングエージェントから操作するための実験リポジトリ。
+Claude Code と Codex の両方から同じように使える。
 
-Claude Buddy の BLE transport を USB シリアルに差し替えて、Claude Code から直接デバイスと
+Claude Buddy の BLE transport を USB シリアルに差し替えて、エージェントから直接デバイスと
 通信する。
 
 ## 何が動くか
 
 ```
-Claude Code ──MCP / CLI──> host/link ──USB CDC──> Cardputer-Adv
-                                                   └ claude_buddy.py + buddy_serial.py
+Claude Code / Codex ──MCP / CLI──> host/link ──USB CDC──> Cardputer-Adv
+                                                            └ claude_buddy.py + buddy_serial.py
 ```
 
 - `status` / `name` / `owner` のラウンドトリップと、デバイス発の `hello` の受信
@@ -148,6 +149,7 @@ host が流すのは `json.dumps` の出力だけで、制御文字は `\uXXXX` 
 ### MCP 経由
 
 `.mcp.json` は Claude Code の起動時に読み込まれるため、変更した後はセッションの再起動が要る。
+Codex から使うときの登録は [下記](#codex-から使う)。
 
 | tool | 用途 |
 | --- | --- |
@@ -174,21 +176,67 @@ host が流すのは `json.dumps` の出力だけで、制御文字は `\uXXXX` 
 `ResidentLink` がバックグラウンドスレッドでポートを読み続けるため、ツール呼び出しの合間に
 届いたメッセージも `buddy_events` で回収できる。
 
+### Codex から使う
+
+MCP server も chatter も、Claude Code と Codex で中身は同じ。違うのは登録の場所と、
+台詞を書く LLM だけ。
+
+`~/.codex/config.toml` に MCP server を登録する。パスは自分のチェックアウトに合わせる。
+
+```toml
+[mcp_servers.buddy]
+command = "/path/to/m5stack-sandbox/.venv/bin/python"
+args = ["/path/to/m5stack-sandbox/host/mcp/src/buddy_mcp.py"]
+env = { BUDDY_PORT = "/dev/cu.usbmodem101" }
+```
+
+独り言も欲しいなら `~/.codex/hooks.json` に足す。Codex の hooks は Claude Code と同じ
+スキーマなので、**呼ぶスクリプトは同じ 1 本**で、違うのは `--agent` だけ。
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "hooks": [{ "type": "command", "timeout": 5,
+                    "command": "python3 /path/to/m5stack-sandbox/.claude/hooks/buddy_chatter_notify.py --agent codex" }] }
+    ],
+    "PostToolUse":      [ { "hooks": [{ "type": "command", "timeout": 5, "command": "... --agent codex" }] } ],
+    "UserPromptSubmit": [ { "hooks": [{ "type": "command", "timeout": 5, "command": "... --agent codex" }] } ],
+    "SessionStart":     [ { "hooks": [{ "type": "command", "timeout": 5, "command": "... --agent codex" }] } ],
+    "Stop":             [ { "hooks": [{ "type": "command", "timeout": 5, "command": "... --agent codex" }] } ]
+  }
+}
+```
+
+スクリプトが `.claude/` に居るのは Claude Code の置き場の作法に従っているだけで、中身は
+どちらのエージェントのものでもない。Codex からは絶対パスで呼ぶので場所は問わない。
+
+Codex は新しい hook を初回に信頼登録させる (`New hook - review required` と出る)。
+そこで trust するまでは発火しない。
+
 ### 作業中に喋らせる (chatter)
 
-Claude Code が作業している間、デバイスが勝手に独り言を言う。dog fooding のための機能で、
+エージェントが作業している間、デバイスが勝手に独り言を言う。dog fooding のための機能で、
 音声経路を「思い出したときに呼ぶ」から「常時使われる」に変えるのが目的。
 
 ```
-Claude Code hooks ─datagram─> tmp/buddy-chatter.sock ─> MCP server の worker thread
-                                                          └─ 台詞を生成してキャッシュ
-                                                          └─ ResidentLink で発話
+Claude Code / Codex hooks ─datagram─> tmp/buddy-chatter.sock ─> MCP server の worker thread
+                                                                  └─ 台詞を生成してキャッシュ
+                                                                  └─ ResidentLink で発話
 ```
 
 **タスクを一切ブロックしない。** hook は `.claude/hooks/buddy_chatter_notify.py` が
 datagram を 1 発投げて終わり (約 40ms、listener が居なくても exit 0)。合成と再生は
 MCP server 側のスレッドが自分の時間でやる。そのスレッドはデバイスのロックを
 `blocking=False` でしか取らないので、本物のツール呼び出しを待たせることが無い。
+
+**台詞を書くモデルは接続元で決まる。** Claude Code なら Vertex AI の Claude、Codex なら
+`codex exec`。組み合わせは固定で、2×2 は用意していない — それぞれのマシンが既に持っている
+認証をそのまま使うのが狙いで、交差させるとどちらにも無い認証情報が要る。
+
+判定は接続してきた側から取る。MCP の `initialize` が運ぶ `clientInfo.name` と、hook が
+datagram に乗せる `--agent` の両方を見る。デプロイ時にどちらかへ固定はしない。
+今どちらで動いているかは `buddy_chatter_status` の `agent` / `backend` に出る。
 
 **間隔は毎回引き直す。** 固定間隔はメトロノームに聞こえて数分で気に障るため。
 

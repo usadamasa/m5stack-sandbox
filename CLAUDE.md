@@ -1,6 +1,7 @@
 # CLAUDE.md
 
-M5Stack Cardputer-Adv を USB シリアル経由で Claude Code から操作する実験リポジトリ。
+M5Stack Cardputer-Adv を USB シリアル経由でコーディングエージェントから操作する実験
+リポジトリ。Claude Code と Codex の両方から使える。
 何ができるかと使い方は [README.md](README.md) にある。
 
 ## 言語
@@ -95,7 +96,11 @@ uv workspace の 4 member: `device/` (デバイスの上で動く overlay)、`ho
 - **chatter がデバイスを喋らせている。** MCP server の worker thread が hook 起点で独り言を
   言う。デバイスに触る tool は全て `_device_lock` を握ること — 握らずに request を出すと
   ack が入れ違う。詳細は `buddy-chatter` skill
-- `.mcp.json` と `.claude/settings.json` は絶対パスを持つ。別マシンでは書き換えが要る
+- **接続元が Claude Code か Codex かで台詞を書く LLM が変わる。** tool は全て共通で、
+  分かれるのは chatter の生成器だけ (`buddy_agent.py` / `RoutingLineSource`)。判定は MCP の
+  `clientInfo` と hook の `--agent` から実行時に取る。デプロイ時に固定しない
+- `.mcp.json` と `.claude/settings.json` は絶対パスを持つ。別マシンでは書き換えが要る。
+  Codex 側の登録 (`~/.codex/config.toml` と `~/.codex/hooks.json`) は README を見る
 
 ## クレジット
 

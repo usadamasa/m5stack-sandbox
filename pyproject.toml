@@ -52,8 +52,10 @@ select = [
 
 [tool.ruff.lint.isort]
 known-first-party = [
+    "buddy_agent",
     "buddy_bridge",
     "buddy_chat",
+    "buddy_chatter",
     "buddy_deploy",
     "buddy_mcp",
     "buddy_serial",

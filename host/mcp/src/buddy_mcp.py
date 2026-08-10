@@ -1,9 +1,18 @@
 """MCP server exposing the Cardputer-Adv over the Buddy serial protocol.
 
-Wraps `buddy_bridge.ResidentLink` so Claude Code can talk to the device
-through tool calls instead of shelling out. The link is held open across
-calls, which is what makes device-initiated traffic visible to
+Wraps `buddy_bridge.ResidentLink` so a coding agent can talk to the
+device through tool calls instead of shelling out. The link is held open
+across calls, which is what makes device-initiated traffic visible to
 `buddy_events` rather than being lost between invocations.
+
+### Claude Code and Codex
+
+Both drive this server, and every tool below is the same either way —
+the device does not care who asked. The one thing that differs is where
+the chatter's lines come from, and that is decided from the `initialize`
+handshake rather than from how the server was registered: see
+`buddy_agent`, and `_ClientProbe` at the bottom of the configuration
+section for the half of it that lives here.
 
 ### The open question this server answers
 
@@ -30,7 +39,8 @@ chatter only ever takes that lock when it is already free.
 
 `BUDDY_PORT` selects the device (default `/dev/cu.usbmodem101`).
 `BUDDY_CHATTER=0` turns the chatter off. Registered via `.mcp.json` at
-the repo root.
+the repo root for Claude Code, and `[mcp_servers.buddy]` in
+`~/.codex/config.toml` for Codex — see `codex/README.md`.
 """
 
 from __future__ import annotations
@@ -41,17 +51,19 @@ import sys
 import termios
 import threading
 import time
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from dataclasses import replace
-from typing import Any
+from typing import Any, cast
 
-# The server is launched by Claude Code from an arbitrary cwd, so make
-# the sibling module importable by absolute path rather than relying on
-# the working directory.
+# The server is launched by the agent from an arbitrary cwd, so make the
+# sibling module importable by absolute path rather than relying on the
+# working directory.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from mcp.server.context import CallNext, HandlerResult, ServerRequestContext
 from mcp.server.mcpserver import MCPServer
 
+from buddy_agent import AgentIdentity
 from buddy_bridge import (
     DEBUG_OPS,
     DEFAULT_PACE,
@@ -69,9 +81,55 @@ from device_repl import ReplError
 
 DEFAULT_PORT = os.environ.get("BUDDY_PORT", "/dev/cu.usbmodem101")
 
+# Who is driving. Written by `_ClientProbe` below from the handshake and
+# by the chatter from any hook datagram that names its sender; read by
+# the chatter to pick which model writes a line.
+#
+# Built at import because the middleware that writes it is a constructor
+# argument to the server. Only the fallback is read from the environment
+# here — the rest of the chatter's settings stay a lazy read, so that
+# rebuilding the service picks up a changed environment.
+_identity = AgentIdentity(ChatterConfig.from_env().agent)
+
+
+class _ClientProbe:
+    """Notes the peer's `clientInfo` as the handshake goes past.
+
+    A `ServerMiddleware` rather than a `Context` parameter on every
+    tool: the identity is a property of the connection, so it should be
+    read once where the connection is established instead of being
+    re-derived at each call — and threading a context argument through
+    fourteen tool signatures to answer one question is a poor trade.
+
+    Observation only. It never rewrites the context and never fails a
+    request: which model writes the muttering is not worth breaking a
+    handshake over, so anything unexpected in the params is swallowed
+    and the default backend applies.
+    """
+
+    def __init__(self, identity: AgentIdentity) -> None:
+        self._identity = identity
+
+    async def __call__(
+        self,
+        ctx: ServerRequestContext[Any, Any],
+        call_next: CallNext,
+    ) -> HandlerResult:
+        if ctx.method == "initialize":
+            with contextlib.suppress(Exception):
+                params: Mapping[str, Any] = ctx.params or {}
+                info = params.get("clientInfo")
+                if isinstance(info, Mapping):
+                    name = cast("Mapping[str, Any]", info).get("name")
+                    if isinstance(name, str):
+                        self._identity.observe(name)
+        return await call_next(ctx)
+
+
 server = MCPServer(
     name="buddy",
     version="0.1.0",
+    middleware=[_ClientProbe(_identity)],
     instructions=(
         "Talks to an M5Stack Cardputer-Adv running the Claude Buddy app over "
         "USB serial. Call probe_serial first on a new machine or after a "
@@ -125,7 +183,9 @@ def _live_link() -> ResidentLink | None:
 def _chatter_service() -> ChatterService:
     global _chatter
     if _chatter is None:
-        _chatter = ChatterService(ChatterConfig.from_env(), _live_link, _device_lock)
+        _chatter = ChatterService(
+            ChatterConfig.from_env(), _live_link, _device_lock, identity=_identity
+        )
     return _chatter
 
 
@@ -458,7 +518,10 @@ def buddy_chatter_start(
     if overrides:
         cfg = replace(service.cfg, **overrides)
         service.stop()
-        _chatter = service = ChatterService(cfg, _live_link, _device_lock)
+        # The same identity object, not a fresh one: retuning the pacing
+        # must not forget who is connected — there is no second
+        # handshake to learn it again from.
+        _chatter = service = ChatterService(cfg, _live_link, _device_lock, identity=_identity)
     service.start()
     return service.status()
 

@@ -14,7 +14,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/buddy_chatter_notify.py",
+            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/buddy_chatter_notify.py --agent claude-code",
             "timeout": 5
           }
         ]
@@ -25,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/buddy_chatter_notify.py",
+            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/buddy_chatter_notify.py --agent claude-code",
             "timeout": 5
           }
         ]
@@ -36,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/buddy_chatter_notify.py",
+            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/buddy_chatter_notify.py --agent claude-code",
             "timeout": 5
           }
         ]
@@ -47,7 +47,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/buddy_chatter_notify.py",
+            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/buddy_chatter_notify.py --agent claude-code",
             "timeout": 5
           }
         ]
@@ -58,7 +58,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/buddy_chatter_notify.py",
+            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/buddy_chatter_notify.py --agent claude-code",
             "timeout": 5
           }
         ]
@@ -69,7 +69,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/buddy_chatter_notify.py",
+            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/buddy_chatter_notify.py --agent claude-code",
             "timeout": 5
           }
         ]
@@ -80,7 +80,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/buddy_chatter_notify.py",
+            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/buddy_chatter_notify.py --agent claude-code",
             "timeout": 5
           }
         ]
