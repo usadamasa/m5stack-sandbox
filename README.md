@@ -200,6 +200,12 @@ uv run python host/tools/src/buddy_deploy.py --compile-only
   電源の入れ直しで解消する
 - ポートは 1 プロセスしか掴めない。MCP server が掴んでいる間は CLI から触れない
 
+## ライセンス
+
+[Apache-2.0](LICENSE)。
+[moremas/build-with-claude](https://github.com/moremas/build-with-claude) 由来のコードが
+一部にあり、その帰属は [NOTICE](NOTICE) に、変更点は各ファイルのヘッダにある。
+
 ## クレジット
 
 - VOICEVOX:ずんだもん

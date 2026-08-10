@@ -1,3 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MAS Event + Design, LLC
+# Copyright 2026 usadamasa
+#
+# Modified from moremas/build-with-claude: transport selection, and the
+# chat and speech verbs intercepted in `on_line`. See the docstring.
 """Claude Buddy for the M5 Cardputer-Adv.
 
 Derived from moremas/build-with-claude (Apache-2.0), `buddy/device/apps/

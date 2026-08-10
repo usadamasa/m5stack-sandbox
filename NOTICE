@@ -1,33 +1,27 @@
 m5stack-sandbox
-===============
+Copyright 2026 usadamasa
 
-Portions of this repository derive from moremas/build-with-claude, which is
-licensed under the Apache License, Version 2.0.
+Licensed under the Apache License, Version 2.0 (see LICENSE).
 
-    https://github.com/moremas/build-with-claude
-    Upstream revision referenced during development:
-    b3b588879d2429ba9587a868b3d4749e55dca068
+This product includes software developed at
+moremas/build-with-claude (https://github.com/moremas/build-with-claude),
+revision b3b588879d2429ba9587a868b3d4749e55dca068.
 
-Derived files
--------------
+    m5stack
+    Copyright 2026 MAS Event + Design, LLC
 
-device/apps/claude_buddy.py
-    Adapted from buddy/device/apps/claude_buddy.py. The local change is
-    transport selection: the BLE peripheral can be swapped for the USB-serial
-    link in device/buddy_serial.py.
+    Licensed under the Apache License, Version 2.0.
 
-host/buddy_deploy.py (push_file)
-    Lineage rather than code. It began as a reimplementation of
-    buddy/scripts/push.py, whose paste-mode plus base64 transfer mechanism was
-    upstream's; that mechanism has since been replaced wholesale by mpremote's
-    raw-paste transport, and what remains — the install layout, the
-    post-transfer stat — is local. Recorded because the derivation is real
-    history, not because upstream code survives in it. It lived in
-    host/buddy_push.py until that module was folded into host/buddy_deploy.py.
+The files carrying that code say so in their own header and state what was
+changed: device/apps/claude_buddy.py, host/tools/src/fetch_firmware.py, and
+host/tools/tests/test_provision_wifi.py.
 
 The peer modules the device imports at runtime (buddy_protocol.py,
-buddy_ui_cp.py, buddy_state.py, buddy_chars.py, main.py) are used unmodified
-and are not redistributed here — they are installed onto the device's flash by
-the m5-onboard skill from the upstream clone. host/buddy_deploy.py reads them
-off the device to compile them, and keeps the copy it read under vendor/,
-which is untracked.
+buddy_ui_cp.py, buddy_state.py, buddy_chars.py) are upstream's, used
+unmodified, and are not redistributed here — they are installed onto the
+device's flash from the upstream clone, and the copy kept under vendor/ is
+untracked.
+
+VOICEVOX:ずんだもん
+"VOICEVOX" is a trademark of Kazuyuki Hiroshiba; "ずんだもん" is a trademark
+of SSS LLC. The engine is not bundled; it runs as a separate container.
