@@ -11,7 +11,7 @@ What has to stay is the WiFi connect. `claude_buddy` inherits the link
 but cannot create one: `connect()` from inside a running app is
 accepted and never associates, because by then the largest free region
 of ESP-IDF heap is too small to bring a link up. See the "WiFi" section
-of CLAUDE.md.
+of the buddy-speak skill.
 
 Deliberately does not launch an app. Ending at the REPL is what lets
 `buddy_bridge --start` take over without a BtnRST press.

@@ -1,6 +1,6 @@
 # デバイスの上で動くコード。MicroPython 1.27 (ESP32-S3) 用の distribution では
 # ないので package = false。ディレクトリの形はデバイスの /flash/ をそのまま写す。
-# 転送のしかたは CLAUDE.md の「デバイスへ載るのは .mpy」にある。
+# 転送のしかたは AGENTS.md のコマンドと `buddy-deploy` skill にある。
 
 [project]
 name = "buddy-device"

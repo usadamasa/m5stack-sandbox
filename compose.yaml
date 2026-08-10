@@ -4,7 +4,7 @@
 #
 # The Cardputer-Adv calls this over WiFi and plays the result through
 # M5.Speaker; nothing but the text crosses the USB cable. See the
-# "音声 (speak)" section of CLAUDE.md.
+# "音声 (speak)" section of the buddy-speak skill.
 #
 # Credit, per the VOICEVOX terms: VOICEVOX:ずんだもん
 

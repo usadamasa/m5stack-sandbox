@@ -1,5 +1,5 @@
 # uv workspace のルート。パッケージではなく、member の列挙と共通のツール設定だけ。
-# 分離の効き方は CLAUDE.md の「構成」にある。
+# 分離の効き方は AGENTS.md の「構成」にある。
 
 [tool.uv.workspace]
 members = [

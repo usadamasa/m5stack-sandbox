@@ -1,4 +1,4 @@
-# Scratch. Everything transient goes here (see CLAUDE.md).
+# Scratch. Everything transient goes here (see AGENTS.md).
 tmp/
 
 # Upstream device sources that host/buddy_deploy.py reads off the board

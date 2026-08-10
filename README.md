@@ -43,7 +43,7 @@ uv workspace の 4 member。`device/` はデバイスの `/flash/` へ流し込�
 `host/` はホスト側の link / MCP server / ツール類。protocol・UI・永続状態のレイヤは
 upstream のものが既にデバイスに入っており、本リポジトリでは触らない。
 
-member とファイルの一覧は [CLAUDE.md](CLAUDE.md#構成) にある。
+member とファイルの一覧は [AGENTS.md](AGENTS.md#構成) にある。
 
 ## セットアップ
 
@@ -148,8 +148,9 @@ host が流すのは `json.dumps` の出力だけで、制御文字は `\uXXXX` 
 
 ### MCP 経由
 
-`.mcp.json` は Claude Code の起動時に読み込まれるため、変更した後はセッションの再起動が要る。
-Codex から使うときの登録は [下記](#codex-から使う)。
+Claude Code は `.mcp.json`、Codex は `.codex/config.toml` を読む。どちらも
+`.agents/bin/buddy-mcp` から同じ MCP server を起動する。設定を変えた後は
+セッションを再起動する。
 
 | tool | 用途 |
 | --- | --- |
@@ -176,43 +177,26 @@ Codex から使うときの登録は [下記](#codex-から使う)。
 `ResidentLink` がバックグラウンドスレッドでポートを読み続けるため、ツール呼び出しの合間に
 届いたメッセージも `buddy_events` で回収できる。
 
-### Codex から使う
+### Claude Code / Codex 共通で使う
 
-MCP server も chatter も、Claude Code と Codex で中身は同じ。違うのは登録の場所と、
-台詞を書く LLM だけ。
+エージェント向けの指示・スキル・hook 実装の正本はリポジトリ内にある。
+ユーザーの home 配下に設定をコピーしたり、checkout ごとに絶対パスを
+書き換えたりする必要はない。
 
-`~/.codex/config.toml` に MCP server を登録する。パスは自分のチェックアウトに合わせる。
+| 正本 | Codex | Claude Code |
+| --- | --- | --- |
+| `AGENTS.md` | 直接読み込む | `CLAUDE.md` シンボリック経由 |
+| `.agents/skills/` | 直接検出する | `.claude/skills` シンボリック経由 |
+| `.agents/hooks/` | `.codex/hooks.json` から起動 | `.claude/settings.json` から起動 |
+| `.agents/bin/buddy-mcp` | `.codex/config.toml` から起動 | `.mcp.json` から起動 |
 
-```toml
-[mcp_servers.buddy]
-command = "/path/to/m5stack-sandbox/.venv/bin/python"
-args = ["/path/to/m5stack-sandbox/host/mcp/src/buddy_mcp.py"]
-env = { BUDDY_PORT = "/dev/cu.usbmodem101" }
-```
+Codex ではこの project を trust し、最初の一度だけ `/hooks` で project-local
+hook を確認して trust する。`/mcp` で `buddy` が表示されれば MCP 設定も
+読み込まれている。スキルは `/skills` から確認できる。
 
-独り言も欲しいなら `~/.codex/hooks.json` に足す。Codex の hooks は Claude Code と同じ
-スキーマなので、**呼ぶスクリプトは同じ 1 本**で、違うのは `--agent` だけ。
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      { "hooks": [{ "type": "command", "timeout": 5,
-                    "command": "python3 /path/to/m5stack-sandbox/.claude/hooks/buddy_chatter_notify.py --agent codex" }] }
-    ],
-    "PostToolUse":      [ { "hooks": [{ "type": "command", "timeout": 5, "command": "... --agent codex" }] } ],
-    "UserPromptSubmit": [ { "hooks": [{ "type": "command", "timeout": 5, "command": "... --agent codex" }] } ],
-    "SessionStart":     [ { "hooks": [{ "type": "command", "timeout": 5, "command": "... --agent codex" }] } ],
-    "Stop":             [ { "hooks": [{ "type": "command", "timeout": 5, "command": "... --agent codex" }] } ]
-  }
-}
-```
-
-スクリプトが `.claude/` に居るのは Claude Code の置き場の作法に従っているだけで、中身は
-どちらのエージェントのものでもない。Codex からは絶対パスで呼ぶので場所は問わない。
-
-Codex は新しい hook を初回に信頼登録させる (`New hook - review required` と出る)。
-そこで trust するまでは発火しない。
+MCP server も chatter も中身は共通で、違うのは製品ごとの登録形式と
+台詞を書く LLM だけ。hook は同じ `buddy_chatter_notify.py` を呼び、
+`--agent claude-code` / `--agent codex` で接続元を渡す。
 
 ### 作業中に喋らせる (chatter)
 
@@ -225,7 +209,7 @@ Claude Code / Codex hooks ─datagram─> tmp/buddy-chatter.sock ─> MCP server
                                                                   └─ ResidentLink で発話
 ```
 
-**タスクを一切ブロックしない。** hook は `.claude/hooks/buddy_chatter_notify.py` が
+**タスクを一切ブロックしない。** hook は `.agents/hooks/buddy_chatter_notify.py` が
 datagram を 1 発投げて終わり (約 40ms、listener が居なくても exit 0)。合成と再生は
 MCP server 側のスレッドが自分の時間でやる。そのスレッドはデバイスのロックを
 `blocking=False` でしか取らないので、本物のツール呼び出しを待たせることが無い。
@@ -246,7 +230,7 @@ datagram に乗せる `--agent` の両方を見る。デプロイ時にどちら
 **喋る内容を変えたいときは `host/mcp/src/chatter_prompt.md` を直す。** コードは触らなくてよい。
 
 間隔・音量の頻度・無効化といった調整は環境変数と `buddy_chatter_start` で行う。一覧は
-`.claude/skills/buddy-chatter/SKILL.md` にある。
+`.agents/skills/buddy-chatter/SKILL.md` にある。
 
 MCP server はセッション開始時にホストのコードを import 済みなので、`buddy_chatter.py` を
 直しても走っているサーバには届かない。単体プロセスで動かす口がある。
