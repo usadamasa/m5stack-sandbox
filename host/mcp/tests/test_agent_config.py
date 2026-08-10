@@ -5,7 +5,7 @@ import os
 import tomllib
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -14,7 +14,7 @@ def _json(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8") as src:
         value = json.load(src)
     assert isinstance(value, dict)
-    return value
+    return cast("dict[str, Any]", value)
 
 
 class CanonicalSourceTests(unittest.TestCase):
