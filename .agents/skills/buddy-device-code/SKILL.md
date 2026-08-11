@@ -35,11 +35,27 @@ uv run python host/tools/src/buddy_deploy.py --compile-only   # MicroPython の�
 - 表示中は `y=0..110` を chat が占有する。`BuddyUI.update_footer()` は `y=96..110` を塗るので
   `chat.active` の間は呼ばない。`set_connection()` は main panel も塗るので、呼んだら
   `chat.render()` で描き直す
-- **日本語フォントは 24px しかない** (`EFontJA24` / `AlibabaSansJA24`、`fontHeight()` は 27)。
-  中身に幅広文字があるかでフォントを切り替えており、日本語だと 4 行 × 9 文字、ASCII だけなら
-  `DejaVu12` で 6 行 × 17 文字
+- **日本語は firmware 内蔵のフォントでは足りない。** このビルドが持つ日本語フォントは 24px の
+  `EFontJA24` / `AlibabaSansJA24` だけ (`fontHeight()` は 27) で、110px のパネルに 4 行 × 9 文字
+  しか入らない。`EFontCN24` / `AlibabaPuHuiTiCN24` / `AlibabaSansKR24` は「漢」が半角幅を返す、
+  つまり日本語グリフを持っていない
+- **そこで VLW を外から与えている。** `host/tools/src/make_vlw.py` が TTF から VLW を作り、
+  `/flash/buddy-ja.vlw` に置く。現物は BIZ UDGothic 16px、JIS 第 1 水準まで 3476 グリフで
+  930KB。実測で `loadFont` 57ms・ヒープ 19.5KB・**6 行 × 13 文字**。M5GFX はグリフ属性の配列
+  だけを常駐させてビットマップは描画のたびにファイルから読むので、ヒープ 99KB でも載る
+- **`loadFont` は失敗しても何も言わない。** 存在しないパスでも空の bytes でも例外を投げず、
+  前の書体が選ばれたまま。だから `_resolve_vlw` が構築時に `os.stat` で存在を確かめる。
+  ack の `vlw` フィールドはこの判定結果で、`font: vlw` でなければ内蔵にフォールバックしている
+- **`setTextSize` は float を取る。** 内蔵書体はこれで 0.75 に縮めて使う (`_WIDE_SCALE` /
+  `_NARROW_SCALE`)。ただし最近傍で画素行を間引くだけなので、画数の多い漢字は潰れる。
+  VLW を入れるまでの繋ぎと割り切ること。VLW 側は生成時が最終サイズなので 1:1
+- 書体は中身で切り替える。日本語なら VLW、ASCII だけなら `DejaVu12` @0.75 で 9 行 × 24 文字。
+  ASCII は VLW より DejaVu のほうが詰まる
 - ホスト側の分割上限 (`buddy_bridge.MAX_SAY_CHARS_WIDE` / `MAX_SAY_CHARS`) はこの実測値から
   来ている。**片方を変えたらもう片方も見る。** `device/tests/test_chat.py` が両側の定数を
   import して食い違いを検出する契約テストになっている
-- `setFont` は sticky。計測も描画も `_push_font` / `_pop_font` で挟んで DejaVu9 に戻す。
-  戻し忘れると `BuddyUI` の footer とヒント列まで 24px になる
+- `setFont` も `setTextSize` も、読み込んだ VLW も sticky。計測も描画も `_push_font` /
+  `_pop_font` で挟んで DejaVu9 の 1:1 に戻す。戻し忘れると `BuddyUI` の footer とヒント列まで
+  巻き添えになる。base font に戻すと VLW は外れるので、次の `_push_font` が読み直す
+- 実測を採り直すのは `host/tools/src/probe_device.py`。フォント一覧・各書体のメトリクス・
+  ヒープをまとめて吐く

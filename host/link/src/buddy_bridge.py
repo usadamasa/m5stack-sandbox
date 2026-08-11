@@ -110,10 +110,9 @@ class Requester(Protocol):
 
 # ----- chat
 #
-# The device renders a transcript in a 232x88 px panel — five rows of a
-# 16 px CJK font. Text arrives here as whatever Claude wrote, which is
-# prose with markdown in it, so it gets flattened and split before it
-# goes on the wire.
+# The device renders a transcript in a 216x110 px panel. Text arrives
+# here as whatever Claude wrote, which is prose with markdown in it, so
+# it gets flattened and split before it goes on the wire.
 
 # Roughly one panel's worth of text, which is the unit that matters:
 # the device renders the *tail* of its transcript, so a message longer
@@ -123,13 +122,19 @@ class Requester(Protocol):
 # and have to move with them. The panel picks its font from the content,
 # and so does `_limit_for` below:
 #
-#   EFontJA24  27 px tall, 23 px/glyph -> 4 rows x  9 chars
-#   DejaVu12   16 px tall, 12 px/glyph -> 6 rows x 17 chars
+#   VLW 16 px        18 px tall, 16 px/glyph -> 6 rows x 13 chars
+#   DejaVu12 @0.75   12 px tall,  9 px/glyph -> 9 rows x 24 chars
 #
 # Rounded down, because wrapping leaves a ragged right edge and a part
 # that overflows by one row is a part whose first line is already gone.
-MAX_SAY_CHARS_WIDE = 32
-MAX_SAY_CHARS = 88
+#
+# The Japanese figure assumes the VLW is installed. A board still on the
+# built-in fallback fits 5 rows of 12 instead, so the tail of a
+# full-length part scrolls its own opening off — visible, and fixed by
+# running `host/tools/src/make_vlw.py --port ...` rather than by shrinking
+# this. Every ack carries `vlw` so the state is diagnosable from here.
+MAX_SAY_CHARS_WIDE = 68
+MAX_SAY_CHARS = 184
 
 # Keep in step with `_WIDE_FROM` in device/buddy_chat.py: the host has to
 # predict which font the panel will choose, and it chooses on this.
@@ -145,11 +150,11 @@ DEFAULT_PACE = 2.0
 _SENTENCE_ENDS = "。！？!?."  # noqa: RUF001
 
 
-# Markdown that the panel has no way to render. Five rows of about
-# fourteen Japanese characters is the whole budget, so every character
-# spent on syntax is one the reader does not get: there is no bold to
-# show, a `##` costs a fifth of a row, and a code block is unreadable at
-# this size anyway. All of it is flattened away here.
+# Markdown that the panel has no way to render. Six rows of thirteen
+# Japanese characters is the whole budget, so every character spent on
+# syntax is one the reader does not get: there is no bold to show, a
+# `##` costs a sixth of a row, and a code block is unreadable at this
+# size anyway. All of it is flattened away here.
 _LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
 _HEADING = re.compile(r"^#{1,6}\s+")
 _QUOTE = re.compile(r"^>\s?")
@@ -249,9 +254,9 @@ def _limit_for(text: str) -> int:
     """How much of `text` fits on one panel.
 
     Mirrors the font choice in `device/buddy_chat.py`: one wide glyph
-    anywhere in the transcript pulls the whole panel onto the 27 px CJK
+    anywhere in the transcript pulls the whole panel onto the Japanese
     face, so a single Japanese character in an otherwise ASCII message
-    costs two rows and eight characters per row.
+    costs three rows and eleven characters per row.
     """
     for ch in text:
         if ord(ch) >= _WIDE_FROM:

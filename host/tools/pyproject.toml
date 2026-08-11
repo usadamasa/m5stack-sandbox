@@ -1,7 +1,8 @@
 # 実機を仕込むためのツール群。デプロイ (buddy_deploy)、WiFi の焼き込み
 # (provision_wifi)、実測の採取 (probe_device)、ファームウェア取得
-# (fetch_firmware)。どれも人が明示的に走らせるもので、MCP server の経路には
-# 乗らない。mpy-cross がここにしか無いのはそのため。
+# (fetch_firmware)、チャットパネル用フォントの生成 (make_vlw)。どれも人が
+# 明示的に走らせるもので、MCP server の経路には乗らない。mpy-cross と Pillow が
+# ここにしか無いのはそのため。
 
 [project]
 name = "buddy-host-tools"
@@ -17,6 +18,11 @@ dependencies = [
     # A newer mpy-cross would build modules the firmware refuses to
     # import, and the only symptom is an ImportError on the device.
     "mpy-cross==1.27.0.post2",
+    # make_vlw.py がグリフをラスタライズするのに使う。VLW は 1 ピクセル
+    # 1 バイトのアルファを並べただけの形式なので、必要なのは FreeType に
+    # 8bit で描かせる口だけ。fontTools を足さずに済ませているのは、
+    # cmap を読まなくても .notdef との一致で未収録文字を弾けるため。
+    "pillow>=11.0,<12",
 ]
 
 [tool.uv.sources]

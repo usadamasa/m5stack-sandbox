@@ -81,6 +81,29 @@ docker compose up -d
 `-p '127.0.0.1:50021:50021'` だと Mac の loopback にしか listen せず、デバイスからは届かない。
 エンジンの場所は `$VOICEVOX_URL`、未設定ならこのマシンの LAN アドレスを自動検出する。
 
+### チャットパネルの日本語フォント
+
+一度だけ。ファームウェアが持つ日本語フォントは 24px のビットマップしかなく、110px の
+パネルに 4 行 × 9 文字しか入らない。`setTextSize` で縮めることはできるが、最近傍で画素行が
+間引かれて画数の多い漢字が潰れる。そこで VLW を生成して flash に置く。
+
+```bash
+# BIZ UDGothic (SIL OFL 1.1) を取る。再配布しないのでリポジトリには入れていない
+mkdir -p tmp/fonts
+curl -sSLo tmp/fonts/BIZUDGothic-Regular.ttf \
+  https://raw.githubusercontent.com/googlefonts/morisawa-biz-ud-gothic/main/fonts/ttf/BIZUDGothic-Regular.ttf
+
+uv run python host/tools/src/make_vlw.py \
+  --font tmp/fonts/BIZUDGothic-Regular.ttf --size 16 \
+  --out tmp/buddy-ja-16.vlw --port $PORT
+```
+
+JIS 第 1 水準まで 3476 グリフで 930KB。実測でヒープを 19.5KB 使い、`loadFont` は 57ms、
+パネルには **6 行 × 13 文字** 入る。転送には 3 分ほどかかるが、焼き直すまで残る。
+
+置いていない機体でも動く。日本語は内蔵の `EFontJA24` を 0.75 倍にしたものになり、
+5 行 × 12 文字に減るだけ。`--chat-info` の `vlw` がどちらの状態かを答える。
+
 ### デバイスの初期化
 
 ファームウェア書き込みと upstream バンドルの配置は `cwc-makers` プラグインの `m5-onboard`
@@ -277,3 +300,8 @@ uv run poe license-list   # 依存が名乗るライセンスを一覧するだ�
 
 - VOICEVOX:ずんだもん
 - 「VOICEVOX」は廣芝和之の商標、「ずんだもん」は SSS 合同会社の商標
+
+チャットパネルのフォントは Morisawa BIZ UDGothic (SIL Open Font License 1.1)。
+本リポジトリは再配布せず、`make_vlw.py` が手元で VLW に変換してデバイスに置くだけ。
+配布元とライセンス全文は
+[googlefonts/morisawa-biz-ud-gothic](https://github.com/googlefonts/morisawa-biz-ud-gothic)。
