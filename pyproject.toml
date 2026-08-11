@@ -86,6 +86,9 @@ known-first-party = [
 # MIT 全文を入れているせいで trivy が分類できないもの。trivy がその全文を
 # 31 文字に切った文字列がそのまま名前になっている。
 #
+# MIT-CMU は Pillow。SPDX には載っているが trivy の分類表に無いだけで、中身は
+# HPND 系の permissive — 著作権表示の保持しか求めず、copyleft の条項は無い。
+#
 # esptool は GPL-2.0+ で restricted。ファームウェアを焼くときに別プロセスで叩く
 # だけの CLI で、import もしなければ再配布もしないため、Apache-2.0 のこのツリーに
 # 伝播しない。除外の理由が変わったら (ライブラリとして import する等) ここを
@@ -109,7 +112,7 @@ aqua exec -- trivy rootfs .venv
   --table-mode detailed
   --quiet
   --skip-dirs "**/esptool*"
-  --ignored-licenses "BlueOak-1.0.0,PSF-2.0,MIT-0,MPL-2.0,CUSTOM License: MIT License ..."
+  --ignored-licenses "BlueOak-1.0.0,PSF-2.0,MIT-0,MPL-2.0,MIT-CMU,CUSTOM License: MIT License ..."
 """
 
 [tool.poe.tasks.license-list]

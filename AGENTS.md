@@ -65,7 +65,8 @@ Seatbelt はこれを拒否する。Claude Code 側は `.claude/settings.json` �
 ## 構成
 
 uv workspace の 4 member: `device/` (デバイスの上で動く overlay)、`host/link` (REPL transport
-とクライアント)、`host/mcp` (MCP server)、`host/tools` (デプロイ・provisioning・実測)。
+とクライアント)、`host/mcp` (MCP server)、`host/tools` (デプロイ・provisioning・実測・
+チャットパネル用フォントの生成)。
 ルートの `pyproject.toml` はパッケージではなく、member の列挙とツール設定だけを持つ。
 
 - **lockfile も `.venv` も 1 つ。** 分かれるのは依存宣言とツール設定であって環境ではない。
@@ -99,6 +100,10 @@ uv workspace の 4 member: `device/` (デバイスの上で動く overlay)、`ho
   セッションを再起動する
 - **WiFi は provisioning 済みなら何もしなくてよい。** 繋がらないときは
   `host/tools/src/provision_wifi.py --verify` がどの層で切れているかを言う
+- **チャットパネルの日本語フォントは flash に置いた VLW。** `/flash/buddy-ja.vlw` で、
+  デプロイでは触らない (930KB あって毎回送る意味がない)。`loadFont` は失敗しても黙るので、
+  効いているかは `--chat-info` の `vlw` で見る。無くても内蔵の 24px にフォールバックして
+  動く。置き直しは `host/tools/src/make_vlw.py --port`。詳細は `buddy-device-code` skill
 - **アプリを起動し直すには実際に reboot する。** REPL から re-import すると
   `MemoryError: memory allocation failed` で落ちる。`enter_raw_repl(soft_reset=False)` を
   使っているため前のインスタンスが residual に残る

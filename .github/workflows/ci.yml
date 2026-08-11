@@ -89,7 +89,7 @@ jobs:
   # workspace を分けた意味がここで回帰する。member 単体で sync したときに
   # 他 member の依存が漏れて入っていないこと、そしてそれで足りることを見る。
   # MCP server は Claude Code が起動のたびに走らせる経路で、デプロイ用の
-  # mpy-cross も esptool も要らない。
+  # mpy-cross も esptool も、フォント生成用の Pillow も要らない。
   isolation:
     runs-on: ubuntu-latest
     steps:
@@ -105,7 +105,7 @@ jobs:
 
           import buddy_mcp  # noqa: F401
 
-          for name in ("mpy_cross", "esptool"):
+          for name in ("mpy_cross", "esptool", "PIL"):
               assert u.find_spec(name) is None, f"{name} leaked into the mcp environment"
           PY
 
