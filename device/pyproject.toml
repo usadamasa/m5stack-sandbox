@@ -43,6 +43,11 @@ ignore = ["ANN", "UP", "SIM105", "B904"]
 # import できないので、import が冒頭に来ない。E402 はそのぶん。
 "apps/*.py" = ["E402"]
 
+# 複雑度の backlog。ルートの同名の表はここを開いた時点で置換されるので、
+# device のぶんはルートではなくここに載る。意味と扱いはルート側のコメント。
+"apps/claude_buddy.py" = ["C901", "PLR0912", "PLR0915"]
+"buddy/speak.py" = ["C901"]
+
 # ---------------------------------------------------------------- pytest
 
 [tool.pytest.ini_options]

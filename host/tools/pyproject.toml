@@ -1,8 +1,8 @@
-# 実機を仕込むためのツール群。デプロイ (buddy_deploy)、WiFi の焼き込み
-# (provision_wifi)、実測の採取 (probe_device)、ファームウェア取得
-# (fetch_firmware)、チャットパネル用フォントの生成 (make_vlw)。どれも人が
-# 明示的に走らせるもので、MCP server の経路には乗らない。mpy-cross と Pillow が
-# ここにしか無いのはそのため。
+# 人が明示的に走らせるツール群。実機を仕込むもの — デプロイ (buddy_deploy)、
+# WiFi の焼き込み (provision_wifi)、実測の採取 (probe_device)、ファームウェア
+# 取得 (fetch_firmware)、フォント生成 (make_vlw) — と、リポジトリを保つもの
+# (check_file_length)。どれも MCP server の経路には乗らない。mpy-cross と
+# Pillow がここにしか無いのはそのため。
 
 [project]
 name = "buddy-host-tools"
