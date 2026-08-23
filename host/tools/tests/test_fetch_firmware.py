@@ -6,8 +6,9 @@ when a connection dies partway through, which never happens on a good
 network and always happens behind the sandbox's CONNECT proxy — so it is
 exactly the kind of path that silently rots unless a test drives it.
 
-Nothing here touches the network: `_open_https` is replaced with a
-scripted stand-in.
+Nothing here touches the network: `open_https` is replaced with a
+scripted stand-in. 差し替える先はモジュールごとに違う — 呼ぶ側が
+見ているグローバルを差し替えないと、素通りして本物を叩きに行く。
 """
 
 import base64
@@ -22,6 +23,7 @@ from tempfile import TemporaryDirectory
 from typing import ClassVar
 
 import fetch_firmware
+import firmware_manifest
 
 
 class FakeResponse:
@@ -67,9 +69,10 @@ class ManifestResumeTest(unittest.TestCase):
         self.body = json.dumps(self.manifest).encode()
         self.requests: list[str | urllib.request.Request] = []
 
-        # テストのために非公開のフックを差し替える。private だが意図的な用法。
-        real = fetch_firmware._open_https  # pyright: ignore[reportPrivateUsage]
-        self.addCleanup(setattr, fetch_firmware, "_open_https", real)
+        # manifest 側が見ているのは firmware_manifest のグローバルなので、
+        # 差し替えるのもそちら。fetch_firmware を差し替えても効かない。
+        real = firmware_manifest.open_https
+        self.addCleanup(setattr, firmware_manifest, "open_https", real)
 
     def _install(self, responses: list[FakeResponse]) -> None:
         queue = list(responses)
@@ -78,7 +81,7 @@ class ManifestResumeTest(unittest.TestCase):
             self.requests.append(url)
             return queue.pop(0)
 
-        fetch_firmware._open_https = fake_open  # pyright: ignore[reportAttributeAccessIssue, reportPrivateUsage]
+        firmware_manifest.open_https = fake_open  # pyright: ignore[reportAttributeAccessIssue]
 
     def _range_headers(self) -> list[str | None]:
         return [
@@ -169,9 +172,9 @@ class DownloadTest(unittest.TestCase):
         self.version: fetch_firmware.FirmwareVersion = {"file": "e" * 32 + ".bin"}
         self.requests: list[str | urllib.request.Request] = []
 
-        # テストのために非公開のフックを差し替える。private だが意図的な用法。
-        real = fetch_firmware._open_https  # pyright: ignore[reportPrivateUsage]
-        self.addCleanup(setattr, fetch_firmware, "_open_https", real)
+        # download 側が見ているのは fetch_firmware のグローバル。
+        real = fetch_firmware.open_https
+        self.addCleanup(setattr, fetch_firmware, "open_https", real)
 
     def _install(self, responses: list[FakeResponse]) -> None:
         queue = list(responses)
@@ -180,7 +183,7 @@ class DownloadTest(unittest.TestCase):
             self.requests.append(url)
             return queue.pop(0)
 
-        fetch_firmware._open_https = fake_open  # pyright: ignore[reportAttributeAccessIssue, reportPrivateUsage]
+        fetch_firmware.open_https = fake_open  # pyright: ignore[reportAttributeAccessIssue]
 
     def test_writes_the_binary_and_its_sidecar(self) -> None:
         self._install([FakeResponse(self.body, headers={"Content-MD5": self.md5})])
