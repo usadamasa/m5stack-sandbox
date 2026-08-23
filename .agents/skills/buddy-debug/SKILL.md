@@ -131,8 +131,7 @@ verb で済ませること。
 - **`link.pump()` は返しながら drain する。** `pump()` してから `drain()` を呼ぶと空。
   これで `--start` の起動ログが丸ごと消えていた (import 失敗の traceback ごと)。
   `_dump(*link.pump(...))` と書く
-- **MCP server はセッション開始時の host コードを持っている。** `host/link` や
-  `buddy_mcp.py` を直しても走っているサーバには反映されない。実機検証は `uv run` の
-  別プロセスで行う
+- **MCP server はセッション開始時の host コードを持っている。** ホスト側を直しても
+  走っているサーバには反映されない。実機検証は `uv run` の別プロセスで行う
 - **ポートは 1 プロセスしか掴めない。** MCP が繋いだままだと CLI 側が開けない。
   `buddy_disconnect` を先に呼ぶ

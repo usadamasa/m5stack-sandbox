@@ -98,8 +98,6 @@ connect_repl() -> run_and_release(repl, LAUNCH_SOURCE, read_timeout) -> SerialPo
   -> BuddyLink.open(adopt=...) / ResidentLink.connect(adopt=...)
 ```
 
-`launch_app` も `BuddyLink` も `ResidentLink` も `host/link/src/buddy_link.py` にある。
-
 - `run_and_release` は `exec_raw_no_follow` を使う。`exec` は戻り値を待つが、アプリは
   戻ってこない。`mpremote repl` の ctrl-k (スクリプト注入) と同じ手順
 - 閉じて開き直さないのは、その隙間にデバイスが喋る内容 — import 失敗のトレースバック —

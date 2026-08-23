@@ -1,16 +1,9 @@
 """Command-line front end for the Claude Buddy protocol over USB serial.
 
-    python host/link/src/buddy_bridge.py --port /dev/cu.usbmodem101 --start --status
-    python host/link/src/buddy_bridge.py --port /dev/cu.usbmodem101 --dbg mem
-    python host/link/src/buddy_bridge.py --port /dev/cu.usbmodem101 --interrupt
-
-`--start` launches the app over the REPL, interrupting a running one to
-get there. `--dbg` asks the running app about itself without stopping
-it; `--interrupt` stops it and leaves the device at a prompt.
-
-The pieces this drives are next door: `buddy_wire` (framing),
-`buddy_text` (what fits on the panel), `buddy_verbs` (chat, speech,
-debug) and `buddy_link` (holding the port open).
+One process, one command: take the port, ask, print what came back, let
+go. `--help` has the flags. Everything it drives lives in the sibling
+modules — the framing, the text that fits on the panel, the verbs, and
+the link that holds the port open.
 """
 
 from __future__ import annotations
