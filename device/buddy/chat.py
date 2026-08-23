@@ -555,7 +555,7 @@ class ChatPanel:
 
             os.stat(path)
         except (ImportError, OSError):
-            print("buddy_chat: no VLW at", path, "- falling back to the built-in CJK face")
+            print("buddy.chat: no VLW at", path, "- falling back to the built-in CJK face")
             return None
         return path
 
@@ -570,9 +570,9 @@ class ChatPanel:
             # Not fatal — Latin still draws. But Japanese will come out
             # as blanks, and `cjk` in every ack is how the host finds
             # that out without anyone looking at the device.
-            print("buddy_chat: no CJK font on this build; Japanese will not render")
+            print("buddy.chat: no CJK font on this build; Japanese will not render")
         if self._narrow_font is None and self._wide_font is None:
-            print("buddy_chat: no known font on this build, using the driver default")
+            print("buddy.chat: no known font on this build, using the driver default")
 
     def _first_font(self, fonts, names):
         # type: (object, tuple[str, ...]) -> tuple[str, object] | tuple[None, None]
@@ -619,7 +619,7 @@ class ChatPanel:
             try:
                 self._lcd.setFont(handle)  # pyright: ignore[reportUnknownMemberType]
             except Exception as e:
-                print("buddy_chat: setFont failed:", e)
+                print("buddy.chat: setFont failed:", e)
         self._set_scale(scale)
 
     def _pop_font(self) -> None:
@@ -631,7 +631,7 @@ class ChatPanel:
             try:
                 self._lcd.setFont(self._base_font)  # pyright: ignore[reportUnknownMemberType]
             except Exception as e:
-                print("buddy_chat: font restore failed:", e)
+                print("buddy.chat: font restore failed:", e)
         self._set_scale(_BASE_SCALE)
 
     def _load_vlw(self, path):
@@ -645,7 +645,7 @@ class ChatPanel:
             # which is different from the silent failure `_resolve_vlw`
             # guards against. Drop the VLW so the next repaint takes the
             # built-in face instead of retrying forever.
-            print("buddy_chat: loadFont failed:", e)
+            print("buddy.chat: loadFont failed:", e)
             self._vlw = None
             self._font_name = None
             return
@@ -661,7 +661,7 @@ class ChatPanel:
         try:
             unload()
         except Exception as e:
-            print("buddy_chat: unloadFont failed:", e)
+            print("buddy.chat: unloadFont failed:", e)
 
     def _set_scale(self, scale: float) -> None:
         if not self._can_scale:
@@ -669,7 +669,7 @@ class ChatPanel:
         try:
             self._lcd.setTextSize(scale)  # pyright: ignore[reportUnknownMemberType]
         except Exception as e:
-            print("buddy_chat: setTextSize failed:", e)
+            print("buddy.chat: setTextSize failed:", e)
             # Everything cached was measured at a scale the driver never
             # applied. Drop both the capability and the numbers.
             self._can_scale = False

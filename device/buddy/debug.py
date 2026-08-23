@@ -21,7 +21,7 @@ would be taking the space it exists to measure.
 
 ### Why the big output is not in the ack
 
-`buddy_serial` frames protocol lines with a sentinel and the host passes
+`buddy.serial` frames protocol lines with a sentinel and the host passes
 every other line through as log output. So `print()` already reaches the
 host. Anything bulky — `micropython.mem_info(1)`'s heap map, a traceback
 — goes out that way instead of being marshalled into a JSON string that

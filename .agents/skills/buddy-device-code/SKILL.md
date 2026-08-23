@@ -1,6 +1,6 @@
 ---
 name: buddy-device-code
-description: device/ 配下のコードを書く・直すときに使う。MicroPython 1.27 (ESP32-S3) 向けに書く際の当リポジトリの決めごとと、LCD のチャットパネル (buddy_chat.py) のフォント・行数・描画の制約を扱う。
+description: device/ 配下のコードを書く・直すときに使う。MicroPython 1.27 (ESP32-S3) 向けに書く際の当リポジトリの決めごとと、LCD のチャットパネル (buddy/chat.py) のフォント・行数・描画の制約を扱う。
 ---
 
 # device/ は MicroPython
@@ -23,7 +23,7 @@ uv run --directory device pytest
 uv run python host/tools/src/buddy_deploy.py --compile-only   # MicroPython のパーサに通す
 ```
 
-# チャットパネル (`buddy_chat.py`)
+# チャットパネル (`buddy/chat.py`)
 
 `chat.say` / `chat.clear` / `chat.info` は upstream の `buddy_protocol.py` が知らない verb。
 知らない `cmd` は "unknown cmd" と印字して捨てられるので、`claude_buddy.py` の `on_line` で

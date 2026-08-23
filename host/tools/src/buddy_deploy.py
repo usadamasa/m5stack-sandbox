@@ -40,7 +40,7 @@ audible from across the room rather than being another line of output.
 
 The device is left running the app afterwards. That is no longer a dead
 end: Ctrl-C works again (see the "Ctrl-C" section of
-`device/buddy_serial.py`), so the next deploy interrupts its way back to
+`device/buddy/serial.py`), so the next deploy interrupts its way back to
 the REPL instead of asking for a BtnRST press. `--no-speak` still stops
 at the REPL without launching at all.
 
@@ -107,17 +107,23 @@ DEST_ROOT = "/flash"
 # is an ImportError with nothing pointing back at the host.
 MPY_CROSS_ABI = "6.3"
 
-# Modules this repository owns, relative to device/.
+# Modules this repository owns, relative to device/. The `buddy` package
+# keeps them together on flash — `/flash/buddy/` is this repository's,
+# `/flash/` root is the firmware's and upstream's.
 OVERLAY: tuple[str, ...] = (
-    "buddy_serial.py",
-    "buddy_chat.py",
+    # Empty, and pushed anyway: MicroPython has no namespace packages, so
+    # without it `/flash/buddy/` is a directory rather than a package and
+    # every import below fails.
+    "buddy/__init__.py",
+    "buddy/serial.py",
+    "buddy/chat.py",
     # Shipped but never imported: the app pulls it in only when a `dbg.*`
     # frame arrives and drops it again on `dbg.off`, so it costs flash
     # and no heap. Leaving it off the device would mean the one bundle
     # that cannot be inspected is the one already misbehaving.
-    "buddy_debug.py",
-    "buddy_speak.py",
-    "buddy_tts.py",
+    "buddy/debug.py",
+    "buddy/speak.py",
+    "buddy/tts.py",
     "apps/claude_buddy.py",
 )
 
@@ -144,6 +150,23 @@ REMOVE: tuple[str, ...] = (
     "buddy_ble.mpy",
     "apps/snake.py",
     "apps/hello_cardputer.py",
+)
+
+# Where OVERLAY used to land, before the `buddy` package existed. Deleted
+# rather than archived: these are this repository's own modules and git
+# has them. Left behind they are flash nothing imports, and — worse — a
+# stale copy that an old `sys.path` entry could still resolve.
+STALE: tuple[str, ...] = (
+    "buddy_serial.mpy",
+    "buddy_chat.mpy",
+    "buddy_debug.mpy",
+    "buddy_speak.mpy",
+    "buddy_tts.mpy",
+    "buddy_serial.py",
+    "buddy_chat.py",
+    "buddy_debug.py",
+    "buddy_speak.py",
+    "buddy_tts.py",
 )
 
 # Build output. tmp/ is the scratch directory and may be wiped at any
@@ -492,6 +515,17 @@ def prune(repl: Repl, vendor: Path, deadline: Deadline, log: Callable[[str], Non
         log(f"  removed {rel} (archived under {vendor})")
 
 
+def prune_stale(repl: Repl, deadline: Deadline, log: Callable[[str], None]) -> None:
+    """Delete what an older layout left on flash. See `STALE`."""
+    for rel in STALE:
+        deadline.check(f"removing {rel}")
+        target = f"{DEST_ROOT}/{rel}"
+        if not repl.fs_exists(target):
+            continue
+        repl.fs_rmfile(target)
+        log(f"  removed {rel} (moved into the buddy package)")
+
+
 def find_shadows(repl: Repl, jobs: Sequence[Job]) -> list[str]:
     """Sources still hiding the bytecode next to them.
 
@@ -503,7 +537,7 @@ def find_shadows(repl: Repl, jobs: Sequence[Job]) -> list[str]:
 
 
 def report_flash(repl: Repl, log: Callable[[str], None]) -> None:
-    for path in (DEST_ROOT, f"{DEST_ROOT}/apps"):
+    for path in (DEST_ROOT, f"{DEST_ROOT}/buddy", f"{DEST_ROOT}/apps"):
         try:
             names = sorted(entry.name for entry in repl.fs_listdir(path))
         except OSError as exc:
@@ -729,6 +763,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         push_jobs(repl, jobs, deadline, _log)
         install_launcher(repl, vendor, deadline, _log)
         prune(repl, vendor, deadline, _log)
+        prune_stale(repl, deadline, _log)
 
         shadows = find_shadows(repl, jobs)
         if shadows:

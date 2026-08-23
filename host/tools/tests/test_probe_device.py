@@ -5,7 +5,7 @@ The tagged-line format and the echo scraper are gone: the raw REPL hands
 report lines out of. What is left worth protecting is narrow but real —
 a probe that changes the device it is measuring, and a measurement that
 gets mislabelled on the way back. The numbers feed the geometry in
-`device/buddy_chat.py`, which nobody re-derives by hand.
+`device/buddy/chat.py`, which nobody re-derives by hand.
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ class ProbeNetworkTest(unittest.TestCase):
 
     def test_finds_the_module_this_firmware_actually_ships(self) -> None:
         # Renamed from urequests in 1.20. Every article about this is
-        # written against the old name, and device/buddy_tts.py has to
+        # written against the old name, and device/buddy/tts.py has to
         # import whichever one is there.
         got = probe_network(self._repl("requests"))
         self.assertEqual(got["http"]["module"], "requests")

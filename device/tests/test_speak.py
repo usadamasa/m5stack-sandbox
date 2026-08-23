@@ -29,8 +29,8 @@ from typing import Any
 from unittest import mock
 
 import buddy_bridge
-import buddy_speak
-from buddy_speak import _BLOCK, SpeechPlayer, _StreamSource
+from buddy import speak as buddy_speak
+from buddy.speak import _BLOCK, SpeechPlayer, _StreamSource
 
 
 class _FakeTime:
@@ -95,7 +95,7 @@ def _unused_fetch(*_args: object) -> dict[str, object]:
 
 
 class TimeFrozen(unittest.TestCase):
-    """Base: every test here drives buddy_speak's clock by hand."""
+    """Base: every test here drives buddy.speak's clock by hand."""
 
     def setUp(self) -> None:
         self._real_time = buddy_speak.time

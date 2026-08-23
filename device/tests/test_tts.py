@@ -17,7 +17,7 @@ import struct
 import unittest
 from typing import Any, cast
 
-from buddy_tts import (
+from buddy.tts import (
     FetchError,
     WavError,
     fetch_speech,

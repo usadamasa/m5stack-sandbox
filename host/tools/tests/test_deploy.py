@@ -42,6 +42,7 @@ from buddy_deploy import (
     REMOVE,
     REPO,
     SERIAL_READ_TIMEOUT_S,
+    STALE,
     UPSTREAM,
     VERIFY_TEXT,
     Deadline,
@@ -59,6 +60,7 @@ from buddy_deploy import (
     mpy_abi_of,
     mpy_cross_abi,
     prune,
+    prune_stale,
     push_file,
     push_jobs,
     stage_upstream,
@@ -156,7 +158,21 @@ class CompileTest(unittest.TestCase):
         # somebody needs to inspect a device that is misbehaving. Flash
         # is not the scarce resource here; heap is, and lazily importing
         # already costs it nothing.
-        self.assertIn("buddy_debug.py", OVERLAY)
+        self.assertIn("buddy/debug.py", OVERLAY)
+
+    def test_the_package_init_ships(self) -> None:
+        # MicroPython has no namespace packages: without an `__init__` on
+        # flash, `/flash/buddy` is a directory and every `from buddy
+        # import ...` in the app raises ImportError.
+        self.assertIn("buddy/__init__.py", OVERLAY)
+
+    def test_the_package_init_is_first(self) -> None:
+        # push_jobs walks OVERLAY in order and push_file creates the one
+        # directory level it needs, so the order does not decide whether
+        # /flash/buddy exists. It decides what a half-finished transfer
+        # leaves behind: a package with no __init__ imports as neither a
+        # module nor a directory, which is the confusing failure.
+        self.assertEqual(OVERLAY[0], "buddy/__init__.py")
 
     def test_the_launcher_compiles_even_though_it_ships_as_source(self) -> None:
         # /flash/main.py is executed as source and never looked up as
@@ -223,6 +239,15 @@ class PushFileTest(unittest.TestCase):
         push_file(repl, self.src, "apps/claude_buddy.py", quiet=True)
         self.assertEqual(repl.made_dirs, [f"{DEST_ROOT}/apps"])
         self.assertIn(f"{DEST_ROOT}/apps/claude_buddy.py", repl.files)
+
+    def test_the_buddy_package_gets_its_directory_too(self) -> None:
+        # /flash/buddy is the other directory a deploy has to create, and
+        # unlike apps/ it is created by this repository rather than found
+        # already there.
+        repl = FakeRepl()
+        push_file(repl, self.src, "buddy/serial.py", quiet=True)
+        self.assertEqual(repl.made_dirs, [f"{DEST_ROOT}/buddy"])
+        self.assertIn(f"{DEST_ROOT}/buddy/serial.py", repl.files)
 
     def test_an_existing_directory_is_left_alone(self) -> None:
         # mkdir on a directory that is already there is an EEXIST, and
@@ -695,6 +720,26 @@ class PruneTest(unittest.TestCase):
 
     def test_an_absent_file_is_not_an_error(self) -> None:
         prune(self.bench.repl, self.bench.vendor, _forever(), _silent)
+        self.assertEqual(self.bench.repl.removed, [])
+
+    def test_the_old_flat_layout_is_removed(self) -> None:
+        # Not archived, unlike REMOVE: these are this repository's own
+        # modules and the source is in git.
+        for rel in STALE:
+            self.bench.put(rel, f"print('{rel}')\n")
+        prune_stale(self.bench.repl, _forever(), _silent)
+        for rel in STALE:
+            self.assertNotIn(f"{DEST_ROOT}/{rel}", self.bench.repl.files)
+            self.assertFalse((self.bench.vendor / rel).exists())
+
+    def test_stale_names_no_longer_collide_with_what_is_pushed(self) -> None:
+        # A name in both lists would mean the deploy deletes what it just
+        # wrote — silently, since prune_stale runs after push_jobs.
+        pushed = {rel[: -len(".py")] + ".mpy" for rel in OVERLAY}
+        self.assertEqual(pushed & set(STALE), set())
+
+    def test_an_absent_stale_file_is_not_an_error(self) -> None:
+        prune_stale(self.bench.repl, _forever(), _silent)
         self.assertEqual(self.bench.repl.removed, [])
 
     def test_an_existing_archive_is_not_overwritten(self) -> None:

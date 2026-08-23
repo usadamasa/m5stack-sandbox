@@ -44,6 +44,6 @@ REPL が要る (走っているアプリはハンドシェイクの Ctrl-C で�
 - **`buddy_status` の `sys.heap` は probe の `heap` より小さい。** transport と UI を上げた
   後の値だから。同じ量として比べない
 - **WAV は `fmt ` の後に `data` が来て、PCM は 1ch/16bit。** 通常は本体が offset 44 から
-  始まるが、`device/buddy_tts.py` はそれを前提にせずチャンクを歩く。取得バイト数は
+  始まるが、`device/buddy/tts.py` はそれを前提にせずチャンクを歩く。取得バイト数は
   `rate × 2 × 秒数 + ヘッダ` なので、`outputSamplingRate` を下げれば比例して減る
   ([buddy-speak](../buddy-speak/SKILL.md))

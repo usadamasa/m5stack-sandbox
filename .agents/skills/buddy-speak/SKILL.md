@@ -1,6 +1,6 @@
 ---
 name: buddy-speak
-description: Cardputer-Adv に喋らせる経路 (VOICEVOX ENGINE + M5.Speaker) を扱うときに使う。音が出ない・途中で切れる・UI が固まる、buddy_speak.py / buddy_tts.py を直す、WiFi が繋がらないときに参照する。ストリーミングが必須である理由と、WiFi をブート時に上げる設計もここ。
+description: Cardputer-Adv に喋らせる経路 (VOICEVOX ENGINE + M5.Speaker) を扱うときに使う。音が出ない・途中で切れる・UI が固まる、buddy/speak.py / buddy/tts.py を直す、WiFi が繋がらないときに参照する。ストリーミングが必須である理由と、WiFi をブート時に上げる設計もここ。
 ---
 
 # 音声 (speak)
@@ -10,8 +10,8 @@ description: Cardputer-Adv に喋らせる経路 (VOICEVOX ENGINE + M5.Speaker) 
 
 ```
 Claude Code -MCP-> USB line {"cmd":"speak.say","text":...,"url":...}
-  -> device/buddy_tts.py -HTTP-> VOICEVOX ENGINE (Mac の Docker)
-  -> WAV ストリーム -> device/buddy_speak.py -> M5.Speaker
+  -> device/buddy/tts.py -HTTP-> VOICEVOX ENGINE (Mac の Docker)
+  -> WAV ストリーム -> device/buddy/speak.py -> M5.Speaker
 ```
 
 エンジンは `docker compose up -d` で立てる。**`-p` は `0.0.0.0` に bind すること。**

@@ -3,7 +3,7 @@
 The chat panel's geometry is derived from font metrics — how tall a row
 is, how wide a Japanese glyph is — and those are properties of whichever
 UIFlow 2.0 build happens to be on the device, not of anything in this
-repository. `device/buddy_chat.py` carries a table of measured numbers;
+repository. `device/buddy/chat.py` carries a table of measured numbers;
 this is what measures them, so the table can be re-checked after a
 firmware change instead of quietly rotting.
 
@@ -52,7 +52,7 @@ METRIC_FIELDS: tuple[str, ...] = ("height", "ja", "ascii", "indent")
 
 # HTTP client module names to try. The firmware renamed `urequests` to
 # `requests` in 1.20, and which one is present decides how
-# device/buddy_tts.py imports it.
+# device/buddy/tts.py imports it.
 HTTP_MODULES: tuple[str, ...] = ("requests", "urequests")
 
 
@@ -92,7 +92,7 @@ def probe_display(repl: Repl, fonts: Sequence[str] = CANDIDATE_FONTS) -> dict[st
 
 
 def probe_network(repl: Repl) -> dict[str, Any]:
-    """The network surface `device/buddy_tts.py` is built on.
+    """The network surface `device/buddy/tts.py` is built on.
 
     Each entry answers a question the design rests on:
 

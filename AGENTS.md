@@ -75,8 +75,10 @@ uv workspace の 4 member: `device/` (デバイスの上で動く overlay)、`ho
   installable である必要がある。`device` だけ `package = false`
 - `vendor/device/` はデバイスから吸い出した upstream ソース。git 管理外だが、`tmp/` とは違って
   **消してはいけない** (再配布しないので他に控えが無い)
-- `buddy_protocol.py` / `buddy_ui_cp.py` / `buddy_state.py` / `buddy_chars.py` は upstream の
-  ものがデバイスの `/flash/` にあり、本リポジトリには置かない
+- `device/buddy/` は本リポジトリがデバイスへ載せるモジュールの package。flash では
+  `/flash/buddy/` に落ちる。`buddy_protocol.py` / `buddy_ui_cp.py` / `buddy_state.py` /
+  `buddy_chars.py` は upstream のものがデバイスの `/flash/` 直下にあり、本リポジトリには
+  置かない。flash の階層がその境界になっている
 - テストは全て実機不要。`device` の dev グループに host-link が入っているのは、
   `device/tests/test_chat.py` と `test_speak.py` が両側の定数を突き合わせる契約テストだから
 - 依存を足したら `poe license` が弾くことがある。copyleft や分類不能のライセンスが来たら、
