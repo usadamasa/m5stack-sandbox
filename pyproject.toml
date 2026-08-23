@@ -41,7 +41,6 @@ select = [
     "ANN",     # annotations must be present
     "B",       # bugbear
     "C4",      # comprehensions
-    "C901",    # 循環的複雑度
     "E",       # pycodestyle errors
     "F",       # pyflakes
     "I",       # import order
@@ -57,9 +56,10 @@ select = [
 
 # PLR は群では取らない。PLR2004 (マジックナンバー比較) が入ると、
 # デバイス側の座標計算とテストの期待値が全部引っかかる。
-
-[tool.ruff.lint.mccabe]
-max-complexity = 10
+#
+# C901 (循環的複雑度) はここには無い。判定は `poe complexity` のラチェットが
+# 持っている — per-file-ignores は有効か無効かの二値で、抑えたファイルの中では
+# 複雑度がいくら増えても黙るため。ruff 側は引数や文の数を見る係として残る。
 
 # 複雑度の backlog。ここに載っているのは、ルールを入れた時点で既に超えて
 # いた関数を抱えるファイル。行数の baseline と同じで、消えるまでが宿題。
@@ -72,12 +72,12 @@ max-complexity = 10
 # 開くとこの表ごと置換されるので、device の backlog は device/pyproject.toml
 # にある。
 [tool.ruff.lint.per-file-ignores]
-"host/link/src/buddy_bridge.py" = ["C901", "PLR0912", "PLR0915"]
+"host/link/src/buddy_bridge.py" = ["PLR0912", "PLR0915"]
 "host/link/src/buddy_verbs.py" = ["PLR0913"]
 "host/mcp/src/buddy_chatter.py" = ["PLR0913"]
 "host/mcp/src/buddy_mcp.py" = ["PLR0913"]
-"host/tools/src/buddy_deploy.py" = ["C901", "PLR0912", "PLR0913", "PLR0915"]
-"host/tools/src/fetch_firmware.py" = ["C901", "PLR0912", "PLR0915"]
+"host/tools/src/buddy_deploy.py" = ["PLR0912", "PLR0913", "PLR0915"]
+"host/tools/src/fetch_firmware.py" = ["PLR0912", "PLR0915"]
 "host/tools/src/provision_wifi.py" = ["PLR0911"]
 "scripts/buddy_chatter_notify.py" = ["PLR0911"]
 
@@ -172,6 +172,13 @@ cmd = "python host/tools/src/check_file_length.py"
 # 落ちるのは循環依存があるときだけで、残りは数字を並べるだけ。凝集度にも
 # instability にも「正しい値」は無く、しきい値を置くと守るための細工が
 # 始まるため。判定を持っているのは ruff (C901) と行数のラチェット。
+# 関数ごとの複雑度のラチェット。ruff の C901 をここへ移した — あちらの
+# per-file-ignores は有効か無効かの二値で、抑えたファイルの中では複雑度が
+# いくら増えても黙るため。baseline は `complexity-baseline.json`。
+[tool.poe.tasks.complexity]
+help = "しきい値を超えた関数の複雑度が増えていないかを見る"
+cmd = "python host/tools/src/check_complexity.py"
+
 [tool.poe.tasks.metrics]
 help = "アーキテクチャのメトリクスを測る (複雑度・凝集度・結合度・循環依存)"
 cmd = "python host/tools/src/arch_metrics.py"

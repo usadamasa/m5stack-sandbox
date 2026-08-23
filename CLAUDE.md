@@ -41,6 +41,7 @@ uv run python host/tools/src/buddy_deploy.py --compile-only   # device/ が Micr
 uv run poe license                                            # 依存のライセンスを trivy の分類で検査する
 uv run poe lines                                              # 行数のラチェット。しきい値超えのファイルが増えていないか
 uv run poe lines --update                                     # 縮んだぶんを baseline へ取り込む
+uv run poe complexity                                         # 関数ごとの複雑度のラチェット
 uv run poe metrics                                            # 複雑度・凝集度・結合度・循環依存
 ```
 
@@ -49,10 +50,17 @@ uv run poe metrics                                            # 複雑度・凝�
 下がる。上げる方向へは動かないので、baseline に並ぶ行数がそのままリファクタリングの
 backlog になる。新しく超えたファイルを意図して受け入れるときだけ `--adopt`。
 
-`poe metrics` は関数ごとの循環的複雑度、モジュールの凝集度 (定義が参照でいくつの塊に
-分かれるか)、コンポーネント間の結合度 (Ca/Ce/instability)、依存の循環を出す。落ちるのは
-循環依存があるときだけで、残りは並べるだけ。判定を持っているのは ruff (C901) と
-行数のラチェット。
+`poe complexity` は同じ仕掛けを関数ごとの循環的複雑度に掛ける。しきい値 10、baseline は
+`complexity-baseline.json`、キーは `path::function`。関数をリネームすると baseline からは
+消えたように見えるので、一度 stale で落ちてから `--update` で入れ直すことになる。
+ruff の C901 はこちらへ移したので lint 側には無い (`per-file-ignores` は二値で、抑えた
+ファイルの中では複雑度がいくら増えても黙るため)。ruff 側は引数や文の数 (PLR09xx) を
+見る係として残っている。
+
+`poe metrics` は判定しない。関数ごとの循環的複雑度、モジュールの凝集度 (定義が参照で
+いくつの塊に分かれるか)、コンポーネント間の結合度 (Ca/Ce/instability)、依存の循環を
+並べるだけで、落ちるのは循環依存があるときだけ。ラチェット 2 本 (`poe lines` /
+`poe complexity`) と役割が分かれている。
 
 タスクランナーは poethepoet。定義はルートの `pyproject.toml` の `[tool.poe.tasks]`、一覧は
 `uv run poe --help`。CI に書くのはタスク名だけにして、コマンドと根拠は pyproject 側に置く。
