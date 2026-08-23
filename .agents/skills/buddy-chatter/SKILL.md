@@ -13,7 +13,7 @@ hooks ─datagram─> tmp/buddy-chatter.sock ─> MCP server
   .agents/hooks/                              ├ receiver thread : recvfrom → キュー
   buddy_chatter_notify.py                     └ worker thread   : 流量で動く間隔で 1 行
   (Claude Code / Codex 共用)                     ├ RoutingLineSource
-                                                 │   ├ claude-code → VertexLineSource
+                                                 │   ├ claude-code → ClaudeCliLineSource
                                                  │   └ codex       → CodexLineSource
                                                  └ _device_lock を try-acquire
 ```
@@ -21,9 +21,10 @@ hooks ─datagram─> tmp/buddy-chatter.sock ─> MCP server
 ## 接続元と backend
 
 Claude Code と Codex の両方から使う。**違うのは台詞を書く LLM だけ**で、tool も発話経路も
-同じ。組み合わせは固定 — Claude Code なら Vertex AI、Codex なら `codex exec`。2×2 は無い。
-それぞれのマシンが既に持っている認証をそのまま使うのが狙いで、交差させるとどちらにも
-無い認証情報が要る。
+同じ。組み合わせは固定 — Claude Code なら `claude -p`、Codex なら `codex exec`。2×2 は無い。
+どちらも**そのエージェント自身の CLI を 1 ターン起動する**。認証はその CLI が持っているものを
+そのまま継承するのが狙いで、SDK を直接叩くと認証の解決を各エージェントぶん再実装して
+追随し続けることになる。
 
 判定は接続してきた側から取り、witness は 2 つある。
 
@@ -48,10 +49,11 @@ identity を消さない。
 3. **backend が合っているか。** `backend` が思っているのと違うなら、hook の `--agent` か
    MCP の `clientInfo` のどちらかが嘘をついている。`client` に生の名前が出る
 4. **台詞が作れているか。** `generation_failures` が立っていたら `generation_error` を読む。
-   - `DefaultCredentialsError` → Vertex の ADC が無い
-   - `codex exec wrote no answer (rc N): ...` → Codex CLI 側。末尾に stderr が付く。
-     未ログイン、`codex` が PATH に無い、provider に届いていない、のいずれか
-   どちらも固定の台詞に落ちるので、完全な沈黙の原因にはならない
+   - `claude -p wrote no answer (rc N): ...` → Claude CLI 側。末尾に stderr が付く。
+     未ログイン、`claude` が MCP server の PATH に無い、のどちらか
+   - `claude -p reported an error: ...` → ターンは走ったが失敗した。レート制限や残高など
+   - `codex exec wrote no answer (rc N): ...` → Codex CLI 側。同じく末尾に stderr が付く
+   どれも固定の台詞に落ちるので、完全な沈黙の原因にはならない
 5. **VOICEVOX とネットワーク。** `last_error` に `RuntimeError: device refused speak.say` や
    タイムアウトが出る。`docker compose up -d` と WiFi の provisioning は前提
 
@@ -92,11 +94,15 @@ required`)。trust するまでは発火しない。
   その数秒が発火したツール呼び出し全部に乗る
 - **worker は `_device_lock` を `blocking=False` でしか取らない。** ブロッキングにすると
   chatter が本物のツール呼び出しを待たせる側になる
-- **台詞の生成はロックの外。** Vertex への往復は数秒、`codex exec` は 1 ターン丸ごとで
-  もっと掛かる。ロックを持ったままやるとそのままツール呼び出しの待ち時間になる。生成済みの
+- **台詞の生成はロックの外。** `claude -p` も `codex exec` もプロセスを 1 つ起こす。
+  ロックを持ったままやるとそのままツール呼び出しの待ち時間になる。生成済みの
   行は `_pending` に置いて、デバイスが空くまで持ち越す
-- **backend は使うまで作らない。** 構築が認証を触る (Vertex は ADC を解決し、Codex は
-  インストールを要求する)。`RoutingLineSource` は最初の 1 行を求められた時点で初めて作る
+- **生成のターンは道具を持たない。** `claude -p` は `--safe-mode --tools ""
+  --no-session-persistence` で、cwd は空の一時ディレクトリ。**`--safe-mode` を外さないこと** —
+  外すとこのリポジトリの hook が読み込まれ、生成のターンが chatter へ datagram を投げて
+  自分の生成から生成することになる
+- **backend は使うまで作らない。** `RoutingLineSource` は最初の 1 行を求められた時点で
+  初めて作る
 - **worker は例外を外に出さない。** 誰も見ていないスレッドで死ぬと、デバイスが静かになった
   ことにしか気づけない
 - **`_device_lock` は MCP の全 tool が握る。** `ResidentLink.await_ack` は ack 名で先頭一致を
@@ -145,7 +151,10 @@ MCP server の環境から読む (`.mcp.json` の `env`、Codex なら
 | `BUDDY_CHATTER_PROMPT` | `host/mcp/src/chatter_prompt.md` | 口調と性格 |
 | `BUDDY_CHATTER_BATCH` | `6` | 1 回の生成で作る台詞の数 |
 | `BUDDY_CHATTER_AGENT` | `claude-code` | 誰も名乗らなかったときの接続元 |
-| `BUDDY_CHATTER_MODEL` | `claude-opus-5` | Vertex 側の model |
+| `BUDDY_CHATTER_CLAUDE_BIN` | `claude` | Claude CLI の場所 |
+| `BUDDY_CHATTER_MODEL` | `sonnet` | `claude -p --model` に渡す。alias でも id でもよい |
+| `BUDDY_CHATTER_EFFORT` | `low` | `claude -p --effort`。空なら CLI の既定に任せる |
+| `BUDDY_CHATTER_CLAUDE_TIMEOUT` | `120` | `claude -p` を諦めるまで (秒) |
 | `BUDDY_CHATTER_CODEX_BIN` | `codex` | Codex CLI の場所 |
 | `BUDDY_CHATTER_CODEX_MODEL` | | 空なら `~/.codex/config.toml` の設定に任せる |
 | `BUDDY_CHATTER_CODEX_TIMEOUT` | `180` | `codex exec` を諦めるまで (秒) |
@@ -166,15 +175,29 @@ server を落とす理由にはならない。`BUDDY_CHATTER_SOCKET` を変え�
 生成の遅延は誰も待っていない。バッチはキャッシュが尽きた時点の文脈で作るため、後ろの行ほど
 今の作業から遅れる。これは承知の上の割り切り — 実況ではなく独り言なので。
 
-`thinking` は切らない。切ると `<thinking>` がそのまま本文に漏れる既知の失敗があり、遅延は
-問題にならないので絞るなら `effort` の側。
+絞るなら `effort` の側で、`thinking` そのものは切らない。切ると `<thinking>` がそのまま
+本文に漏れる既知の失敗があり、遅延はここでは誰も待っていない。既定は `low`。
+
+**モデルと effort と batch はその場で変えられる。**
+`buddy_chatter_start(model="haiku", effort="high", batch=3)` はサーバを再起動せずに
+次のバッチから効く。既定は `sonnet` / `low` / `6` — 独り言を 1 行書くのに大きいモデルは
+要らず、これはセッション中ずっと回るため。台詞が平板だと感じたら上げ、掛かりすぎるなら
+下げる。今どれで書いているかは `buddy_chatter_status` の `model` / `effort` / `batch`。
 
 生成された行はパネル 1 枚に収まる長さで切る。1 行 = 1 発話。上限は `max_chars`。
 
 **backend が変わっても prompt も schema も同じ。** どちらも `{"lines": [...]}` を要求し、
-`LINES_SCHEMA` を共有する。違いは渡し方だけ — Vertex は `system` に persona を置けるが、
-`codex exec` には system の口が無いので persona と本文を 1 本に繋いで stdin に流す。
+`LINES_SCHEMA` を共有する。違いは渡し方だけ — `claude -p` は persona を `--system-prompt` に
+置いて本文を stdin に流すが、`codex exec` には system の口が無いので persona と本文を 1 本に
+繋いで stdin に流す。
 
-`codex exec` は `--ephemeral --skip-git-repo-check --sandbox read-only` で、空の一時
-ディレクトリを cwd にして走らせる。独り言のために session file を残したり、たまたま
-そこにあった `AGENTS.md` に引っ張られたりしないため。
+どちらも空の一時ディレクトリを cwd にして走らせる。独り言のために session file を残したり、
+たまたまそこにあった `AGENTS.md` や `CLAUDE.md` に引っ張られたりしないため。
+`claude -p` は `--safe-mode --tools "" --no-session-persistence --output-format json
+--json-schema`、`codex exec` は `--ephemeral --skip-git-repo-check --sandbox read-only
+--output-schema`。
+
+`claude -p --output-format json` の出力は 2 通り観測されている — ドキュメントどおりの
+result オブジェクト 1 個と、stream event 全部の配列。`_cli_answer` はどちらも受け、配列なら
+最後の `result` を取る。中身は `structured_output` を優先し、無ければ `result` の文字列を
+JSON として読む。

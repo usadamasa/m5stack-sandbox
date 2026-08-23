@@ -13,8 +13,8 @@ product keeps a thin registration file. Both registrations call this
 script unchanged, apart from `--agent`.
 
 That flag is the point of the difference. It rides along in the datagram
-and is how the server knows which model should write the muttering —
-Vertex AI for Claude Code, the Codex CLI for Codex. Registering without
+and is how the server knows which CLI should write the muttering —
+`claude -p` for Claude Code, `codex exec` for Codex. Registering without
 it is not an error: the server falls back to guessing from the
 environment, and then to its default.
 

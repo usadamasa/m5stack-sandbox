@@ -279,9 +279,15 @@ datagram を 1 発投げて終わり (約 40ms、listener が居なくても exi
 MCP server 側のスレッドが自分の時間でやる。そのスレッドはデバイスのロックを
 `blocking=False` でしか取らないので、本物のツール呼び出しを待たせることが無い。
 
-**台詞を書くモデルは接続元で決まる。** Claude Code なら Vertex AI の Claude、Codex なら
-`codex exec`。組み合わせは固定で、2×2 は用意していない — それぞれのマシンが既に持っている
-認証をそのまま使うのが狙いで、交差させるとどちらにも無い認証情報が要る。
+**台詞を書くモデルは接続元で決まる。** Claude Code なら `claude -p`、Codex なら
+`codex exec`。どちらもそのエージェント自身の CLI を 1 ターン起動する。組み合わせは固定で、
+2×2 は用意していない — それぞれのマシンが既に持っている認証をそのまま使うのが狙いで、
+交差させるとどちらにも無い認証情報が要る。
+
+起動するターンは道具を持たない。`--safe-mode` で hook も MCP server も skill も
+CLAUDE.md も読み込まず、`--tools ""` で構造化出力以外を落とし、cwd は空の一時ディレクトリ。
+hook を読み込ませないのが特に効く — このリポジトリの hook は chatter へ datagram を投げるので、
+読み込むと chatter が自分の生成から生成することになる。
 
 判定は接続してきた側から取る。MCP の `initialize` が運ぶ `clientInfo.name` と、hook が
 datagram に乗せる `--agent` の両方を見る。デプロイ時にどちらかへ固定はしない。
@@ -296,6 +302,11 @@ datagram に乗せる `--agent` の両方を見る。デプロイ時にどちら
 自分からポートを開けることは無い (`buddy_deploy.py` や `esptool` のため)。
 
 **喋る内容を変えたいときは `host/mcp/src/chatter_prompt.md` を直す。** コードは触らなくてよい。
+
+**モデルと effort は走らせたまま変えられる。** `buddy_chatter_start(model="haiku",
+effort="high")` で、次のバッチから効く。既定は `sonnet` と `low` — 独り言を 1 行書くのに
+大きいモデルは要らず、これはセッション中ずっと回るため。今どれで書いているかは
+`buddy_chatter_status` の `model` / `effort` に出る。
 
 間隔・音量の頻度・無効化といった調整は環境変数と `buddy_chatter_start` で行う。一覧は
 `.agents/skills/buddy-chatter/SKILL.md` にある。

@@ -57,9 +57,10 @@ jitter is what is fixed per utterance; where it lands moves.
 
 Claude Code and Codex both drive this. The device does not care which,
 but the lines have to come from a model the machine can actually reach,
-and that differs: Claude Code's has application-default credentials for
-Vertex AI, Codex's has a configured Codex CLI. `RoutingLineSource` picks
-by whoever is connected — see `buddy_agent` for how that is decided.
+and that differs: each agent's own CLI is the one thing its machine is
+certain to have installed and logged in. So both backends spawn a CLI —
+`claude -p` and `codex exec` — and `RoutingLineSource` picks by whoever
+is connected. See `buddy_agent` for how that is decided.
 """
 
 from __future__ import annotations
@@ -157,8 +158,8 @@ _ACTIVITY_DEPTH = 256
 # still have the same amount of jitter.
 _TEMPO_WIDTH = 0.5
 
-# Said when generation fails — no ADC credentials, no network, Vertex
-# refusing. Rare, but the alternative is a device that goes silent for
+# Said when generation fails — the CLI missing, not logged in, no
+# network. Rare, but the alternative is a device that goes silent for
 # the rest of the session with no visible reason.
 _FALLBACK_LINES = (
     "ぼくは元気にしているのだ",
@@ -273,10 +274,19 @@ class ChatterConfig:
     # Who to assume is driving before anyone says. Only used until the
     # MCP handshake or a hook datagram settles it.
     agent: str = CLAUDE_CODE
-    # ----- Vertex, used when Claude Code is driving
-    model: str = "claude-opus-5"
-    project_id: str = ""
-    region: str = "us"
+    # ----- the Claude CLI, used when Claude Code is driving
+    #
+    # An alias rather than a pinned id, so this follows whatever the
+    # current Sonnet is. Writing one line of muttering is not work that
+    # needs the largest model, and this runs all session.
+    claude_bin: str = "claude"
+    model: str = "sonnet"
+    # Passed as `--effort`. Empty leaves the CLI's own default alone.
+    effort: str = "low"
+    # A `claude -p` turn with no tools is a few seconds; this is a
+    # stuck-process guard, not a latency budget. Nothing waits on it but
+    # the chatter's own thread.
+    claude_timeout: float = 120.0
     # ----- the Codex CLI, used when Codex is driving
     #
     # An empty model means "whatever `~/.codex/config.toml` already
@@ -299,9 +309,11 @@ class ChatterConfig:
     def from_env(cls, env: Mapping[str, str] | None = None) -> ChatterConfig:
         """Build a config from the process environment.
 
-        The Vertex project and region default to the ones Claude Code is
-        already using, so a machine that can run Claude Code can run the
-        chatter without being told anything twice.
+        Every knob has an environment variable so a session can be
+        retuned by restarting the server rather than by editing this,
+        and the ones worth changing mid-session (`model`, `effort`,
+        `batch`, the pacing) are also arguments to
+        `buddy_chatter_start`.
         """
         env = os.environ if env is None else env
         raw_socket = env.get("BUDDY_CHATTER_SOCKET", "")
@@ -318,9 +330,10 @@ class ChatterConfig:
             voice_every=max(1, _int_env(env, "BUDDY_CHATTER_VOICE_EVERY", 1)),
             batch=max(1, _int_env(env, "BUDDY_CHATTER_BATCH", 6)),
             agent=env.get("BUDDY_CHATTER_AGENT", CLAUDE_CODE),
-            model=env.get("BUDDY_CHATTER_MODEL", "claude-opus-5"),
-            project_id=env.get("ANTHROPIC_VERTEX_PROJECT_ID", ""),
-            region=env.get("CLOUD_ML_REGION", "us"),
+            claude_bin=env.get("BUDDY_CHATTER_CLAUDE_BIN", "claude"),
+            model=env.get("BUDDY_CHATTER_MODEL", "sonnet"),
+            effort=env.get("BUDDY_CHATTER_EFFORT", "low"),
+            claude_timeout=_float_env(env, "BUDDY_CHATTER_CLAUDE_TIMEOUT", 120.0),
             codex_bin=env.get("BUDDY_CHATTER_CODEX_BIN", "codex"),
             codex_model=env.get("BUDDY_CHATTER_CODEX_MODEL", ""),
             codex_timeout=_float_env(env, "BUDDY_CHATTER_CODEX_TIMEOUT", 180.0),
@@ -487,65 +500,139 @@ class BatchedLineSource:
         raise NotImplementedError
 
 
-class VertexLineSource(BatchedLineSource):
-    """Generates lines with Claude on Vertex AI. Claude Code's backend."""
+class ClaudeCliLineSource(BatchedLineSource):
+    """Generates lines by running one `claude -p` turn. Claude Code's.
 
-    backend = "vertex"
+    ### Why the CLI and not the SDK
 
-    def __init__(self, cfg: ChatterConfig, rng: random.Random | None = None) -> None:
+    Same reason as the Codex side: the credentials are the CLI's. Claude
+    Code authenticates however the person running it authenticated — a
+    subscription in the keychain, an API key, a third-party provider —
+    and reproducing that resolution here would mean reimplementing it
+    and then keeping up with it. Spawning the CLI inherits it by
+    construction. A machine that can run Claude Code can run this, with
+    nothing configured twice.
+
+    ### Why the turn is stripped down
+
+    `claude -p` is a whole agent and this wants a sentence.
+
+    - `--safe-mode` turns off hooks, MCP servers, skills and CLAUDE.md
+      discovery. Hooks are the one that would actually bite: this
+      repository registers a hook that datagrams the chatter, so a turn
+      that loaded it would have the chatter generating from its own
+      generation.
+    - `--tools ""` leaves only the structured-output tool, so the turn
+      cannot read or write anything.
+    - `--no-session-persistence` keeps a transcript from accumulating on
+      disk once per mutter.
+    - The cwd is an empty temporary directory, so no project config is
+      anywhere above it.
+
+    `--json-schema` gets the same `{"lines": [...]}` the Codex path
+    asks for, so both sides parse identically.
+    """
+
+    backend = "claude-cli"
+
+    def __init__(
+        self,
+        cfg: ChatterConfig,
+        rng: random.Random | None = None,
+        run: Callable[[str, str], str] | None = None,
+    ) -> None:
         super().__init__(cfg, rng)
-        self._client: Any = None
+        # Injectable so the tests do not spawn a CLI, and so a different
+        # launcher can be dropped in without touching parsing.
+        self._run = run if run is not None else self._run_claude
 
     @property
     def model(self) -> str:
         return self._cfg.model
 
-    def _ensure_client(self) -> Any:  # noqa: ANN401 — the SDK ships no public client alias
-        """Build the Vertex client on first use.
-
-        Deferred rather than built in `__init__` so importing this
-        module never touches credentials: the tests, and any machine
-        without application-default credentials, must still be able to
-        load the MCP server.
-
-        Credentials come from application-default credentials, the same
-        place Claude Code itself gets them, so a machine that can run
-        Claude Code needs no extra setup. An absent `project_id` is left
-        unset rather than passed as None: the SDK then resolves it from
-        ADC, which is a better answer than anything guessed here.
-        """
-        if self._client is None:
-            # From `anthropic.lib.vertex` rather than the package root:
-            # the runtime re-export at the top level is not in the type
-            # stubs, and this is the path the checker accepts.
-            from anthropic.lib.vertex import AnthropicVertex
-
-            if self._cfg.project_id:
-                self._client = AnthropicVertex(
-                    project_id=self._cfg.project_id, region=self._cfg.region
-                )
-            else:
-                self._client = AnthropicVertex(region=self._cfg.region)
-        return self._client
-
     def _generate(self, context: Sequence[Event]) -> Sequence[object]:
-        reply = self._ensure_client().messages.create(
-            model=self._cfg.model,
-            max_tokens=2048,
-            # Thinking stays on. Turning it off on this model is a
-            # documented way to get `<thinking>` text leaking into the
-            # answer, and nothing here is waiting on latency, so the
-            # effort knob is the right one to turn down.
-            thinking={"type": "adaptive"},
-            output_config={
-                "effort": "low",
-                "format": {"type": "json_schema", "schema": LINES_SCHEMA},
-            },
-            system=self._system_prompt(),
-            messages=[{"role": "user", "content": self._user_prompt(context)}],
-        )
-        body = next(block.text for block in reply.content if block.type == "text")
-        return cast("Sequence[object]", json.loads(body)["lines"])
+        stdout = self._run(self._system_prompt(), self._user_prompt(context))
+        return cast("Sequence[object]", _cli_answer(stdout)["lines"])
+
+    def _run_claude(self, system: str, prompt: str) -> str:
+        """Run one turn and return its stdout. Raises on trouble."""
+        argv = [
+            self._cfg.claude_bin,
+            "-p",
+            "--model",
+            self._cfg.model,
+            "--safe-mode",
+            "--no-session-persistence",
+            "--tools",
+            "",
+            "--output-format",
+            "json",
+            "--json-schema",
+            json.dumps(LINES_SCHEMA),
+            "--system-prompt",
+            system,
+        ]
+        if self._cfg.effort:
+            argv += ["--effort", self._cfg.effort]
+        with tempfile.TemporaryDirectory(prefix="buddy-chatter-") as tmp:
+            # The prompt goes on stdin rather than the argument list: the
+            # events and the past lines grow with the session.
+            proc = subprocess.run(
+                argv,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=self._cfg.claude_timeout,
+                # An empty directory rather than wherever the server was
+                # launched from, so nothing above it steers the turn.
+                cwd=tmp,
+                check=False,
+            )
+        if proc.returncode != 0 or not (proc.stdout or "").strip():
+            # stderr is where a missing install, an expired login and a
+            # bad flag all land. Truncated because this ends up in a
+            # status field.
+            detail = " ".join((proc.stderr or proc.stdout or "").split())[-300:]
+            raise RuntimeError(f"claude -p wrote no answer (rc {proc.returncode}): {detail}")
+        return proc.stdout
+
+
+def _as_object(value: object) -> Mapping[str, Any] | None:
+    """A decoded JSON object, or None if it decoded to anything else."""
+    return cast("Mapping[str, Any]", value) if isinstance(value, dict) else None
+
+
+def _cli_answer(stdout: str) -> Mapping[str, Any]:
+    """Pull the structured answer out of `claude -p --output-format json`.
+
+    Two shapes are accepted because two shapes have been seen: the
+    documented single result object, and the whole stream as a list with
+    the result last. Taking the last `result` entry covers both without
+    having to know which the installed CLI does.
+
+    `structured_output` is preferred over `result`; the latter is the
+    same JSON as text and is the fallback for a CLI that does not fill
+    the former in.
+    """
+    parsed: object = json.loads(stdout)
+    if isinstance(parsed, list):
+        objects = [_as_object(m) for m in cast("list[object]", parsed)]
+        results = [obj for obj in objects if obj is not None and obj.get("type") == "result"]
+        if not results:
+            raise RuntimeError("claude -p emitted no result message")
+        result = results[-1]
+    else:
+        found = _as_object(parsed)
+        if found is None:
+            raise TypeError(f"claude -p answered with {type(parsed).__name__}, not an object")
+        result = found
+    if result.get("is_error"):
+        detail = " ".join(str(result.get("result", "")).split())[-300:]
+        raise RuntimeError(f"claude -p reported an error: {detail}")
+    structured = result.get("structured_output")
+    if isinstance(structured, dict):
+        return cast("Mapping[str, Any]", structured)
+    return cast("Mapping[str, Any]", json.loads(result["result"]))
 
 
 class CodexLineSource(BatchedLineSource):
@@ -566,7 +653,7 @@ class CodexLineSource(BatchedLineSource):
     `codex exec` is a whole agent, tools included, and this wants a
     sentence. `--sandbox read-only` and `--ephemeral` reduce it to what
     is actually needed: no writes, no session file, nothing left behind.
-    `--output-schema` gets the same `{"lines": [...]}` the Vertex path
+    `--output-schema` gets the same `{"lines": [...]}` the Claude path
     asks for, so both sides parse identically.
 
     The prompt is one blob rather than a system/user pair — `codex exec`
@@ -651,7 +738,7 @@ def line_source_for(agent: str, cfg: ChatterConfig, rng: random.Random | None = 
     """
     if agent == CODEX:
         return CodexLineSource(cfg, rng)
-    return VertexLineSource(cfg, rng)
+    return ClaudeCliLineSource(cfg, rng)
 
 
 class RoutingLineSource:
@@ -662,9 +749,9 @@ class RoutingLineSource:
     witness at all, and the MCP server learns who its client is at the
     handshake rather than at import.
 
-    Backends are constructed on first use and then kept. Construction
-    touches credentials — the Vertex client resolves ADC — so a session
-    that never speaks as Codex never looks for a Codex install.
+    Backends are constructed on first use and then kept. Building one
+    is cheap; spawning either CLI is not, so a session that never speaks
+    as Codex never looks for a Codex install.
     """
 
     def __init__(
@@ -691,7 +778,7 @@ class RoutingLineSource:
         if active is not None:
             return getattr(active, "backend", "")
         # Nothing built yet: name what would be, without building it.
-        return "codex" if self.agent == CODEX else "vertex"
+        return "codex" if self.agent == CODEX else "claude-cli"
 
     @property
     def model(self) -> str:
@@ -1079,6 +1166,8 @@ class ChatterService:
             "client": self._identity.client_name,
             "backend": getattr(source, "backend", ""),
             "model": getattr(source, "model", "") or self._cfg.model,
+            "effort": self._cfg.effort,
+            "batch": self._cfg.batch,
             "last_line": self.last_line,
             "last_error": self.last_error,
             "generated": getattr(source, "generated", None),

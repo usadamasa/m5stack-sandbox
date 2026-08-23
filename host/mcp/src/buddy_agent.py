@@ -3,10 +3,10 @@
 The MCP server and the chatter are used from Claude Code and from Codex.
 Almost nothing differs between them — the tools are the same and the
 device does not care who asked. One thing does: where the chatter's
-lines come from. Claude Code's machine has application-default
-credentials for Vertex AI; Codex's machine has a configured Codex CLI.
-Each agent gets the model it already pays for, so the pairing is fixed
-rather than a 2x2 of agent times backend.
+lines come from. Each backend spawns the agent's own CLI for one turn,
+because that CLI is the one thing its machine is certain to have
+installed and logged in. Each agent gets the model it already pays for,
+so the pairing is fixed rather than a 2x2 of agent times backend.
 
 ### Why this is resolved at runtime and not at install time
 
