@@ -306,8 +306,16 @@ plugin は sandbox 設定を配れないため、入れる側の `.claude/settin
 (または `~/.claude/settings.json`) に足す。
 
 ```json
-{ "sandbox": { "filesystem": { "allowWrite": ["~/.local/state/buddy"] } } }
+{
+  "sandbox": {
+    "network": { "allowUnixSockets": ["~/.local/state/buddy"] },
+    "filesystem": { "allowWrite": ["~/.local/state/buddy"] }
+  }
+}
 ```
+
+AF_UNIX への接続は Seatbelt では network の operation なので、`allowUnixSockets` の方が
+本命。`allowWrite` は daemon 側が pid・log・socket を書くために要る。
 
 `/mcp` に `buddy` が 1 つだけ出れば繋がっている。skill は `/skills` から確認できる。
 plugin 経由なので tool 名は `mcp__plugin_buddy_buddy__*` になる。

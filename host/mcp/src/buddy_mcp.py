@@ -659,8 +659,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         # On a thread: opening the port is a reader plus a handshake,
         # and the agent's `initialize` should not wait behind it.
         threading.Thread(target=_connect_on_start, name="buddy-connect", daemon=True).start()
-    server.run(transport, **options)
+    try:
+        server.run(transport, **options)
+    finally:
+        _shutdown()
     return 0
+
+
+def _shutdown() -> None:
+    """Let go of the socket and the port. Never raises.
+
+    Reached when uvicorn returns, which it does on SIGTERM and on the
+    SIGINT that forces it past a connection it is waiting on. Without
+    this a clean stop still left the datagram socket behind, which made
+    `buddy-mcpd stop` indistinguishable from a daemon that was killed.
+
+    The port matters more than the socket: the next thing to want it is
+    usually `buddy_deploy.py`, and `buddy-mcpd stop` exists precisely to
+    hand it over.
+    """
+    if _chatter is not None:
+        with contextlib.suppress(Exception):
+            _chatter.stop()
+    with contextlib.suppress(Exception):
+        buddy_disconnect()
 
 
 if __name__ == "__main__":

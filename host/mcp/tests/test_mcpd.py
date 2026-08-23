@@ -108,12 +108,14 @@ class StopTests(_StateTestCase):
         self.assertEqual(sent[0], (4321, signal.SIGTERM))
         self.assertFalse(self.pid_file.exists())
 
-    def test_a_second_term_is_sent_before_reaching_for_kill(self) -> None:
-        # uvicorn takes the first SIGTERM as "finish serving what you
-        # have" and waits for open HTTP connections — which a live
-        # session always has. The second one tells it to stop waiting.
-        # Without this every stop reports `forced`, and a real hang
-        # stops being distinguishable from the normal case.
+    def test_the_second_signal_is_an_interrupt(self) -> None:
+        # uvicorn takes the first signal as "finish serving what you
+        # have" and then waits for open HTTP connections to close —
+        # which a session that is still attached never does. Only a
+        # second *SIGINT* sets `force_exit`; a second SIGTERM falls into
+        # the else branch and just re-sets `should_exit`, so the wait
+        # continues and every stop ends in SIGKILL. That is what the
+        # log's "(CTRL+C to force quit)" is telling us.
         self.write_pid(4321)
         sent: list[tuple[int, int]] = []
         alive = iter([True, True, False])
@@ -123,10 +125,10 @@ class StopTests(_StateTestCase):
             running=lambda _: next(alive, False),
             grace=0.0,
         )
-        self.assertEqual([s for _, s in sent], [signal.SIGTERM, signal.SIGTERM])
-        self.assertFalse(result["forced"], "a second TERM is the normal path, not force")
+        self.assertEqual([s for _, s in sent], [signal.SIGTERM, signal.SIGINT])
+        self.assertFalse(result["forced"], "the interrupt is the normal path, not force")
 
-    def test_a_process_that_ignores_both_terms_is_killed(self) -> None:
+    def test_a_process_that_ignores_both_signals_is_killed(self) -> None:
         self.write_pid(4321)
         sent: list[tuple[int, int]] = []
         result = buddy_mcpd.stop(
@@ -135,7 +137,7 @@ class StopTests(_StateTestCase):
             running=lambda _: True,
             grace=0.0,
         )
-        self.assertEqual([s for _, s in sent], [signal.SIGTERM, signal.SIGTERM, signal.SIGKILL])
+        self.assertEqual([s for _, s in sent], [signal.SIGTERM, signal.SIGINT, signal.SIGKILL])
         self.assertTrue(result["stopped"])
         self.assertTrue(result["forced"])
 

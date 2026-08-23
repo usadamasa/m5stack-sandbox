@@ -40,16 +40,35 @@ SDK を直接叩くと認証の解決を再実装して追随し続けること�
    `echo '{"hook_event_name":"Stop"}' | python3 scripts/buddy_chatter_notify.py`
 
    **一番ありがちなのは sandbox。** socket は `~/.local/state/buddy/chatter.sock` に
-   あり、`sandbox.filesystem.allowWrite` に入っていないと `sendto` が EPERM で落ちる。
-   hook は例外を握り潰して exit 0 するので、**失敗は完全に無音**。使うプロジェクトの
-   `.claude/settings.json` (または `~/.claude/settings.json`) に足す:
+   あり、許可が無いと `sendto` が EPERM で落ちる。hook は例外を握り潰して exit 0 する
+   ので、**失敗は完全に無音**。使うプロジェクトの `.claude/settings.json`
+   (または `~/.claude/settings.json`) に足す:
 
    ```json
-   { "sandbox": { "filesystem": { "allowWrite": ["~/.local/state/buddy"] } } }
+   {
+     "sandbox": {
+       "network": { "allowUnixSockets": ["~/.local/state/buddy"] },
+       "filesystem": { "allowWrite": ["~/.local/state/buddy"] }
+     }
+   }
    ```
+
+   **要るのは `allowUnixSockets` の方。** AF_UNIX への接続は Seatbelt では
+   filesystem ではなく network の operation として扱われるので、`allowWrite` だけでは
+   通らない。`allowWrite` が要るのは daemon 側が pid・log・socket を書くため。
 
    plugin は sandbox 設定を配れないので、これは plugin を入れる側の仕事になる。
    sandbox 設定はセッションを再起動するまで反映されない。
+
+   **errno で切り分けられる。** sandbox に塞がれているなら EPERM (errno 1)。
+   通過していれば、相手が居なければ ENOENT (2)、居れば ECONNREFUSED (61) など
+   別の errno になる。EPERM だけが sandbox の返事:
+
+   ```bash
+   python3 -c 'import socket,json; s=socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM); \
+     s.sendto(json.dumps({"kind":"stop","detail":""}).encode(), \
+     "'"$HOME"'/.local/state/buddy/chatter.sock"); print("ok")'
+   ```
 
    届いたかどうかは `tempo` で測れる。`_tempo()` は
    `len(_activity) / (窓 120 秒 / 60) / busy_rate` なので、5 発投げれば

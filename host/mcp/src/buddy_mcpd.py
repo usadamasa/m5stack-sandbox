@@ -156,12 +156,16 @@ def stop(
     kill(pid, signal.SIGTERM)
     forced = False
     if not _gone_within(pid, running, grace / 2):
-        # uvicorn reads the first SIGTERM as "finish serving what you
+        # uvicorn reads the first signal as "finish serving what you
         # have" and then waits for open HTTP connections to close — and
-        # a session that is still attached never closes one. The second
-        # is what tells it to stop waiting. Without it every single stop
-        # ends in SIGKILL, and `forced` stops meaning anything.
-        kill(pid, signal.SIGTERM)
+        # a session that is still attached never closes one.
+        #
+        # SIGINT, not a second SIGTERM: uvicorn only sets `force_exit`
+        # when the repeat is an interrupt, and treats a repeat SIGTERM
+        # as another ordinary shutdown request. That is what its own
+        # "(CTRL+C to force quit)" line is saying. Without this every
+        # stop ends in SIGKILL and `forced` stops meaning anything.
+        kill(pid, signal.SIGINT)
         if not _gone_within(pid, running, grace / 2):
             # It had its chance. A daemon that will not let go of the
             # serial port is worse than one killed with the port still

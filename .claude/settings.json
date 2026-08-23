@@ -31,6 +31,9 @@
       "allowedDomains": [
         "m5burner-api.m5stack.com",
         "m5burner.m5stack.com"
+      ],
+      "allowUnixSockets": [
+        "~/.local/state/buddy"
       ]
     }
   }

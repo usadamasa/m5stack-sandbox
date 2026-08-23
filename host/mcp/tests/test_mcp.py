@@ -462,6 +462,52 @@ class ConnectOnStartTest(_McpTestCase):
         self.assertEqual(len(StubLink.instances), 1)
 
 
+class ShutdownTest(_McpTestCase):
+    """What the daemon lets go of on the way out.
+
+    Nothing did this before: `main` returned as soon as the server
+    stopped, so a daemon that shut down cleanly still left its datagram
+    socket behind. A stale socket is survivable — the next start unlinks
+    it — but it also means `buddy-mcpd stop` cannot be told apart from
+    a daemon that was killed.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        buddy_mcp._chatter = None
+        self.addCleanup(setattr, buddy_mcp, "_chatter", None)
+
+    def _run_main(self) -> None:
+        with (
+            mock.patch.object(buddy_mcp.server, "run"),
+            mock.patch.object(buddy_mcp, "_connect_on_start_wanted", return_value=False),
+            TemporaryDirectory() as tmp,
+            mock.patch.dict(os.environ, {"BUDDY_CHATTER_SOCKET": f"{tmp}/probe.sock"}),
+        ):
+            self.sock = Path(tmp) / "probe.sock"
+            buddy_mcp.main([])
+
+    def test_the_chatter_socket_does_not_outlive_the_daemon(self) -> None:
+        self._run_main()
+        self.assertFalse(self.sock.exists(), "a clean shutdown must unlink its own socket")
+
+    def test_the_port_is_released_on_the_way_out(self) -> None:
+        # The next thing to want the port is usually `buddy_deploy.py`,
+        # and it should not have to wait for the kernel to notice.
+        buddy_mcp.buddy_connect()
+        self._run_main()
+        self.assertFalse(StubLink.instances[0].connected)
+
+    def test_shutdown_still_runs_when_the_server_raises(self) -> None:
+        with (
+            mock.patch.object(buddy_mcp.server, "run", side_effect=RuntimeError("bind failed")),
+            mock.patch.object(buddy_mcp, "_connect_on_start_wanted", return_value=False),
+            self.assertRaises(RuntimeError),
+        ):
+            buddy_mcp.main([])
+        self.assertFalse(buddy_mcp._chatter_service().running)
+
+
 class TransportTest(unittest.TestCase):
     """How the process decides to listen. The daemon's half of it.
 
