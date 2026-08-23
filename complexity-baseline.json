@@ -6,7 +6,5 @@
   "device/buddy/speak.py::_StreamSource.read_block": 13,
   "device/buddy/tts.py::parse_wav_header": 13,
   "device/tests/test_boot.py::_app_import_line": 11,
-  "device/tests/test_boot.py::_imported_modules": 12,
-  "host/link/src/buddy_text.py::split_for_device": 11,
-  "scripts/buddy_chatter_notify.py::classify": 13
+  "device/tests/test_boot.py::_imported_modules": 12
 }

@@ -8,6 +8,7 @@ pairs these constants against the panel's own to keep the two in step.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 
 # ----- chat
 #
@@ -165,6 +166,23 @@ def _limit_for(text: str) -> int:
     return MAX_SAY_CHARS
 
 
+def _pack(pieces: Sequence[str], limit: int) -> list[str]:
+    """収まるあいだは改行で連ね、収まらなくなったところで切る。"""
+    parts: list[str] = []
+    current = ""
+    for piece in pieces:
+        candidate = piece if not current else current + "\n" + piece
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+        if current:
+            parts.append(current)
+        current = piece
+    if current:
+        parts.append(current)
+    return parts
+
+
 def split_for_device(text: str, limit: int | None = None) -> list[str]:
     """Break normalized `text` into messages, in order.
 
@@ -177,19 +195,10 @@ def split_for_device(text: str, limit: int | None = None) -> list[str]:
         limit = _limit_for(text)
     if limit < 1:
         raise ValueError(f"limit must be positive, got {limit}")
-    parts: list[str] = []
-    current = ""
-    for para in text.split("\n"):
-        for piece in _split_paragraph(para, limit) or [""]:
-            if not piece:
-                continue
-            candidate = piece if not current else current + "\n" + piece
-            if len(candidate) <= limit:
-                current = candidate
-            else:
-                if current:
-                    parts.append(current)
-                current = piece
-    if current:
-        parts.append(current)
-    return parts
+    pieces = [
+        piece
+        for para in text.split("\n")
+        for piece in _split_paragraph(para, limit) or [""]
+        if piece
+    ]
+    return _pack(pieces, limit)
