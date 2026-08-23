@@ -237,6 +237,19 @@ def _can_break_between(prev: str, ch: str) -> bool:
     return _is_wide(prev) or _is_wide(ch)
 
 
+def _break_at(line, brk):
+    # type: (str, int) -> tuple[str, str]
+    """Split a full line into (row to emit, what carries over).
+
+    `brk` of 0 means no break opportunity was seen — a long URL or a
+    hash — so the row is emitted as-is and nothing carries over. That is
+    the hard break.
+    """
+    if brk:
+        return line[:brk].rstrip(), line[brk:]
+    return line, ""
+
+
 class ChatPanel:
     """A transcript rendered into the Buddy dashboard's main panel."""
 
@@ -454,6 +467,30 @@ class ChatPanel:
 
     # ----- wrapping
 
+    def _wrap_paragraph(self, para, avail):
+        # type: (str, int) -> list[str]
+        """Break one paragraph into rows no wider than `avail` pixels."""
+        rows = []  # type: list[str]
+        line = ""
+        line_w = 0
+        brk = 0
+        for ch in para:
+            if not line and ch == " ":
+                continue  # never start a row on a space
+            w = self._advance(ch)
+            if line and line_w + w > avail:
+                row, line = _break_at(line, brk)
+                rows.append(row)
+                line_w = self._measure(line)
+                brk = 0
+            if line and _can_break_between(line[-1], ch):
+                brk = len(line)
+            line += ch
+            line_w += w
+        if line:
+            rows.append(line)
+        return rows
+
     def _wrap(self, text, avail):
         # type: (str, int) -> list[str]
         """Break `text` into rows no wider than `avail` pixels.
@@ -473,28 +510,7 @@ class ChatPanel:
             if not para.strip():
                 rows.append("")
                 continue
-            line = ""
-            line_w = 0
-            brk = 0
-            for ch in para:
-                if not line and ch == " ":
-                    continue  # never start a row on a space
-                w = self._advance(ch)
-                if line and line_w + w > avail:
-                    if brk:
-                        rows.append(line[:brk].rstrip())
-                        line = line[brk:]
-                    else:
-                        rows.append(line)
-                        line = ""
-                    line_w = self._measure(line)
-                    brk = 0
-                if line and _can_break_between(line[-1], ch):
-                    brk = len(line)
-                line += ch
-                line_w += w
-            if line:
-                rows.append(line)
+            rows.extend(self._wrap_paragraph(para, avail))
         return rows
 
     def _advance(self, ch: str) -> int:
