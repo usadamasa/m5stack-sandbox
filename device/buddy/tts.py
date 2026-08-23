@@ -110,6 +110,22 @@ class FetchError(RuntimeError):
     """The engine could not be reached, or gave us something unusable."""
 
 
+def _parse_fmt(head, body, size):
+    # type: (bytes, int, int) -> tuple[int, int, int]
+    """Read one fmt chunk. Returns (channels, rate, bits) or raises."""
+    if size < _FMT_MIN or body + _FMT_MIN > len(head):
+        raise WavError("truncated fmt chunk")
+    # One unpack rather than four offset reads. `bits` in particular
+    # sits at +14, which is only obvious from the field list the format
+    # string spells out.
+    audiofmt, channels, rate, _byte_rate, _align, bits = struct.unpack_from(_FMT_BODY, head, body)
+    if audiofmt != _FORMAT_PCM:
+        raise WavError("not PCM")
+    if channels != _CHANNELS or bits != _BITS:
+        raise WavError("need 16-bit mono, got " + str(channels) + "ch/" + str(bits) + "-bit")
+    return channels, rate, bits
+
+
 def parse_wav_header(head):
     # type: (bytes) -> dict[str, int]
     """Locate the samples in the head of a WAV stream.
@@ -144,20 +160,7 @@ def parse_wav_header(head):
         body = pos + _CHUNK_HEAD
 
         if cid == _FMT:
-            if size < _FMT_MIN or body + _FMT_MIN > len(head):
-                raise WavError("truncated fmt chunk")
-            # One unpack rather than four offset reads. `bits` in
-            # particular sits at +14, which is only obvious from the
-            # field list the format string spells out.
-            audiofmt, channels, rate, _byte_rate, _align, bits = struct.unpack_from(
-                _FMT_BODY, head, body
-            )
-            if audiofmt != _FORMAT_PCM:
-                raise WavError("not PCM")
-            if channels != _CHANNELS or bits != _BITS:
-                raise WavError(
-                    "need 16-bit mono, got " + str(channels) + "ch/" + str(bits) + "-bit"
-                )
+            channels, rate, bits = _parse_fmt(head, body, size)
         elif cid == _DATA:
             if not rate:
                 # No fmt yet means no sample rate, and the only way to
