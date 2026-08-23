@@ -1,0 +1,18 @@
+{
+  "name": "buddy",
+  "owner": {
+    "name": "usadamasa",
+    "url": "https://github.com/usadamasa"
+  },
+  "description": "Claude Buddy — M5Stack Cardputer-Adv をコーディングエージェントから操作する。",
+  "plugins": [
+    {
+      "name": "buddy",
+      "source": {
+        "source": "github",
+        "repo": "usadamasa/m5stack-sandbox"
+      },
+      "description": "常駐 daemon 経由で Cardputer-Adv を操作する MCP tool、chatter の hook、デバイス側の skill 一式。デバイスに触るには checkout 側で buddy-mcpd を起こす必要がある。"
+    }
+  ]
+}

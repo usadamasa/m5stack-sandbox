@@ -12,6 +12,14 @@ dependencies = [
     "mcp==2.0.0",
 ]
 
+# インストールされた環境から直接叩けるようにする。常駐 daemon はエージェントの
+# sandbox の外で走る必要があり、`uv run` は起動したセッションの都合を持ち込む。
+# `uv tool install ./host/mcp` か `uvx --from ./host/mcp buddy-mcpd` で入れた
+# 実体を叩く方が、どのプロジェクトから起こしても同じものが上がる。
+[project.scripts]
+buddy-mcp = "buddy_mcp:main"
+buddy-mcpd = "buddy_mcpd:main"
+
 [tool.uv.sources]
 buddy-host-link = { workspace = true }
 
@@ -65,8 +73,9 @@ source = ["src"]
 [tool.coverage.report]
 show_missing = true
 skip_covered = false
-# 目標ではなく回帰バー。実測 80%。
-fail_under = 77
+# 目標ではなく回帰バー。実測 85%。Codex 経路を落として分岐が減り、
+# buddy_paths と buddy_mcpd がテスト付きで入った分だけ上がった。
+fail_under = 82
 exclude_also = [
     "if __name__ == .__main__.:",
     "if TYPE_CHECKING:",

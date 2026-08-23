@@ -1,32 +1,36 @@
 """Contract tests for the hook that feeds the chatter.
 
-The hook lives in the shared `.agents/hooks/` rather than in this package.
-It is loaded here by path anyway:
+The hook lives in the plugin's `scripts/` rather than in this package —
+it is shipped to whoever installs the plugin, and runs on the system
+`python3` with nothing of this workspace importable. It is loaded here
+by path anyway:
 what it puts on the wire and what `parse_event` takes off it are two
 halves of one format, and nothing else checks that they still agree.
 
-Both agents register the same script, so the payloads exercised below
-are Claude Code's and Codex's alike — the schemas are the same.
+The socket path is the same kind of pair: the hook computes it with the
+standard library alone and `buddy_paths` computes it for the daemon, and
+a disagreement means a device that has simply gone quiet.
 """
 
 import importlib.util
 import json
 import sys
 import unittest
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, cast
 
+import buddy_paths
 from buddy_chatter import Event, parse_event
 
-HOOK_PATH = Path(__file__).resolve().parents[3] / ".agents" / "hooks" / "buddy_chatter_notify.py"
+HOOK_PATH = Path(__file__).resolve().parents[3] / "scripts" / "buddy_chatter_notify.py"
 
 
 def _load_hook() -> tuple[
-    Callable[[Sequence[str], Mapping[str, str]], str],
     Callable[[Mapping[str, Any]], tuple[str, str] | None],
+    Callable[[dict[str, str]], str],
 ]:
-    """Import the hook by path and pull out the two functions tested.
+    """Import the hook by path and pull out the functions tested.
 
     Returned as typed callables rather than as a module: attributes off
     a `ModuleType` are untyped, and the point of this file is that the
@@ -38,42 +42,74 @@ def _load_hook() -> tuple[
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return (
-        cast("Callable[[Sequence[str], Mapping[str, str]], str]", module.agent_from),
         cast("Callable[[Mapping[str, Any]], tuple[str, str] | None]", module.classify),
+        cast("Callable[[dict[str, str]], str]", module.socket_path),
     )
 
 
-agent_from, classify = _load_hook()
+classify, hook_socket_path = _load_hook()
+
+
+def _registered_hooks() -> list[dict[str, Any]]:
+    """Every command hook the plugin registers, across all events."""
+    registered = json.loads(
+        (HOOK_PATH.parents[1] / "hooks" / "hooks.json").read_text(encoding="utf-8")
+    )
+    return [
+        hook
+        for entries in cast("dict[str, Any]", registered["hooks"]).values()
+        for entry in cast("list[dict[str, Any]]", entries)
+        for hook in cast("list[dict[str, Any]]", entry["hooks"])
+    ]
 
 
 class HookExistsTests(unittest.TestCase):
     def test_the_registered_path_is_the_one_tested(self) -> None:
-        # Both `.claude/settings.json` and `.codex/hooks.json` name
-        # this path; a rename that misses one of them is silent.
+        # `hooks/hooks.json` names this path under ${CLAUDE_PLUGIN_ROOT};
+        # a rename that misses it is silent.
         self.assertTrue(HOOK_PATH.is_file(), HOOK_PATH)
 
+    def test_the_plugin_registers_the_path_that_exists(self) -> None:
+        for hook in _registered_hooks():
+            with self.subTest(command=hook["command"]):
+                self.assertEqual(
+                    hook["args"], ["${CLAUDE_PLUGIN_ROOT}/scripts/buddy_chatter_notify.py"]
+                )
 
-class AgentFromTests(unittest.TestCase):
-    def test_the_flag_is_read(self) -> None:
-        self.assertEqual(agent_from(["--agent", "codex"], {}), "codex")
+    def test_every_registration_is_in_exec_form(self) -> None:
+        # `command` is a string and the argv goes in `args`. A list in
+        # `command` is neither exec form nor shell form: the whole hook
+        # definition is dropped, and since a hook that never fires looks
+        # exactly like a device that has nothing to say, nothing else
+        # would notice.
+        for hook in _registered_hooks():
+            with self.subTest(command=hook["command"]):
+                self.assertIsInstance(hook["command"], str)
+                self.assertIsInstance(hook["args"], list)
+                # The executable, not the script: with `args` present,
+                # `command` is spawned directly with no shell.
+                self.assertEqual(hook["command"], "python3")
 
-    def test_the_equals_form_is_read_too(self) -> None:
-        self.assertEqual(agent_from(["--agent=claude-code"], {}), "claude-code")
 
-    def test_a_dangling_flag_is_not_an_index_error(self) -> None:
-        self.assertEqual(agent_from(["--agent"], {}), "")
+class SocketPathTests(unittest.TestCase):
+    """The hook and the daemon have to name the same file.
 
-    def test_the_flag_beats_the_environment(self) -> None:
-        self.assertEqual(agent_from(["--agent", "codex"], {"CLAUDECODE": "1"}), "codex")
+    They cannot share code — the hook runs on the system `python3` with
+    nothing of this repository importable — so the agreement is checked
+    here instead, environment by environment.
+    """
 
-    def test_the_environment_is_the_fallback(self) -> None:
-        self.assertEqual(agent_from([], {"CODEX_HOME": "/x/.codex"}), "codex")
-        self.assertEqual(agent_from([], {"CLAUDECODE": "1"}), "claude-code")
+    ENVS = (
+        {"HOME": "/home/u"},
+        {"HOME": "/home/u", "XDG_STATE_HOME": "/x/state"},
+        {"HOME": "/home/u", "XDG_STATE_HOME": "not/absolute"},
+        {"HOME": "/home/u", "BUDDY_CHATTER_SOCKET": "/tmp/explicit.sock"},
+    )
 
-    def test_knowing_nothing_says_nothing(self) -> None:
-        # Empty, not a guess: the server's default is a better answer
-        # than one invented here.
-        self.assertEqual(agent_from([], {"PATH": "/usr/bin"}), "")
+    def test_both_sides_agree(self) -> None:
+        for env in self.ENVS:
+            with self.subTest(env=env):
+                self.assertEqual(hook_socket_path(dict(env)), str(buddy_paths.socket_path(env)))
 
 
 class ClassifyTests(unittest.TestCase):
@@ -105,40 +141,23 @@ class ClassifyTests(unittest.TestCase):
 class WireFormatTests(unittest.TestCase):
     """What the hook sends must be what the server can read."""
 
-    def _round_trip(
-        self, payload: Mapping[str, Any], argv: Sequence[str], env: Mapping[str, str]
-    ) -> Event | None:
+    def _round_trip(self, payload: Mapping[str, Any]) -> Event | None:
         classified = classify(payload)
         assert classified is not None
         kind, detail = classified
         message: dict[str, str] = {"kind": kind, "detail": detail}
-        agent = agent_from(argv, env)
-        if agent:
-            message["agent"] = agent
         return parse_event(json.dumps(message, ensure_ascii=False).encode())
 
     def test_a_stop_event_survives_the_trip(self) -> None:
-        event = self._round_trip({"hook_event_name": "Stop"}, ["--agent", "claude-code"], {})
+        event = self._round_trip({"hook_event_name": "Stop"})
         assert event is not None
         self.assertEqual(event.kind, "stop")
-        self.assertEqual(event.agent, "claude-code")
 
-    def test_codex_names_itself_the_same_way(self) -> None:
-        event = self._round_trip(
-            {"hook_event_name": "UserPromptSubmit", "prompt": "デプロイして"},
-            ["--agent", "codex"],
-            {},
-        )
+    def test_a_prompt_survives_with_its_text(self) -> None:
+        event = self._round_trip({"hook_event_name": "UserPromptSubmit", "prompt": "デプロイして"})
         assert event is not None
         self.assertEqual(event.kind, "prompt")
         self.assertEqual(event.detail, "デプロイして")
-        self.assertEqual(event.agent, "codex")
-
-    def test_an_unflagged_hook_still_produces_a_usable_event(self) -> None:
-        event = self._round_trip({"hook_event_name": "Stop"}, [], {"PATH": "/usr/bin"})
-        assert event is not None
-        self.assertEqual(event.kind, "stop")
-        self.assertEqual(event.agent, "")
 
 
 if __name__ == "__main__":

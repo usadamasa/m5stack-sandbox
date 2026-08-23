@@ -8,104 +8,32 @@
   },
   "permissions": {
     "allow": [
-      "Bash(uv *)"
-    ]
-  },
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash|Task",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ${CLAUDE_PROJECT_DIR}/.agents/hooks/buddy_chatter_notify.py --agent claude-code",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ${CLAUDE_PROJECT_DIR}/.agents/hooks/buddy_chatter_notify.py --agent claude-code",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "PostToolUseFailure": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ${CLAUDE_PROJECT_DIR}/.agents/hooks/buddy_chatter_notify.py --agent claude-code",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "Notification": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ${CLAUDE_PROJECT_DIR}/.agents/hooks/buddy_chatter_notify.py --agent claude-code",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ${CLAUDE_PROJECT_DIR}/.agents/hooks/buddy_chatter_notify.py --agent claude-code",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ${CLAUDE_PROJECT_DIR}/.agents/hooks/buddy_chatter_notify.py --agent claude-code",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ${CLAUDE_PROJECT_DIR}/.agents/hooks/buddy_chatter_notify.py --agent claude-code",
-            "timeout": 5
-          }
-        ]
-      }
+      "Bash(uv *)",
+      "Bash(uvx *)",
+      "Bash(buddy-mcpd *)"
     ]
   },
   "sandbox": {
     "excludedCommands": [
-      "uv *"
+      "uv *",
+      "uvx *",
+      "buddy-mcpd *"
     ],
     "filesystem": {
       "allowWrite": [
         "/dev/cu.usbmodem*",
         "/dev/tty.usbmodem*",
-        "~/.cache/m5-onboard"
+        "~/.cache/m5-onboard",
+        "~/.local/state/buddy"
       ]
     },
     "network": {
       "allowedDomains": [
         "m5burner-api.m5stack.com",
         "m5burner.m5stack.com"
+      ],
+      "allowUnixSockets": [
+        "~/.local/state/buddy"
       ]
     }
   }

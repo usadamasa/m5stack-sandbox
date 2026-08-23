@@ -5,15 +5,6 @@ device through tool calls instead of shelling out. The link is held open
 across calls, which is what makes device-initiated traffic visible to
 `buddy_events` rather than being lost between invocations.
 
-### Claude Code and Codex
-
-Both drive this server, and every tool below is the same either way —
-the device does not care who asked. The one thing that differs is where
-the chatter's lines come from, and that is decided from the `initialize`
-handshake rather than from how the server was registered: see
-`buddy_agent`, and `_ClientProbe` at the bottom of the configuration
-section for the half of it that lives here.
-
 ### The open question this server answers
 
 Claude Code's sandbox is documented as covering the Bash tool and its
@@ -41,32 +32,32 @@ chatter only ever takes that lock when it is already free.
 `BUDDY_CHATTER=0` turns the chatter off. `BUDDY_CONNECT_ON_START=1` has
 the server open the port once as it starts, so that the muttering runs
 from the beginning of a session rather than from the first time somebody
-calls `buddy_connect`. Registered via `.mcp.json` at the repo root for
-Claude Code, and `[mcp_servers.buddy]` in the project-local
-`.codex/config.toml` for Codex — see `README.md`.
+calls `buddy_connect`. Registered via `.mcp.json` — see `README.md`.
 """
 
 from __future__ import annotations
 
+import argparse
 import contextlib
+import logging
 import os
+import signal
 import sys
 import termios
 import threading
 import time
-from collections.abc import Generator, Mapping
+from collections.abc import Generator, Mapping, Sequence
 from dataclasses import replace
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 # The server is launched by the agent from an arbitrary cwd, so make the
 # sibling module importable by absolute path rather than relying on the
 # working directory.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from mcp.server.context import CallNext, HandlerResult, ServerRequestContext
 from mcp.server.mcpserver import MCPServer
 
-from buddy_agent import AgentIdentity
+import buddy_paths
 from buddy_chatter import ChatterConfig, ChatterService
 from buddy_link import ResidentLink
 from buddy_text import DEFAULT_PACE
@@ -82,57 +73,36 @@ from buddy_verbs import (
 )
 from device_repl import ReplError
 
-DEFAULT_PORT = os.environ.get("BUDDY_PORT", "/dev/cu.usbmodem101")
+# The device node a Cardputer-Adv comes up as on macOS. Named as a
+# constant because `buddy-mcpd status` reports the resolved port too,
+# and two copies of this string would drift.
+FALLBACK_PORT = "/dev/cu.usbmodem101"
+DEFAULT_PORT = buddy_paths.environment().get("BUDDY_PORT") or FALLBACK_PORT
 
-# Who is driving. Written by `_ClientProbe` below from the handshake and
-# by the chatter from any hook datagram that names its sender; read by
-# the chatter to pick which model writes a line.
+# Where the resident daemon listens, and what `.mcp.json` is registered
+# against. The registration is a static URL, so this number is a
+# contract rather than a preference: changing it in `config.toml` means
+# changing the registration too. `buddy-mcpd status` prints the URL it
+# is actually serving, which is the place that discrepancy shows up.
+DEFAULT_HTTP_PORT = 8787
+HTTP_HOST = "127.0.0.1"
+HTTP_PATH = "/mcp"
+
+# How long uvicorn may wait for open connections before dropping them.
 #
-# Built at import because the middleware that writes it is a constructor
-# argument to the server. Only the fallback is read from the environment
-# here — the rest of the chatter's settings stay a lazy read, so that
-# rebuilding the service picks up a changed environment.
-_identity = AgentIdentity(ChatterConfig.from_env().agent)
-
-
-class _ClientProbe:
-    """Notes the peer's `clientInfo` as the handshake goes past.
-
-    A `ServerMiddleware` rather than a `Context` parameter on every
-    tool: the identity is a property of the connection, so it should be
-    read once where the connection is established instead of being
-    re-derived at each call — and threading a context argument through
-    fourteen tool signatures to answer one question is a poor trade.
-
-    Observation only. It never rewrites the context and never fails a
-    request: which model writes the muttering is not worth breaking a
-    handshake over, so anything unexpected in the params is swallowed
-    and the default backend applies.
-    """
-
-    def __init__(self, identity: AgentIdentity) -> None:
-        self._identity = identity
-
-    async def __call__(
-        self,
-        ctx: ServerRequestContext[Any, Any],
-        call_next: CallNext,
-    ) -> HandlerResult:
-        if ctx.method == "initialize":
-            with contextlib.suppress(Exception):
-                params: Mapping[str, Any] = ctx.params or {}
-                info = params.get("clientInfo")
-                if isinstance(info, Mapping):
-                    name = cast("Mapping[str, Any]", info).get("name")
-                    if isinstance(name, str):
-                        self._identity.observe(name)
-        return await call_next(ctx)
-
+# It has to be bounded. `Server._wait_tasks_to_complete` finishes with
+# `await server.wait_closed()`, which has no escape for `force_exit` —
+# so a stop that lands while a request is in flight waits on a client
+# that may never come back. The supervisor then SIGKILLs the daemon, and
+# nothing in this process gets to release the serial port or the socket.
+#
+# Must leave room inside `buddy_mcpd.TERM_GRACE` for `_shutdown` (~1s),
+# or the bound buys nothing.
+SHUTDOWN_TIMEOUT = 3
 
 server = MCPServer(
     name="buddy",
     version="0.1.0",
-    middleware=[_ClientProbe(_identity)],
     instructions=(
         "Talks to an M5Stack Cardputer-Adv running the Claude Buddy app over "
         "USB serial. Call probe_serial first on a new machine or after a "
@@ -194,15 +164,24 @@ def _live_link() -> ResidentLink | None:
 _startup_connect: dict[str, Any] | None = None
 
 
-def _connect_on_start_wanted(env: Mapping[str, str]) -> bool:
+def _connect_on_start_wanted(env: Mapping[str, str], *, default: bool = False) -> bool:
     """Whether the server should take the port as it starts.
 
-    Off unless asked for. A server that grabs the port by default would
-    be a surprise to `buddy_deploy.py`, which needs it free, and this
-    repo turns it on where that is understood — in `.mcp.json` and
-    `.codex/config.toml`.
+    The default depends on what kind of process this is, which is why
+    it is a parameter. A server spawned by one agent over stdio is a
+    guest and leaves the port alone until asked — grabbing it would
+    surprise `buddy_deploy.py`, which needs it free. The resident daemon
+    is the opposite: holding the port is the whole reason it exists, and
+    one that waited to be asked would leave the device silent until some
+    session happened to call `buddy_connect`.
+
+    Either way `BUDDY_CONNECT_ON_START` (or `connect_on_start` in
+    `config.toml`) has the last word.
     """
-    return env.get("BUDDY_CONNECT_ON_START", "") in ("1", "true", "yes")
+    raw = env.get("BUDDY_CONNECT_ON_START", "")
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes")
 
 
 def _connect_on_start(port: str | None = None) -> dict[str, Any]:
@@ -224,17 +203,21 @@ def _connect_on_start(port: str | None = None) -> dict[str, Any]:
     try:
         with _device(port) as link:
             _startup_connect = {"ok": True, "port": link.port}
+            log.info("port opened: %s", link.port)
     except Exception as exc:
         _startup_connect = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        # Warning rather than error: the daemon is still useful without
+        # the device, and the board being unplugged is an ordinary state
+        # rather than a fault. But it belongs in the log — otherwise the
+        # only way to learn the port was never opened is to ask a tool.
+        log.warning("port not opened: %s", _startup_connect["error"])
     return _startup_connect
 
 
 def _chatter_service() -> ChatterService:
     global _chatter
     if _chatter is None:
-        _chatter = ChatterService(
-            ChatterConfig.from_env(), _live_link, _device_lock, identity=_identity
-        )
+        _chatter = ChatterService(ChatterConfig.from_env(), _live_link, _device_lock)
     return _chatter
 
 
@@ -597,10 +580,7 @@ def buddy_chatter_start(
     if overrides:
         cfg = replace(service.cfg, **overrides)
         service.stop()
-        # The same identity object, not a fresh one: retuning the pacing
-        # must not forget who is connected — there is no second
-        # handshake to learn it again from.
-        _chatter = service = ChatterService(cfg, _live_link, _device_lock, identity=_identity)
+        _chatter = service = ChatterService(cfg, _live_link, _device_lock)
     service.start()
     return service.status()
 
@@ -635,13 +615,205 @@ def buddy_chatter_status() -> dict[str, Any]:
     return status
 
 
-if __name__ == "__main__":
+# ----- logging
+#
+# The daemon writes to a file nobody is watching, appended to across
+# restarts. Two things follow. Every line needs a timestamp, or a line
+# cannot be attributed to a run — and "when did it stop" is the first
+# question ever asked of this file. And each run has to say what it is,
+# because `Started server process [19259]` on its own does not say which
+# device or which transport.
+
+LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
+
+log = logging.getLogger("buddy.mcp")
+
+
+def configure_logging() -> None:
+    """Put a timestamp on every line, uvicorn's included.
+
+    uvicorn's own default is `INFO:     message` with no date, and
+    `run_streamable_http_async` gives no way to pass a `log_config`
+    through — so the shipped config dict is edited in place before the
+    server is built. Idempotent, because prefixing twice is worse than
+    not prefixing at all.
+
+    `basicConfig` covers everything that is not uvicorn: the MCP SDK
+    logs session lifecycle at INFO through the root logger, and those
+    lines want the same treatment. `force=True` because `basicConfig` is
+    a no-op once the root logger has any handler at all, and by the time
+    this runs something usually has installed one — which is how the
+    first attempt shipped with uvicorn's lines timestamped and every
+    other line bare.
+    """
+    from uvicorn.config import LOGGING_CONFIG
+
+    logging.basicConfig(format=LOG_FORMAT, datefmt=LOG_DATEFMT, level=logging.INFO, force=True)
+    formatters = cast("dict[str, dict[str, Any]]", LOGGING_CONFIG["formatters"])
+    for spec in formatters.values():
+        fmt = str(spec["fmt"])
+        if "%(asctime)s" not in fmt:
+            spec["fmt"] = f"%(asctime)s {fmt}"
+        spec["datefmt"] = LOG_DATEFMT
+
+
+# ----- entry point
+
+
+Transport = Literal["stdio", "streamable-http"]
+
+
+def transport_options(
+    argv: Sequence[str], env: Mapping[str, str]
+) -> tuple[Transport, dict[str, Any]]:
+    """Which transport to listen on, and how.
+
+    Split out from `main` so it can be read without starting anything.
+
+    `stdio` stays the default: an agent that spawns this process owns
+    it, and there is one client by construction. `--http` is what the
+    resident daemon asks for, and is the only way more than one session
+    can share one serial port.
+
+    Stateless on purpose. Streamable HTTP would otherwise keep a session
+    id on the server, and restarting the daemon — the thing this whole
+    arrangement exists to make cheap — would 404 every client that was
+    already connected.
+    """
+    parser = argparse.ArgumentParser(prog="buddy-mcp", description=__doc__)
+    parser.add_argument(
+        "--http", action="store_true", help="listen on streamable HTTP instead of stdio"
+    )
+    parser.add_argument("--port", type=int, default=None, help="HTTP port (default 8787)")
+    args = parser.parse_args(list(argv))
+    if not args.http:
+        return "stdio", {}
+    port = args.port if args.port is not None else http_port(env)
+    return "streamable-http", {
+        "host": HTTP_HOST,
+        "port": port,
+        "stateless_http": True,
+    }
+
+
+def serve_http(options: Mapping[str, Any]) -> None:
+    """Serve over streamable HTTP, with a bounded graceful shutdown.
+
+    Assembled here rather than through `server.run("streamable-http")`
+    because that path builds its own `uvicorn.Config` from host, port
+    and log level alone — `timeout_graceful_shutdown` cannot be reached
+    through it, and without it a stop can hang indefinitely on a single
+    in-flight request. See `SHUTDOWN_TIMEOUT`.
+    """
+    import uvicorn
+
+    app = server.streamable_http_app(
+        streamable_http_path=HTTP_PATH,
+        stateless_http=bool(options["stateless_http"]),
+        host=str(options["host"]),
+    )
+    config = uvicorn.Config(
+        app,
+        host=str(options["host"]),
+        port=int(options["port"]),
+        log_level=server.settings.log_level.lower(),
+        timeout_graceful_shutdown=SHUTDOWN_TIMEOUT,
+    )
+    uvicorn.Server(config).run()
+
+
+def http_port(env: Mapping[str, str]) -> int:
+    """The configured port, or the agreed default.
+
+    Unparseable falls back rather than raising: the registration that
+    reaches this server is a static URL on the default port, so a daemon
+    that refused to start over a typo would take the whole thing down
+    for a setting nobody meant to change.
+    """
+    try:
+        return int(env.get("BUDDY_HTTP_PORT", ""))
+    except ValueError:
+        return DEFAULT_HTTP_PORT
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the server. The console script `buddy-mcp` lands here."""
+    env = buddy_paths.environment()
+    transport, options = transport_options(sys.argv[1:] if argv is None else argv, env)
+    configure_logging()
+    # The header of this run in the appended-to log: which transport,
+    # where it listens, and which device it will reach for.
+    where = f" on {HTTP_HOST}:{options['port']}" if transport != "stdio" else ""
+    log.info("starting: transport=%s%s device=%s", transport, where, DEFAULT_PORT)
     # Started here rather than at import: importing this module must not
     # bind a socket or spawn threads, or the tests (and any tooling that
     # merely inspects the server) would race a live one.
     _chatter_service().start()
-    if _connect_on_start_wanted(os.environ):
+    if _connect_on_start_wanted(env, default=transport == "streamable-http"):
         # On a thread: opening the port is a reader plus a handshake,
         # and the agent's `initialize` should not wait behind it.
         threading.Thread(target=_connect_on_start, name="buddy-connect", daemon=True).start()
-    server.run("stdio")
+    install_shutdown_handlers()
+    try:
+        if transport == "stdio":
+            server.run("stdio")
+        else:
+            serve_http(options)
+    finally:
+        _shutdown()
+        log.info("stopped")
+    return 0
+
+
+def _shutdown() -> None:
+    """Let go of the socket and the port. Never raises, safe to repeat.
+
+    Without this a stop left the datagram socket behind, which made
+    `buddy-mcpd stop` indistinguishable from a daemon that was killed.
+
+    The port matters more than the socket: the next thing to want it is
+    usually `buddy_deploy.py`, and `buddy-mcpd stop` exists precisely to
+    hand it over.
+    """
+    if _chatter is not None:
+        with contextlib.suppress(Exception):
+            _chatter.stop()
+    with contextlib.suppress(Exception):
+        buddy_disconnect()
+
+
+def shutdown_on_signal(signum: int, _frame: object = None) -> None:
+    """Clean up, then die the way the sender asked.
+
+    Restoring the default and re-raising rather than exiting: the exit
+    status a supervisor sees should say "terminated by SIGTERM", not
+    "returned 0". `_shutdown` is safe to run twice, which matters
+    because `main`'s `finally` may also reach it.
+    """
+    _shutdown()
+    signal.signal(signum, signal.SIG_DFL)
+    signal.raise_signal(signum)
+
+
+def install_shutdown_handlers() -> None:
+    """Own SIGTERM and SIGINT before uvicorn borrows them.
+
+    uvicorn captures both for the length of `serve()`, and on the way
+    out restores whatever was installed beforehand and re-raises what it
+    caught — so that the process exits the way the sender asked. The
+    default action for SIGTERM is to die on the spot, which is why
+    `main`'s `finally` never ran and a cleanly stopped daemon still left
+    its socket behind. Installing these first means the handler uvicorn
+    restores is this one.
+
+    The lifespan shutdown is not a substitute: uvicorn skips it entirely
+    when `force_exit` is set, which is exactly the case
+    `buddy-mcpd stop` reaches when a session is still attached.
+    """
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, shutdown_on_signal)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

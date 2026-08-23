@@ -1,16 +1,15 @@
 # m5stack-sandbox
 
-M5Stack Cardputer-Adv をコーディングエージェントから操作するための実験リポジトリ。
-Claude Code と Codex の両方から同じように使える。
+M5Stack Cardputer-Adv を Claude Code から操作するための実験リポジトリ。
 
 Claude Buddy の BLE transport を USB シリアルに差し替えて、エージェントから直接デバイスと
-通信する。
+通信する。デバイスに繋がるのは常駐 daemon 1 つで、セッションはそこへ HTTP でぶら下がる。
 
 ## 何が動くか
 
 ```
-Claude Code / Codex ──MCP / CLI──> host/link ──USB CDC──> Cardputer-Adv
-                                                            └ apps/claude_buddy.py + buddy/serial.py
+Claude Code ──HTTP──> buddy-mcpd (常駐) ──> host/link ──USB CDC──> Cardputer-Adv
+  (複数セッション)                                                      └ apps/claude_buddy.py + buddy/serial.py
 ```
 
 - `status` / `name` / `owner` のラウンドトリップと、デバイス発の `hello` の受信
@@ -44,7 +43,7 @@ uv workspace の 4 member。`device/` はデバイスの `/flash/` へ流し込�
 `host/` はホスト側の link / MCP server / ツール類。protocol・UI・永続状態のレイヤは
 upstream のものが既にデバイスに入っており、本リポジトリでは触らない。
 
-member とファイルの一覧は [AGENTS.md](AGENTS.md#構成) にある。
+member とファイルの一覧は [CLAUDE.md](CLAUDE.md#構成) にある。
 
 ## overlay とは
 
@@ -81,7 +80,7 @@ member とファイルの一覧は [AGENTS.md](AGENTS.md#構成) にある。
 - **消すものにも理由が要る。** 消せば upstream の控えは `vendor/` にしか無くなる。
   だから `buddy_deploy.py` は消す前に必ず退避する
 
-転送で守ることは [buddy-deploy skill](.agents/skills/buddy-deploy/SKILL.md) にある。
+転送で守ることは [buddy-deploy skill](skills/buddy-deploy/SKILL.md) にある。
 
 ## セットアップ
 
@@ -213,9 +212,9 @@ host が流すのは `json.dumps` の出力だけで、制御文字は `\uXXXX` 
 
 ### MCP 経由
 
-Claude Code は `.mcp.json`、Codex は `.codex/config.toml` を読む。どちらも
-`.agents/bin/buddy-mcp` から同じ MCP server を起動する。設定を変えた後は
-セッションを再起動する。
+MCP server は常駐 daemon で、セッションは `http://127.0.0.1:8787/mcp` へ繋ぐ。
+起こし方は「[常駐 daemon を起こす](#常駐-daemon-を起こす)」にある。ホスト側のコードを
+直したら `buddy-mcpd restart` だけでよく、セッションの再起動は要らない。
 
 | tool | 用途 |
 | --- | --- |
@@ -242,26 +241,87 @@ Claude Code は `.mcp.json`、Codex は `.codex/config.toml` を読む。どち�
 `ResidentLink` がバックグラウンドスレッドでポートを読み続けるため、ツール呼び出しの合間に
 届いたメッセージも `buddy_events` で回収できる。
 
-### Claude Code / Codex 共通で使う
+### 常駐 daemon を起こす
 
-エージェント向けの指示・スキル・hook 実装の正本はリポジトリ内にある。
-ユーザーの home 配下に設定をコピーしたり、checkout ごとに絶対パスを
-書き換えたりする必要はない。
+デバイスに触るには daemon が要る。`uv tool` で入れて、CLI で起こす。
 
-| 正本 | Codex | Claude Code |
-| --- | --- | --- |
-| `AGENTS.md` | 直接読み込む | `CLAUDE.md` シンボリック経由 |
-| `.agents/skills/` | 直接検出する | `.claude/skills` シンボリック経由 |
-| `.agents/hooks/` | `.codex/hooks.json` から起動 | `.claude/settings.json` から起動 |
-| `.agents/bin/buddy-mcp` | `.codex/config.toml` から起動 | `.mcp.json` から起動 |
+```bash
+uv tool install --force --editable ./host/mcp   # buddy-mcp / buddy-mcpd が入る
+buddy-mcpd start
+buddy-mcpd status                    # pid・serve している URL・log の場所
+```
 
-Codex ではこの project を trust し、最初の一度だけ `/hooks` で project-local
-hook を確認して trust する。`/mcp` で `buddy` が表示されれば MCP 設定も
-読み込まれている。スキルは `/skills` から確認できる。
+`--editable` を落とさないこと。これが無いと入るのはその時点のコピーで、`host/` を
+直しても `restart` では反映されず毎回入れ直すことになる。
 
-MCP server も chatter も中身は共通で、違うのは製品ごとの登録形式と
-台詞を書く LLM だけ。hook は同じ `buddy_chatter_notify.py` を呼び、
-`--agent claude-code` / `--agent codex` で接続元を渡す。
+| コマンド | |
+| --- | --- |
+| `buddy-mcpd start` | 起こす。ポートを掴み、chatter が動き出す |
+| `buddy-mcpd stop` | 止めてポートを解放する。`buddy_deploy.py` や `esptool` の前に |
+| `buddy-mcpd restart` | ホスト側のコードを直したときはこれだけ |
+| `buddy-mcpd status` | 動いているか、どの URL とどのシリアルポートを見ているか |
+
+daemon の出力は `~/.local/state/buddy/buddy-mcpd.log` に落ちる。起きなかったときは
+まずここを読む。
+
+**1 プロセスだけがポートを掴む。** 複数セッションが同時に繋がっても、デバイスに
+触るのはこの daemon 1 つ。chatter も 1 つで、どのセッションの hook で撃たれても
+同じ口が喋る。
+
+**設定は `~/.config/buddy/config.toml`。** キーは `BUDDY_*` 環境変数へそのまま写り、
+優先順位は 環境変数 > config.toml > 既定値。
+
+```toml
+port = "/dev/cu.usbmodem101"
+connect_on_start = true
+
+[chatter]
+model = "sonnet"
+```
+
+HTTP のポートは `127.0.0.1:8787` に固定してある。`mcp-servers.json` が静的な URL を
+持つので、`http_port` を変えたら登録側も直す。ずれは `buddy-mcpd status` の `url` に出る。
+
+### plugin として使う
+
+このリポジトリのルートが Claude Code plugin のルートを兼ねる。skill・chatter の hook・
+MCP の登録が plugin として付いてくるので、他のプロジェクトからも同じ daemon を使える。
+
+```bash
+# 他のプロジェクトから使う
+/plugin marketplace add usadamasa/m5stack-sandbox
+/plugin install buddy@buddy
+
+# このリポジトリで開発するとき
+claude --plugin-dir .
+```
+
+marketplace 経由で入れた plugin はキャッシュへコピーされるため、working tree の編集は
+届かない。**このリポジトリを触るときは `--plugin-dir .` で起動する。**
+
+daemon の実体は plugin には入っていない。plugin が持つのは skill と hook と HTTP 登録
+だけで、デバイスに繋ぐのは checkout 側で `uv tool install` した `buddy-mcpd`。
+
+**chatter を動かすには sandbox の許可が要る。** hook が書く socket は
+`~/.local/state/buddy/chatter.sock` にあり、許可が無いと `sendto` が EPERM で落ちる。
+hook は失敗しても黙って exit 0 するので、**気づけるのは「独り言を言わない」ことだけ**。
+plugin は sandbox 設定を配れないため、入れる側の `.claude/settings.json`
+(または `~/.claude/settings.json`) に足す。
+
+```json
+{
+  "sandbox": {
+    "network": { "allowUnixSockets": ["~/.local/state/buddy"] },
+    "filesystem": { "allowWrite": ["~/.local/state/buddy"] }
+  }
+}
+```
+
+AF_UNIX への接続は Seatbelt では network の operation なので、`allowUnixSockets` の方が
+本命。`allowWrite` は daemon 側が pid・log・socket を書くために要る。
+
+`/mcp` に `buddy` が 1 つだけ出れば繋がっている。skill は `/skills` から確認できる。
+plugin 経由なので tool 名は `mcp__plugin_buddy_buddy__*` になる。
 
 ### 作業中に喋らせる (chatter)
 
@@ -269,29 +329,27 @@ MCP server も chatter も中身は共通で、違うのは製品ごとの登録
 音声経路を「思い出したときに呼ぶ」から「常時使われる」に変えるのが目的。
 
 ```
-Claude Code / Codex hooks ─datagram─> tmp/buddy-chatter.sock ─> MCP server の worker thread
-                                                                  └─ 台詞を生成してキャッシュ
-                                                                  └─ ResidentLink で発話
+Claude Code hooks ─datagram─> ~/.local/state/buddy/chatter.sock ─> daemon の worker thread
+                                                                     └─ 台詞を生成してキャッシュ
+                                                                     └─ ResidentLink で発話
 ```
 
-**タスクを一切ブロックしない。** hook は `.agents/hooks/buddy_chatter_notify.py` が
+**タスクを一切ブロックしない。** hook は `scripts/buddy_chatter_notify.py` が
 datagram を 1 発投げて終わり (約 40ms、listener が居なくても exit 0)。合成と再生は
-MCP server 側のスレッドが自分の時間でやる。そのスレッドはデバイスのロックを
+daemon 側のスレッドが自分の時間でやる。そのスレッドはデバイスのロックを
 `blocking=False` でしか取らないので、本物のツール呼び出しを待たせることが無い。
 
-**台詞を書くモデルは接続元で決まる。** Claude Code なら `claude -p`、Codex なら
-`codex exec`。どちらもそのエージェント自身の CLI を 1 ターン起動する。組み合わせは固定で、
-2×2 は用意していない — それぞれのマシンが既に持っている認証をそのまま使うのが狙いで、
-交差させるとどちらにも無い認証情報が要る。
+**台詞は `claude -p` が書く。** API クライアントではなく CLI を 1 ターン起動する。
+CLI はその機械に確実に入っていてログイン済みの唯一のもので、モデルも認証もユーザーの
+設定をそのまま継承できる。
 
 起動するターンは道具を持たない。`--safe-mode` で hook も MCP server も skill も
 CLAUDE.md も読み込まず、`--tools ""` で構造化出力以外を落とし、cwd は空の一時ディレクトリ。
 hook を読み込ませないのが特に効く — このリポジトリの hook は chatter へ datagram を投げるので、
 読み込むと chatter が自分の生成から生成することになる。
 
-判定は接続してきた側から取る。MCP の `initialize` が運ぶ `clientInfo.name` と、hook が
-datagram に乗せる `--agent` の両方を見る。デプロイ時にどちらかへ固定はしない。
-今どちらで動いているかは `buddy_chatter_status` の `agent` / `backend` に出る。
+**chatter は daemon に 1 つ。** どのセッションの hook で撃たれても同じ chatter が反応する。
+複数セッションが同時に繋がっていても、喋る口は 1 つしかない。
 
 **間隔は毎回引き直し、セッションの忙しさで動く。** 固定間隔はメトロノームに聞こえて数分で
 気に障るため。さらに、hook イベントの流量を見て、大きく動いている間は間隔の短いほうから、
@@ -301,10 +359,10 @@ datagram に乗せる `--agent` の両方を見る。デプロイ時にどちら
 リンクが上がるまでは何も喋らない。chatter が自分からポートを開けることは無い
 (`buddy_deploy.py` や `esptool` のため)。
 
-**このリポジトリでは、セッションを始めた時点でリンクが上がる。** `.mcp.json` と
-`.codex/config.toml` が `BUDDY_CONNECT_ON_START=1` を渡していて、MCP server は起動直後に
-一度だけポートを開く。デバイスは電源が入っていればアプリまで自分で立ち上がる
-(`device/main.py`) ので、これだけで最初のツール呼び出しから独り言が始まる。
+**daemon が上がった時点でリンクも上がる。** ポートを保持するのが daemon の存在理由なので、
+起動直後に一度だけポートを開く (`config.toml` の `connect_on_start = false` で切れる)。
+デバイスは電源が入っていればアプリまで自分で立ち上がる (`device/main.py`) ので、これだけで
+`buddy-mcpd start` の直後から独り言が始まる。
 
 試行は一度きりで、失敗しても再試行しない。`buddy_disconnect` がポートの所有権について
 最後の一言であり続けるため — deploy の前に手放したポートを、あとから勝手に取り返す経路は
@@ -319,18 +377,18 @@ effort="high")` で、次のバッチから効く。既定は `sonnet` と `low`
 `buddy_chatter_status` の `model` / `effort` に出る。
 
 間隔・音量の頻度・無効化といった調整は環境変数と `buddy_chatter_start` で行う。一覧は
-`.agents/skills/buddy-chatter/SKILL.md` にある。
+`skills/buddy-chatter/SKILL.md` にある。
 
-MCP server はセッション開始時にホストのコードを import 済みなので、`buddy_chatter.py` を
-直しても走っているサーバには届かない。単体プロセスで動かす口がある。
+daemon は起動時にホストのコードを import 済みなので、`buddy_chatter.py` を直しても
+走っている daemon には届かない。`buddy-mcpd restart` で拾わせる。
+
+切り分けのために単体プロセスで動かす口もある。こちらはポートを自分で掴むので、
+**先に `buddy-mcpd stop`。**
 
 ```bash
 uv run python host/mcp/src/buddy_chatter.py --port $PORT --once   # 1 行喋って終わる
 uv run python host/mcp/src/buddy_chatter.py --port $PORT          # 常駐する
 ```
-
-こちらはポートを自分で掴む。**先に `buddy_disconnect` を呼ぶこと。** 走っている間は MCP の
-`buddy_*` からデバイスに触れない。
 
 ## 品質チェック
 

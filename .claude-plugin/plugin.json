@@ -1,0 +1,15 @@
+{
+  "name": "buddy",
+  "displayName": "Claude Buddy",
+  "version": "0.1.0",
+  "description": "M5Stack Cardputer-Adv を USB シリアル経由で操作する。常駐 daemon (buddy-mcpd) に HTTP で繋ぐ MCP tool、作業中に独り言を言う chatter の hook、デバイス側を触るための skill 一式。",
+  "author": {
+    "name": "usadamasa",
+    "url": "https://github.com/usadamasa"
+  },
+  "repository": "https://github.com/usadamasa/m5stack-sandbox",
+  "license": "Apache-2.0",
+  "keywords": ["m5stack", "micropython", "serial", "voicevox"],
+  "mcpServers": "./mcp-servers.json",
+  "hooks": "./hooks/hooks.json"
+}
