@@ -10,13 +10,14 @@ every tool holds the device lock for the whole of its exchange, and the
 chatter's link provider never opens a port of its own.
 """
 
+import logging
 import os
 import signal
 import unittest
 from collections.abc import Callable
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 from unittest import mock
 
 import buddy_mcp
@@ -546,6 +547,76 @@ class ShutdownTest(_McpTestCase):
         ):
             buddy_mcp.main([])
         self.assertFalse(buddy_mcp._chatter_service().running)
+
+
+class LoggingTest(unittest.TestCase):
+    """The daemon's log is the only account of what happened while
+    nobody was attached, and it is appended to across restarts. Without
+    a timestamp on every line there is no way to tell which run a line
+    belongs to — and the first question asked of it is always "when did
+    it stop".
+    """
+
+    def setUp(self) -> None:
+        from uvicorn.config import LOGGING_CONFIG
+
+        self.formatters = cast("dict[str, dict[str, Any]]", LOGGING_CONFIG["formatters"])
+        original = {name: dict(spec) for name, spec in self.formatters.items()}
+        self.addCleanup(self.formatters.update, original)
+
+    def test_every_uvicorn_formatter_gets_a_timestamp(self) -> None:
+        buddy_mcp.configure_logging()
+        for name, spec in self.formatters.items():
+            with self.subTest(formatter=name):
+                self.assertTrue(spec["fmt"].startswith("%(asctime)s "))
+                self.assertEqual(spec["datefmt"], buddy_mcp.LOG_DATEFMT)
+
+    def test_configuring_twice_does_not_stack_timestamps(self) -> None:
+        # `buddy-mcpd restart` re-runs this in a fresh process, but a
+        # test run — or any future caller — should not be able to end up
+        # with two of them.
+        buddy_mcp.configure_logging()
+        buddy_mcp.configure_logging()
+        for name, spec in self.formatters.items():
+            with self.subTest(formatter=name):
+                self.assertEqual(spec["fmt"].count("%(asctime)s"), 1)
+
+    def test_the_root_handler_is_replaced_not_skipped(self) -> None:
+        # `basicConfig` is a no-op when the root logger already has a
+        # handler, and by the time this runs something has usually
+        # installed one. Without `force` the daemon's own lines and the
+        # MCP SDK's session-lifecycle lines come out bare while
+        # uvicorn's are timestamped — which is exactly what shipped.
+        root = logging.getLogger()
+        original = list(root.handlers)
+
+        def restore() -> None:
+            root.handlers[:] = original
+
+        self.addCleanup(restore)
+        root.handlers[:] = [logging.NullHandler()]
+        buddy_mcp.configure_logging()
+        formats = [
+            h.formatter._fmt  # pyright: ignore[reportPrivateUsage]
+            for h in root.handlers
+            if h.formatter is not None
+        ]
+        self.assertIn(buddy_mcp.LOG_FORMAT, formats)
+
+    def test_the_run_announces_itself(self) -> None:
+        # Which device and which transport, at the top of every run:
+        # the log is appended to, so a line without that context cannot
+        # be attributed to a run at all.
+        with (
+            mock.patch.object(buddy_mcp.server, "run"),
+            mock.patch.object(buddy_mcp, "_connect_on_start_wanted", return_value=False),
+            mock.patch.object(buddy_mcp, "_shutdown"),
+            self.assertLogs("buddy", level="INFO") as caught,
+        ):
+            buddy_mcp.main([])
+        self.assertTrue(any("starting" in line for line in caught.output), caught.output)
+        self.assertTrue(any(buddy_mcp.DEFAULT_PORT in line for line in caught.output))
+        self.assertTrue(any("stopped" in line for line in caught.output), caught.output)
 
 
 class TransportTest(unittest.TestCase):

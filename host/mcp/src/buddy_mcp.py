@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import logging
 import os
 import signal
 import sys
@@ -47,7 +48,7 @@ import threading
 import time
 from collections.abc import Generator, Mapping, Sequence
 from dataclasses import replace
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 # The server is launched by the agent from an arbitrary cwd, so make the
 # sibling module importable by absolute path rather than relying on the
@@ -189,8 +190,14 @@ def _connect_on_start(port: str | None = None) -> dict[str, Any]:
     try:
         with _device(port) as link:
             _startup_connect = {"ok": True, "port": link.port}
+            log.info("port opened: %s", link.port)
     except Exception as exc:
         _startup_connect = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        # Warning rather than error: the daemon is still useful without
+        # the device, and the board being unplugged is an ordinary state
+        # rather than a fault. But it belongs in the log — otherwise the
+        # only way to learn the port was never opened is to ask a tool.
+        log.warning("port not opened: %s", _startup_connect["error"])
     return _startup_connect
 
 
@@ -595,6 +602,49 @@ def buddy_chatter_status() -> dict[str, Any]:
     return status
 
 
+# ----- logging
+#
+# The daemon writes to a file nobody is watching, appended to across
+# restarts. Two things follow. Every line needs a timestamp, or a line
+# cannot be attributed to a run — and "when did it stop" is the first
+# question ever asked of this file. And each run has to say what it is,
+# because `Started server process [19259]` on its own does not say which
+# device or which transport.
+
+LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
+
+log = logging.getLogger("buddy.mcp")
+
+
+def configure_logging() -> None:
+    """Put a timestamp on every line, uvicorn's included.
+
+    uvicorn's own default is `INFO:     message` with no date, and
+    `run_streamable_http_async` gives no way to pass a `log_config`
+    through — so the shipped config dict is edited in place before the
+    server is built. Idempotent, because prefixing twice is worse than
+    not prefixing at all.
+
+    `basicConfig` covers everything that is not uvicorn: the MCP SDK
+    logs session lifecycle at INFO through the root logger, and those
+    lines want the same treatment. `force=True` because `basicConfig` is
+    a no-op once the root logger has any handler at all, and by the time
+    this runs something usually has installed one — which is how the
+    first attempt shipped with uvicorn's lines timestamped and every
+    other line bare.
+    """
+    from uvicorn.config import LOGGING_CONFIG
+
+    logging.basicConfig(format=LOG_FORMAT, datefmt=LOG_DATEFMT, level=logging.INFO, force=True)
+    formatters = cast("dict[str, dict[str, Any]]", LOGGING_CONFIG["formatters"])
+    for spec in formatters.values():
+        fmt = str(spec["fmt"])
+        if "%(asctime)s" not in fmt:
+            spec["fmt"] = f"%(asctime)s {fmt}"
+        spec["datefmt"] = LOG_DATEFMT
+
+
 # ----- entry point
 
 
@@ -652,6 +702,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run the server. The console script `buddy-mcp` lands here."""
     env = buddy_paths.environment()
     transport, options = transport_options(sys.argv[1:] if argv is None else argv, env)
+    configure_logging()
+    # The header of this run in the appended-to log: which transport,
+    # where it listens, and which device it will reach for.
+    where = f" on {HTTP_HOST}:{options['port']}" if transport != "stdio" else ""
+    log.info("starting: transport=%s%s device=%s", transport, where, DEFAULT_PORT)
     # Started here rather than at import: importing this module must not
     # bind a socket or spawn threads, or the tests (and any tooling that
     # merely inspects the server) would race a live one.
@@ -665,6 +720,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         server.run(transport, **options)
     finally:
         _shutdown()
+        log.info("stopped")
     return 0
 
 
