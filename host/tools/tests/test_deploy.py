@@ -28,6 +28,30 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from buddy_deploy import (
+    engine_url,
+    main,
+    verify_by_speech,
+)
+from buddy_link import DEFAULT_READ_TIMEOUT, LAUNCH_SOURCE
+from buddy_wire import SENTINEL, Message, encode
+from deploy_build import (
+    build_overlay,
+    check_launcher,
+    compile_source,
+    mpy_abi_of,
+    mpy_cross_abi,
+)
+from deploy_device import (
+    device_mpy_abi,
+    find_shadows,
+    install_launcher,
+    prune,
+    prune_stale,
+    push_file,
+    push_jobs,
+    stage_upstream,
+)
+from deploy_spec import (
     DEST_ROOT,
     LAUNCHER,
     MPY_CROSS_ABI,
@@ -42,25 +66,7 @@ from buddy_deploy import (
     DeployError,
     DeployTimeout,
     Job,
-    build_overlay,
-    check_launcher,
-    compile_source,
-    device_mpy_abi,
-    engine_url,
-    find_shadows,
-    install_launcher,
-    main,
-    mpy_abi_of,
-    mpy_cross_abi,
-    prune,
-    prune_stale,
-    push_file,
-    push_jobs,
-    stage_upstream,
-    verify_by_speech,
 )
-from buddy_link import DEFAULT_READ_TIMEOUT, LAUNCH_SOURCE
-from buddy_wire import SENTINEL, Message, encode
 from device_repl import ReplError
 from fake_repl import FakePort, FakeRepl
 
