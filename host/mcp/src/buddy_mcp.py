@@ -547,7 +547,10 @@ def buddy_chatter_start(
 
     Nothing is said until a link is up (`buddy_start_app` or
     `buddy_connect`); the chatter never opens the port itself, so that
-    `buddy_deploy.py` and `esptool` can still have it.
+    `buddy_deploy.py` and `esptool` can still have it. With
+    `BUDDY_CONNECT_ON_START=1` the server has already made one such
+    opening on its own behalf as it started, which is why a session
+    normally arrives here with a link already up.
 
     Each interval is drawn fresh from `gap_min`..`gap_max` seconds rather
     than being fixed, because a metronome is what makes this annoying.
