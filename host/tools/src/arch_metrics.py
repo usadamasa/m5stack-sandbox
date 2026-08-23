@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -37,6 +36,7 @@ from arch_analysis import (
     is_test,
     module_edges,
 )
+from repo_files import git_ls_files
 
 # 表に出すモジュールの数。全部出すと読まなくなる。
 DEFAULT_TOP = 15
@@ -166,16 +166,6 @@ def as_json(
         "cycles": dict(cycles),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
-
-
-def git_ls_files(root: Path) -> list[Path]:
-    result = subprocess.run(
-        ["git", "-C", str(root), "ls-files", "-z", "--", "*.py"],
-        capture_output=True,
-        check=True,
-        text=True,
-    )
-    return [root / name for name in result.stdout.split("\0") if name]
 
 
 def main(argv: Sequence[str] | None = None, *, list_files: ListFiles = git_ls_files) -> int:
