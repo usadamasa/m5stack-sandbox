@@ -131,7 +131,12 @@ def _open_https(url: str | urllib.request.Request, timeout: float = 30.0) -> HTT
             "  - any platform: pip install --user certifi\n"
             "Refusing to fetch firmware over an unverified connection."
         ) from e
-    ctx = ssl.create_default_context(cafile=certifi.where())
+    # Untyped for the checker for the same reason the import is
+    # ignored above: certifi is an optional runtime fallback and is not
+    # a declared dependency, so there are no stubs to resolve.
+    ctx = ssl.create_default_context(
+        cafile=certifi.where()  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+    )
     return urllib.request.urlopen(url, timeout=timeout, context=ctx)
 
 

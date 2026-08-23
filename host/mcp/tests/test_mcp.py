@@ -423,6 +423,26 @@ class ChatterToolTest(unittest.TestCase):
         self.assertEqual(cfg.voice_every, 7)
         self.assertEqual(cfg.gap_min, 40.0)
 
+    def test_the_model_and_the_effort_can_be_retuned_without_a_restart(self) -> None:
+        status = buddy_mcp.buddy_chatter_start(model="haiku", effort="high", batch=3)
+        cfg = buddy_mcp._chatter_service().cfg
+        self.assertEqual(cfg.model, "haiku")
+        self.assertEqual(cfg.effort, "high")
+        self.assertEqual(cfg.batch, 3)
+        # Reported, or "which model is writing this" is unanswerable
+        # from outside the process.
+        self.assertEqual(status["model"], "haiku")
+        self.assertEqual(status["effort"], "high")
+
+    def test_an_empty_model_keeps_the_configured_one(self) -> None:
+        buddy_mcp.buddy_chatter_start(model="haiku")
+        buddy_mcp.buddy_chatter_start(effort="high")
+        cfg = buddy_mcp._chatter_service().cfg
+        self.assertEqual(cfg.model, "haiku")
+
+    def test_the_default_model_is_sonnet(self) -> None:
+        self.assertEqual(buddy_mcp.buddy_chatter_status()["model"], "sonnet")
+
 
 if __name__ == "__main__":
     unittest.main()

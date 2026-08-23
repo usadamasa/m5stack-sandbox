@@ -490,6 +490,9 @@ def buddy_chatter_start(
     gap_max: float = -1.0,
     voice_every: int = -1,
     busy_rate: float = -1.0,
+    model: str = "",
+    effort: str = "",
+    batch: int = -1,
 ) -> dict[str, Any]:
     """Start the idle chatter, optionally retuning how often it talks.
 
@@ -506,21 +509,39 @@ def buddy_chatter_start(
     the rest on the panel only — raise it when the room has other people
     in it.
 
-    Any argument left at -1 keeps its current value. Passing one while
-    the chatter is already running restarts it with the new setting.
+    `model` and `effort` are what writes the lines, when Claude Code is
+    the one connected: a model alias or id (`sonnet`, `haiku`,
+    `claude-opus-5`) and one of `low`/`medium`/`high`/`xhigh`/`max`.
+    Turn them up when the muttering has gone flat and down when it is
+    costing more than it is worth. `batch` is how many lines one
+    generation produces — a larger batch is cheaper per line and lags
+    the session further, since later lines were written from what was
+    happening when the batch was filled.
+
+    Any numeric argument left at -1, and any string left empty, keeps
+    its current value. Passing one while the chatter is already running
+    restarts it with the new setting.
     """
     global _chatter
     service = _chatter_service()
-    overrides = {
+    # Two sentinels, because the settings are of two kinds. -1 for the
+    # numbers, since every one of them is a count or a duration and
+    # negatives are meaningless; empty for the strings, since "" is
+    # already what `effort` means by "leave the CLI's default alone".
+    overrides: dict[str, Any] = {
         name: value
         for name, value in (
             ("gap_min", gap_min),
             ("gap_max", gap_max),
             ("voice_every", voice_every),
             ("busy_rate", busy_rate),
+            ("batch", batch),
         )
         if value >= 0
     }
+    overrides.update(
+        {name: value for name, value in (("model", model), ("effort", effort)) if value}
+    )
     if overrides:
         cfg = replace(service.cfg, **overrides)
         service.stop()
@@ -547,7 +568,10 @@ def buddy_chatter_status() -> dict[str, Any]:
     `skipped_offline` counts turns where no link was up, `skipped_busy`
     counts turns where a real tool call held the device — both are
     normal. `generation_failures` with a `generation_error` means it has
-    fallen back to canned lines: usually absent Vertex credentials.
+    fallen back to canned lines: usually the agent's CLI missing from
+    the server's PATH, or not logged in.
+
+    `backend`, `model` and `effort` say who is writing the lines.
     """
     return _chatter_service().status()
 
