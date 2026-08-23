@@ -378,7 +378,7 @@ class ActivityPacingTests(unittest.TestCase):
         clock.advance(200.0)
         service.step(None)
         self.assertEqual(service.spoken, 1, "silence alone spoke")
-        self.assertEqual(service.status()["tempo"], 0.0, "muttering to itself is not a busy session")
+        self.assertEqual(service.status()["tempo"], 0.0, "talking to itself is not a busy session")
 
     def test_a_single_valued_range_stays_where_it_was_configured(self) -> None:
         service, _, _ = self.busy(gap_min=30.0, gap_max=30.0)

@@ -40,6 +40,19 @@ gap is drawn fresh from a range instead, and so is the silence that
 counts as idle, so the device is quiet for a while and then says two
 things close together — the shape an actual person in the room has.
 
+The range itself is not fixed either. The hook events already arriving
+say how hard the session is working, and a companion that talks at the
+same rate through a long compile and through a burst of edits is not
+following along. So the window a gap is drawn from slides across the
+configured range: busy sessions draw from the short end, quiet ones from
+the long end. The window keeps its width at both extremes, which is what
+stops the busy case from collapsing back into a metronome.
+
+Activity is read live rather than at draw time. A burst that starts
+after a long gap was already drawn shortens the wait under way — which
+is the case that matters, because it is the one anybody notices. The
+jitter is what is fixed per utterance; where it lands moves.
+
 ### Two agents, two models
 
 Claude Code and Codex both drive this. The device does not care which,
@@ -97,6 +110,21 @@ _QUEUE_DEPTH = 64
 
 # What the model is told about, and what a line is generated from.
 _HISTORY_DEPTH = 12
+
+# How far back the worker looks when judging how busy the session is.
+# Long enough that one slow tool call does not read as silence, short
+# enough that the device notices a burst starting.
+_ACTIVITY_WINDOW = 120.0
+
+# Ceiling on remembered event times, so a runaway sender cannot grow the
+# deque between prunes. Well above what saturates the tempo anyway.
+_ACTIVITY_DEPTH = 256
+
+# How much of the gap range one draw spans. The rest of the range is
+# what the tempo slides the draw across: at half, a busy session draws
+# from the lower half and a quiet one from the upper half, and both
+# still have the same amount of jitter.
+_TEMPO_WIDTH = 0.5
 
 # Said when generation fails — no ADC credentials, no network, Vertex
 # refusing. Rare, but the alternative is a device that goes silent for
@@ -192,8 +220,16 @@ class ChatterConfig:
     prompt_path: Path = DEFAULT_PROMPT_PATH
     enabled: bool = True
     # Seconds between utterances, drawn fresh each time from this range.
+    # Where in the range the draw happens is set by how busy the session
+    # is; the bounds are the extremes, not the usual case.
     gap_min: float = 40.0
     gap_max: float = 150.0
+    # Hook events per minute at which the session counts as fully busy
+    # and the gap sits at the short end. A tool call is registered on
+    # both its Pre and Post hook, so this is roughly six calls a minute
+    # — a pace a session actually working passes, and one it falls well
+    # short of while waiting on a build.
+    busy_rate: float = 12.0
     # Silence after which the device says something unprompted, likewise
     # redrawn so it does not tick.
     idle_min: float = 60.0
@@ -247,6 +283,7 @@ class ChatterConfig:
             gap_max=_float_env(env, "BUDDY_CHATTER_GAP_MAX", 150.0),
             idle_min=_float_env(env, "BUDDY_CHATTER_IDLE_MIN", 60.0),
             idle_max=_float_env(env, "BUDDY_CHATTER_IDLE_MAX", 180.0),
+            busy_rate=_float_env(env, "BUDDY_CHATTER_BUSY_RATE", 12.0),
             voice_every=max(1, _int_env(env, "BUDDY_CHATTER_VOICE_EVERY", 1)),
             batch=max(1, _int_env(env, "BUDDY_CHATTER_BATCH", 6)),
             agent=env.get("BUDDY_CHATTER_AGENT", CLAUDE_CODE),
@@ -667,7 +704,13 @@ class ChatterService:
         now = self._clock()
         self._last_event = now
         self._last_utterance = now
-        self._gap = self._draw(cfg.gap_min, cfg.gap_max)
+        # When events arrived, newest last. Read to say how busy the
+        # session is; see `_tempo`.
+        self._activity: deque[float] = deque(maxlen=_ACTIVITY_DEPTH)
+        # The gap's jitter, as a fraction of the draw window. Fixed per
+        # utterance; the window it lands in moves with the tempo, so the
+        # gap itself is only settled when it is compared against.
+        self._gap_u = self._rng.random()
         self._idle = self._draw(cfg.idle_min, cfg.idle_max)
 
         self.spoken = 0
@@ -695,10 +738,45 @@ class ChatterService:
         high = max(low, high)
         return self._rng.uniform(low, high)
 
+    def _tempo(self) -> float:
+        """How busy the session is, 0 (silent) to 1 (saturated).
+
+        Prunes on read rather than on arrival: nothing else needs the
+        deque trimmed, and doing it here means the answer is current
+        even on a tick where no event came in.
+        """
+        now = self._clock()
+        while self._activity and now - self._activity[0] > _ACTIVITY_WINDOW:
+            self._activity.popleft()
+        if not self._activity:
+            return 0.0
+        rate = self._cfg.busy_rate
+        if rate <= 0.0:
+            # No rate to divide by. Taking any activity at all as full
+            # tempo is the reading that matches "saturates immediately".
+            return 1.0
+        per_minute = len(self._activity) / (_ACTIVITY_WINDOW / 60.0)
+        return min(1.0, per_minute / rate)
+
+    def _gap_now(self) -> float:
+        """The wait the current utterance is due after, as of right now.
+
+        Recomputed on every check so a burst can shorten a gap already
+        under way. Only the jitter within the draw window is fixed.
+        """
+        low = max(0.0, self._cfg.gap_min)
+        high = max(low, self._cfg.gap_max)
+        span = high - low
+        if span <= 0.0:
+            return low
+        width = span * _TEMPO_WIDTH
+        start = low + (1.0 - self._tempo()) * (span - width)
+        return start + self._gap_u * width
+
     def _rearm(self, now: float) -> None:
         self._last_utterance = now
         self._last_event = now
-        self._gap = self._draw(self._cfg.gap_min, self._cfg.gap_max)
+        self._gap_u = self._rng.random()
         self._idle = self._draw(self._cfg.idle_min, self._cfg.idle_max)
 
     def _due(self, ev: Event | None) -> Event | None:
@@ -712,12 +790,18 @@ class ChatterService:
         if ev is not None:
             self._history.append(ev)
             self._last_event = now
-        if now - self._last_utterance < self._gap:
+            # Counted before the gap check, not after: an event that
+            # lands inside the gap says nothing worth speaking to yet,
+            # but it is still what the session being busy is made of.
+            self._activity.append(now)
+        if now - self._last_utterance < self._gap_now():
             return None
         if ev is not None:
             return ev
         if now - self._last_event < self._idle:
             return None
+        # Not counted as activity. The chatter talking to itself would
+        # otherwise read as a busy session and talk faster for it.
         idle = Event("idle")
         self._history.append(idle)
         return idle
@@ -898,8 +982,12 @@ class ChatterService:
             "skipped_offline": self.skipped_offline,
             "dropped_events": self.dropped,
             "queued": self._queue.qsize(),
-            "next_gap_s": round(self._gap, 1),
+            # The wait in force right now, not a number settled earlier:
+            # it moves as the session speeds up and slows down.
+            "next_gap_s": round(self._gap_now(), 1),
             "next_idle_s": round(self._idle, 1),
+            "tempo": round(self._tempo(), 2),
+            "busy_rate": self._cfg.busy_rate,
             "voice_every": self._cfg.voice_every,
             "agent": self._identity.current,
             "client": self._identity.client_name,
@@ -940,6 +1028,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--gap-min", type=float, default=None)
     parser.add_argument("--gap-max", type=float, default=None)
+    parser.add_argument("--busy-rate", type=float, default=None)
     parser.add_argument("--voice-every", type=int, default=None)
     parser.add_argument(
         "--agent",
@@ -957,6 +1046,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         cfg = replace(cfg, gap_min=args.gap_min)
     if args.gap_max is not None:
         cfg = replace(cfg, gap_max=args.gap_max)
+    if args.busy_rate is not None:
+        cfg = replace(cfg, busy_rate=args.busy_rate)
     if args.voice_every is not None:
         cfg = replace(cfg, voice_every=max(1, args.voice_every))
     if args.agent is not None:
@@ -988,7 +1079,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(
             f"[{status['spoken']:3d}] {status['last_line'] or '-'}"
             f"  (busy {status['skipped_busy']}, offline {status['skipped_offline']},"
-            f" next {status['next_gap_s']}s){note}",
+            f" tempo {status['tempo']}, next {status['next_gap_s']}s){note}",
             file=sys.stderr,
             flush=True,
         )
