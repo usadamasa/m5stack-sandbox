@@ -8,7 +8,9 @@
   },
   "permissions": {
     "allow": [
-      "Bash(uv *)"
+      "Bash(uv *)",
+      "Bash(uvx *)",
+      "Bash(buddy-mcpd *)"
     ]
   },
   "hooks": {
@@ -93,7 +95,9 @@
   },
   "sandbox": {
     "excludedCommands": [
-      "uv *"
+      "uv *",
+      "uvx *",
+      "buddy-mcpd *"
     ],
     "filesystem": {
       "allowWrite": [

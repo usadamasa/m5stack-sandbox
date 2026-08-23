@@ -12,6 +12,14 @@ dependencies = [
     "mcp==2.0.0",
 ]
 
+# インストールされた環境から直接叩けるようにする。常駐 daemon はエージェントの
+# sandbox の外で走る必要があり、`uv run` は起動したセッションの都合を持ち込む。
+# `uv tool install ./host/mcp` か `uvx --from ./host/mcp buddy-mcpd` で入れた
+# 実体を叩く方が、どのプロジェクトから起こしても同じものが上がる。
+[project.scripts]
+buddy-mcp = "buddy_mcp:main"
+buddy-mcpd = "buddy_mcpd:main"
+
 [tool.uv.sources]
 buddy-host-link = { workspace = true }
 

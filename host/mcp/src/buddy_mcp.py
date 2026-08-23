@@ -37,15 +37,16 @@ calls `buddy_connect`. Registered via `.mcp.json` — see `README.md`.
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import os
 import sys
 import termios
 import threading
 import time
-from collections.abc import Generator, Mapping
+from collections.abc import Generator, Mapping, Sequence
 from dataclasses import replace
-from typing import Any
+from typing import Any, Literal
 
 # The server is launched by the agent from an arbitrary cwd, so make the
 # sibling module importable by absolute path rather than relying on the
@@ -54,6 +55,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp.server.mcpserver import MCPServer
 
+import buddy_paths
 from buddy_chatter import ChatterConfig, ChatterService
 from buddy_link import ResidentLink
 from buddy_text import DEFAULT_PACE
@@ -69,7 +71,19 @@ from buddy_verbs import (
 )
 from device_repl import ReplError
 
-DEFAULT_PORT = os.environ.get("BUDDY_PORT", "/dev/cu.usbmodem101")
+# The device node a Cardputer-Adv comes up as on macOS. Named as a
+# constant because `buddy-mcpd status` reports the resolved port too,
+# and two copies of this string would drift.
+FALLBACK_PORT = "/dev/cu.usbmodem101"
+DEFAULT_PORT = buddy_paths.environment().get("BUDDY_PORT") or FALLBACK_PORT
+
+# Where the resident daemon listens, and what `.mcp.json` is registered
+# against. The registration is a static URL, so this number is a
+# contract rather than a preference: changing it in `config.toml` means
+# changing the registration too. `buddy-mcpd status` prints the URL it
+# is actually serving, which is the place that discrepancy shows up.
+DEFAULT_HTTP_PORT = 8787
+HTTP_HOST = "127.0.0.1"
 
 server = MCPServer(
     name="buddy",
@@ -135,14 +149,24 @@ def _live_link() -> ResidentLink | None:
 _startup_connect: dict[str, Any] | None = None
 
 
-def _connect_on_start_wanted(env: Mapping[str, str]) -> bool:
+def _connect_on_start_wanted(env: Mapping[str, str], *, default: bool = False) -> bool:
     """Whether the server should take the port as it starts.
 
-    Off unless asked for. A server that grabs the port by default would
-    be a surprise to `buddy_deploy.py`, which needs it free, and this
-    repo turns it on where that is understood — in `.mcp.json`.
+    The default depends on what kind of process this is, which is why
+    it is a parameter. A server spawned by one agent over stdio is a
+    guest and leaves the port alone until asked — grabbing it would
+    surprise `buddy_deploy.py`, which needs it free. The resident daemon
+    is the opposite: holding the port is the whole reason it exists, and
+    one that waited to be asked would leave the device silent until some
+    session happened to call `buddy_connect`.
+
+    Either way `BUDDY_CONNECT_ON_START` (or `connect_on_start` in
+    `config.toml`) has the last word.
     """
-    return env.get("BUDDY_CONNECT_ON_START", "") in ("1", "true", "yes")
+    raw = env.get("BUDDY_CONNECT_ON_START", "")
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes")
 
 
 def _connect_on_start(port: str | None = None) -> dict[str, Any]:
@@ -570,13 +594,74 @@ def buddy_chatter_status() -> dict[str, Any]:
     return status
 
 
-if __name__ == "__main__":
+# ----- entry point
+
+
+Transport = Literal["stdio", "streamable-http"]
+
+
+def transport_options(
+    argv: Sequence[str], env: Mapping[str, str]
+) -> tuple[Transport, dict[str, Any]]:
+    """Which transport to listen on, and how.
+
+    Split out from `main` so it can be read without starting anything.
+
+    `stdio` stays the default: an agent that spawns this process owns
+    it, and there is one client by construction. `--http` is what the
+    resident daemon asks for, and is the only way more than one session
+    can share one serial port.
+
+    Stateless on purpose. Streamable HTTP would otherwise keep a session
+    id on the server, and restarting the daemon — the thing this whole
+    arrangement exists to make cheap — would 404 every client that was
+    already connected.
+    """
+    parser = argparse.ArgumentParser(prog="buddy-mcp", description=__doc__)
+    parser.add_argument(
+        "--http", action="store_true", help="listen on streamable HTTP instead of stdio"
+    )
+    parser.add_argument("--port", type=int, default=None, help="HTTP port (default 8787)")
+    args = parser.parse_args(list(argv))
+    if not args.http:
+        return "stdio", {}
+    port = args.port if args.port is not None else http_port(env)
+    return "streamable-http", {
+        "host": HTTP_HOST,
+        "port": port,
+        "stateless_http": True,
+    }
+
+
+def http_port(env: Mapping[str, str]) -> int:
+    """The configured port, or the agreed default.
+
+    Unparseable falls back rather than raising: the registration that
+    reaches this server is a static URL on the default port, so a daemon
+    that refused to start over a typo would take the whole thing down
+    for a setting nobody meant to change.
+    """
+    try:
+        return int(env.get("BUDDY_HTTP_PORT", ""))
+    except ValueError:
+        return DEFAULT_HTTP_PORT
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the server. The console script `buddy-mcp` lands here."""
+    env = buddy_paths.environment()
+    transport, options = transport_options(sys.argv[1:] if argv is None else argv, env)
     # Started here rather than at import: importing this module must not
     # bind a socket or spawn threads, or the tests (and any tooling that
     # merely inspects the server) would race a live one.
     _chatter_service().start()
-    if _connect_on_start_wanted(os.environ):
+    if _connect_on_start_wanted(env, default=transport == "streamable-http"):
         # On a thread: opening the port is a reader plus a handshake,
         # and the agent's `initialize` should not wait behind it.
         threading.Thread(target=_connect_on_start, name="buddy-connect", daemon=True).start()
-    server.run("stdio")
+    server.run(transport, **options)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

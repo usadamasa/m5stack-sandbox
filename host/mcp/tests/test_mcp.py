@@ -403,10 +403,23 @@ class ConnectOnStartTest(_McpTestCase):
         buddy_mcp._chatter = None
         self.addCleanup(setattr, buddy_mcp, "_chatter", None)
 
-    def test_it_is_off_unless_the_environment_asks_for_it(self) -> None:
+    def test_a_spawned_server_leaves_the_port_alone_unless_asked(self) -> None:
         self.assertFalse(buddy_mcp._connect_on_start_wanted({}))
         self.assertFalse(buddy_mcp._connect_on_start_wanted({"BUDDY_CONNECT_ON_START": "0"}))
         self.assertTrue(buddy_mcp._connect_on_start_wanted({"BUDDY_CONNECT_ON_START": "1"}))
+
+    def test_the_daemon_takes_the_port_by_default(self) -> None:
+        # Holding the port is what the resident daemon is for. A daemon
+        # that waited to be asked would leave the device silent until
+        # some session happened to call `buddy_connect`.
+        self.assertTrue(buddy_mcp._connect_on_start_wanted({}, default=True))
+
+    def test_the_daemon_default_can_still_be_turned_off(self) -> None:
+        # `buddy_deploy.py` and `esptool` need the port free, and
+        # `config.toml` is where a machine says so once.
+        self.assertFalse(
+            buddy_mcp._connect_on_start_wanted({"BUDDY_CONNECT_ON_START": "0"}, default=True)
+        )
 
     def test_it_opens_the_port(self) -> None:
         result = buddy_mcp._connect_on_start()
@@ -447,6 +460,50 @@ class ConnectOnStartTest(_McpTestCase):
         buddy_mcp.buddy_disconnect()
         self.assertIsNone(buddy_mcp._live_link())
         self.assertEqual(len(StubLink.instances), 1)
+
+
+class TransportTest(unittest.TestCase):
+    """How the process decides to listen. The daemon's half of it.
+
+    `stdio` is still the default: one client, spawned and owned by it.
+    The resident daemon asks for HTTP instead, which is what lets more
+    than one session share one serial port.
+    """
+
+    def test_stdio_is_the_default(self) -> None:
+        self.assertEqual(buddy_mcp.transport_options([], {}), ("stdio", {}))
+
+    def test_http_binds_to_the_loopback_on_the_agreed_port(self) -> None:
+        name, opts = buddy_mcp.transport_options(["--http"], {})
+        self.assertEqual(name, "streamable-http")
+        # Not 0.0.0.0: a USB device on this desk has no reason to be
+        # reachable from the network.
+        self.assertEqual(opts["host"], "127.0.0.1")
+        self.assertEqual(opts["port"], buddy_mcp.DEFAULT_HTTP_PORT)
+
+    def test_the_session_is_not_kept_on_the_server(self) -> None:
+        # The whole point of the daemon is that it can be restarted
+        # mid-session. A server-side session id would 404 every client
+        # that was connected before the restart.
+        _, opts = buddy_mcp.transport_options(["--http"], {})
+        self.assertTrue(opts["stateless_http"])
+
+    def test_the_port_is_configurable(self) -> None:
+        _, opts = buddy_mcp.transport_options(["--http"], {"BUDDY_HTTP_PORT": "9001"})
+        self.assertEqual(opts["port"], 9001)
+
+    def test_the_flag_beats_the_environment(self) -> None:
+        _, opts = buddy_mcp.transport_options(
+            ["--http", "--port", "9002"], {"BUDDY_HTTP_PORT": "9001"}
+        )
+        self.assertEqual(opts["port"], 9002)
+
+    def test_an_unreadable_port_falls_back_rather_than_refusing_to_start(self) -> None:
+        # The registration in `.mcp.json` is a static URL on the default
+        # port; a typo in the config file that stopped the daemon
+        # starting would be worse than one it ignores and logs.
+        _, opts = buddy_mcp.transport_options(["--http"], {"BUDDY_HTTP_PORT": "nonsense"})
+        self.assertEqual(opts["port"], buddy_mcp.DEFAULT_HTTP_PORT)
 
 
 if __name__ == "__main__":
