@@ -10,6 +10,6 @@
   "host/mcp/tests/test_chatter.py": 836,
   "host/mcp/tests/test_mcp.py": 716,
   "host/tools/src/buddy_deploy.py": 794,
-  "host/tools/src/fetch_firmware.py": 523,
+  "host/tools/src/fetch_firmware.py": 565,
   "host/tools/tests/test_deploy.py": 751
 }

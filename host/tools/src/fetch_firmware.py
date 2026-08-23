@@ -46,7 +46,14 @@ import sys
 import urllib.error
 import urllib.request
 from http.client import HTTPResponse, IncompleteRead
-from typing import NotRequired, TypedDict
+from typing import IO, NotRequired, Protocol, TypedDict
+
+
+class _Digest(Protocol):
+    """`hashlib.md5()` の実体。型は private なので、使う口だけ写す。"""
+
+    def update(self, data: bytes, /) -> None: ...
+
 
 MANIFEST_URL = "https://m5burner-api.m5stack.com/api/firmware"
 BINARY_BASE = "https://m5burner.m5stack.com/firmware/"
@@ -321,6 +328,11 @@ def pick_firmware(
     return entry, version
 
 
+# A dropped tunnel is resumed by asking for the tail; this bounds how
+# many times we are willing to do that before giving up.
+_MAX_ATTEMPTS = 8
+
+
 def _md5_file(path: str) -> bytes:
     h = hashlib.md5()
     with open(path, "rb") as f:
@@ -329,14 +341,16 @@ def _md5_file(path: str) -> bytes:
     return h.digest()
 
 
-def download(entry: ManifestEntry, version: FirmwareVersion, dest_dir: str | None = None) -> str:
-    if dest_dir is None:
-        dest_dir = _cache_dir()
+def _target(version: FirmwareVersion, dest_dir: str) -> tuple[str, str]:
+    """Return (url, dest) for a manifest version, or exit.
+
+    Everything the manifest can influence is checked here, before the
+    value flows into a URL or a filesystem path.
+    """
     file_field = version.get("file")
     if not file_field:
         raise SystemExit(f"Manifest version has no `file` field: {version}")
-    # Validate before the value flows into a URL or filesystem path. A
-    # hostile or buggy manifest cannot make us reach an arbitrary URL,
+    # A hostile or buggy manifest cannot make us reach an arbitrary URL,
     # write outside the cache dir, or inject CRLF into the request line.
     if not _FILE_FIELD_RE.match(file_field):
         raise SystemExit(
@@ -358,127 +372,155 @@ def download(entry: ManifestEntry, version: FirmwareVersion, dest_dir: str | Non
         raise SystemExit(
             f"Refusing to write outside cache dir: dest={real_dest!r} is not under {real_root!r}."
         )
-    sidecar = dest + ".md5"
+    return url, dest
 
-    # Cache-hit path: re-hash the cached binary and compare to the
-    # sidecar we wrote at download time. The sidecar lives in a 0700
-    # cache dir, so only this uid could have placed it there — an
-    # attacker dropping a binary without a matching sidecar falls
-    # straight through to the cache-miss path, which then runs the
-    # live Content-MD5 check against the CDN. Any error here (missing
-    # sidecar, malformed hex, hash mismatch) is treated as a cache
-    # miss; we never raise from the hit path.
-    if os.path.exists(dest) and os.path.exists(sidecar):
-        try:
-            with open(sidecar) as f:
-                expected_hex = f.read().strip()
-            expected = bytes.fromhex(expected_hex)
-            if len(expected) == 16 and _md5_file(dest) == expected:
-                return dest
-        except (OSError, ValueError):
-            pass
 
-    # Cache-miss path. Aliyun OSS sets Content-MD5 (base64'd MD5 of
-    # the stored object) on every blob response. We stream-hash the
-    # body and compare so that a storage-layer corruption or
-    # manifest/binary drift is caught before we hand the bytes to
-    # esptool.
-    #
-    # This is integrity-only. MD5 is broken for collision attacks, so
-    # it is NOT a substitute for TLS — it complements the verified-TLS
-    # connection enforced by _open_https(). A CDN that can rewrite
-    # both bytes and headers in tandem is not stopped by this check;
-    # pinned constants would be needed for that, and M5Stack does not
-    # publish signed releases to pin against.
-    tmp = dest + ".part"
-    sidecar_tmp = sidecar + ".part"
-    h = hashlib.md5()
+def _cache_hit(dest: str, sidecar: str) -> bool:
+    """Re-hash the cached binary and compare to the sidecar.
+
+    The sidecar lives in a 0700 cache dir, so only this uid could have
+    placed it there — an attacker dropping a binary without a matching
+    sidecar falls straight through to the cache-miss path, which then
+    runs the live Content-MD5 check against the CDN. Any error here
+    (missing sidecar, malformed hex, hash mismatch) is a cache miss;
+    we never raise from the hit path.
+    """
+    if not (os.path.exists(dest) and os.path.exists(sidecar)):
+        return False
+    try:
+        with open(sidecar) as f:
+            expected = bytes.fromhex(f.read().strip())
+        return len(expected) == 16 and _md5_file(dest) == expected
+    except (OSError, ValueError):
+        return False
+
+
+def _expected_md5(response: HTTPResponse, url: str) -> bytes:
+    """The digest the CDN claims for the object, or exit."""
+    expected_b64 = response.headers.get("Content-MD5")
+    if not expected_b64:
+        raise SystemExit(
+            f"CDN response for {url} did not include a "
+            "Content-MD5 header; refusing to install "
+            "unverifiable firmware."
+        )
+    try:
+        expected = base64.b64decode(expected_b64, validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise SystemExit(f"Malformed Content-MD5 header {expected_b64!r}: {e}") from e
+    if len(expected) != 16:
+        raise SystemExit(f"Content-MD5 wrong length ({len(expected)} bytes, want 16) for {url}")
+    return expected
+
+
+def _read_body(response: HTTPResponse, handle: IO[bytes], digest: _Digest) -> tuple[int, bool]:
+    """Drain one response into handle. Returns (bytes read, ran to the end)."""
+    got = 0
+    try:
+        while True:
+            chunk = response.read(65536)
+            if not chunk:
+                return got, True
+            digest.update(chunk)
+            _ = handle.write(chunk)
+            got += len(chunk)
+    except IncompleteRead as e:
+        if e.partial:
+            digest.update(e.partial)
+            _ = handle.write(e.partial)
+            got += len(e.partial)
+        return got, False
+
+
+def _stream(handle: IO[bytes], url: str) -> bytes:
+    """Write the object into handle and return its verified MD5 digest.
+
+    Aliyun OSS sets Content-MD5 (base64'd MD5 of the stored object) on
+    every blob response. We stream-hash the body and compare so that a
+    storage-layer corruption or manifest/binary drift is caught before
+    we hand the bytes to esptool.
+
+    This is integrity-only. MD5 is broken for collision attacks, so it
+    is NOT a substitute for TLS — it complements the verified-TLS
+    connection enforced by _open_https(). A CDN that can rewrite both
+    bytes and headers in tandem is not stopped by this check; pinned
+    constants would be needed for that, and M5Stack does not publish
+    signed releases to pin against.
+    """
+    digest = hashlib.md5()
     expected: bytes | None = None
     got = 0
-    max_attempts = 8
+    for _ in range(_MAX_ATTEMPTS):
+        # A CONNECT proxy between us and the CDN (Claude Code's sandbox
+        # runs one) can drop a long tunnel mid-transfer. That arrives as
+        # IncompleteRead, and re-pulling a multi-megabyte image from
+        # byte 0 each time rarely converges. Ask for the tail instead.
+        # OSS omits Content-MD5 on a 206, so the digest captured from
+        # the initial 200 is what the reassembled object is checked
+        # against — the integrity check still covers every byte.
+        req: str | urllib.request.Request = url
+        if got:
+            req = urllib.request.Request(url, headers={"Range": f"bytes={got}-"})
+        with _open_https(req, timeout=120) as r:
+            if got and r.status != 206:
+                # Range ignored: the body is the whole object again, so
+                # drop what we have and start over.
+                _ = handle.seek(0)
+                _ = handle.truncate()
+                digest = hashlib.md5()
+                got = 0
+            if expected is None:
+                expected = _expected_md5(r, url)
+            read, complete = _read_body(r, handle, digest)
+        got += read
+        if complete:
+            break
+        sys.stderr.write(f"Download cut short at {got} bytes; resuming.\n")
+    else:
+        raise SystemExit(
+            f"Firmware download from {url} kept getting cut short; "
+            f"gave up after {_MAX_ATTEMPTS} attempts ({got} bytes)."
+        )
+
+    # ここまで来たなら break 済みで、その反復で `expected` は必ず埋まっている。
+    if digest.digest() != expected:
+        raise SystemExit(
+            f"MD5 mismatch on firmware download from {url}: "
+            f"expected {expected.hex()}, got {digest.hexdigest()}. "
+            "Aborting; partial file removed."
+        )
+    return digest.digest()
+
+
+def _commit(tmp: str, dest: str, sidecar_tmp: str, sidecar: str, hexdigest: str) -> None:
+    """Atomic rename.
+
+    The binary appears at its cache key only after verification passes,
+    and the sidecar appears only after the binary is in place. A crash
+    anywhere in this sequence leaves a recoverable state (no
+    half-verified blob, no orphan sidecar pointing at a missing file).
+    """
+    os.replace(tmp, dest)
+    with open(sidecar_tmp, "w") as f:
+        _ = f.write(hexdigest + "\n")
+    os.replace(sidecar_tmp, sidecar)
+
+
+def download(entry: ManifestEntry, version: FirmwareVersion, dest_dir: str | None = None) -> str:
+    del entry  # kept in the signature so callers read as (what, which).
+    if dest_dir is None:
+        dest_dir = _cache_dir()
+    url, dest = _target(version, dest_dir)
+    sidecar = dest + ".md5"
+    if _cache_hit(dest, sidecar):
+        return dest
+
+    tmp = dest + ".part"
+    sidecar_tmp = sidecar + ".part"
     try:
-        with open(tmp, "wb") as f:
-            complete = False
-            for _ in range(max_attempts):
-                # A CONNECT proxy between us and the CDN (Claude Code's
-                # sandbox runs one) can drop a long tunnel mid-transfer.
-                # That arrives as IncompleteRead, and re-pulling a
-                # multi-megabyte image from byte 0 each time rarely
-                # converges. Ask for the tail instead. OSS omits
-                # Content-MD5 on a 206, so the digest captured from the
-                # initial 200 is what the reassembled object is checked
-                # against — the integrity check still covers every byte.
-                req: str | urllib.request.Request = url
-                if got:
-                    req = urllib.request.Request(url, headers={"Range": f"bytes={got}-"})
-                with _open_https(req, timeout=120) as r:
-                    if got and r.status != 206:
-                        # Range ignored: the body is the whole object
-                        # again, so drop what we have and start over.
-                        f.seek(0)
-                        f.truncate()
-                        h = hashlib.md5()
-                        got = 0
-                    if expected is None:
-                        expected_b64 = r.headers.get("Content-MD5")
-                        if not expected_b64:
-                            raise SystemExit(
-                                f"CDN response for {url} did not include a "
-                                "Content-MD5 header; refusing to install "
-                                "unverifiable firmware."
-                            )
-                        try:
-                            expected = base64.b64decode(expected_b64, validate=True)
-                        except (binascii.Error, ValueError) as e:
-                            raise SystemExit(
-                                f"Malformed Content-MD5 header {expected_b64!r}: {e}"
-                            ) from e
-                        if len(expected) != 16:
-                            raise SystemExit(
-                                f"Content-MD5 wrong length ({len(expected)} "
-                                f"bytes, want 16) for {url}"
-                            )
-                    try:
-                        while True:
-                            chunk = r.read(65536)
-                            if not chunk:
-                                break
-                            h.update(chunk)
-                            f.write(chunk)
-                            got += len(chunk)
-                    except IncompleteRead as e:
-                        if e.partial:
-                            h.update(e.partial)
-                            f.write(e.partial)
-                            got += len(e.partial)
-                        sys.stderr.write(f"Download cut short at {got} bytes; resuming.\n")
-                        continue
-                complete = True
-                break
-            if not complete:
-                raise SystemExit(
-                    f"Firmware download from {url} kept getting cut short; "
-                    f"gave up after {max_attempts} attempts ({got} bytes)."
-                )
-        if expected is None:
-            raise SystemExit(
-                f"No Content-MD5 was captured for {url}; refusing to install unverifiable firmware."
-            )
-        if h.digest() != expected:
-            raise SystemExit(
-                f"MD5 mismatch on firmware download from {url}: "
-                f"expected {expected.hex()}, got {h.hexdigest()}. "
-                "Aborting; partial file removed."
-            )
-        # Atomic rename: the binary appears at its cache key only after
-        # verification passes, and the sidecar appears only after the
-        # binary is in place. A crash anywhere in this sequence leaves
-        # a recoverable state (no half-verified blob, no orphan
-        # sidecar pointing at a missing file).
-        os.replace(tmp, dest)
-        with open(sidecar_tmp, "w") as f:
-            f.write(h.hexdigest() + "\n")
-        os.replace(sidecar_tmp, sidecar)
+        with open(tmp, "wb") as handle:
+            digest = _stream(handle, url)
+        _commit(tmp, dest, sidecar_tmp, sidecar, digest.hex())
     except BaseException:
         for path in (tmp, sidecar_tmp):
             with contextlib.suppress(FileNotFoundError):
