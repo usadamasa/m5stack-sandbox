@@ -283,6 +283,24 @@ def _find_entry(manifest: list[ManifestEntry], spec: VariantSpec) -> ManifestEnt
     )
 
 
+_PRERELEASE = ("rc", "alpha", "beta", "hotfix")
+
+
+def _is_stable(version: FirmwareVersion) -> bool:
+    tag = (version.get("version") or "").lower()
+    return not any(mark in tag for mark in _PRERELEASE)
+
+
+def _matches(version: FirmwareVersion, suffix: str, must_not: tuple[str, ...]) -> bool:
+    """Whether this version is one the variant would accept."""
+    if version.get("published") is False:
+        return False
+    tag = version.get("version") or ""
+    if suffix:
+        return tag.endswith(suffix)
+    return not any(tag.endswith(bad) for bad in must_not)
+
+
 def _pick_version(entry: ManifestEntry, spec: VariantSpec) -> FirmwareVersion:
     """Pick the newest stable version matching the variant's suffix.
 
@@ -291,27 +309,17 @@ def _pick_version(entry: ManifestEntry, spec: VariantSpec) -> FirmwareVersion:
     releases are still flashable when that's all that exists.
     """
     suffix = spec["version_suffix"]
-    must_not = spec.get("version_must_not", ())
-    candidates: list[FirmwareVersion] = []
-    for v in entry.get("versions", []):
-        if v.get("published") is False:
-            continue
-        ver = v.get("version") or ""
-        if suffix and not ver.endswith(suffix):
-            continue
-        if not suffix and any(ver.endswith(bad) for bad in must_not):
-            continue
-        candidates.append(v)
+    candidates = [
+        v
+        for v in entry.get("versions", [])
+        if _matches(v, suffix, spec.get("version_must_not", ()))
+    ]
     if not candidates:
         raise SystemExit(
             f"No versions for {entry.get('name')!r} match suffix={suffix!r}. "
             f"Available: {[v.get('version') for v in entry.get('versions', [])]}"
         )
-    stable = [
-        v
-        for v in candidates
-        if not any(x in (v.get("version") or "").lower() for x in ("rc", "alpha", "beta", "hotfix"))
-    ]
+    stable = [v for v in candidates if _is_stable(v)]
     # Manifest order is chronological; last = newest.
     return (stable or candidates)[-1]
 
