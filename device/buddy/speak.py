@@ -238,14 +238,31 @@ class _StreamSource:
         want = size if size < self.left else self.left
 
         had = len(self._acc)
-        ended = False
+        ended = self._fill(stream, want)
+
+        if len(self._acc) > had:  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            self._last_progress = time.ticks_ms()
+
+        if len(self._acc) >= want:  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            return self._take(want, size)
+
+        self._give_up(ended)
+        return None
+
+    def _fill(self, stream, want):
+        # type: (object, int) -> bool
+        """Read until `want` bytes are buffered. True if the stream ended.
+
+        Stopping without reaching `want` is the normal case, not a
+        failure: the caller comes back next tick.
+        """
         while len(self._acc) < want:  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
             try:
                 # `stream` is duck-typed (see __init__), so `.read()`'s
                 # result is unavoidably Unknown, and folding it into `_acc`
                 # below taints every read of `_acc` for the rest of this
                 # method — ignored per-line rather than left to cascade.
-                chunk = stream.read(want - len(self._acc))  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType, reportUnknownArgumentType]
+                chunk = stream.read(want - len(self._acc))  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType, reportUnknownArgumentType, reportAttributeAccessIssue]
             except OSError:
                 # Timed out, or would block. Indistinguishable from a
                 # slow AP at this layer, and both want the same answer:
@@ -253,34 +270,35 @@ class _StreamSource:
                 # the same here and is caught by the stall deadline.
                 chunk = None
             if chunk is None:
-                break
+                return False
             if not chunk:
-                ended = True
-                break
+                return True
             self._acc += chunk  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType, reportUnknownArgumentType]
+        return False
 
-        if len(self._acc) > had:  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-            self._last_progress = time.ticks_ms()
+    def _take(self, want, size):
+        # type: (int, int) -> bytes
+        """Hand over one block, padded with silence if it is the last one."""
+        block = self._acc[:want]  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+        # Rebind rather than slice-delete: MicroPython's bytes are
+        # immutable and its bytearray has no `del b[:n]`.
+        self._acc = self._acc[want:]  # pyright: ignore[reportUnknownMemberType]
+        # By the real bytes, not the padding — this is what tells
+        # `pump()` the utterance is over.
+        self.left -= want
+        if len(block) < size:  # pyright: ignore[reportUnknownArgumentType]
+            block = block + _PAD * (size - len(block))  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
+        return block  # pyright: ignore[reportUnknownVariableType]
 
-        if len(self._acc) >= want:  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-            block = self._acc[:want]  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-            # Rebind rather than slice-delete: MicroPython's bytes are
-            # immutable and its bytearray has no `del b[:n]`.
-            self._acc = self._acc[want:]  # pyright: ignore[reportUnknownMemberType]
-            # By the real bytes, not the padding — this is what tells
-            # `pump()` the utterance is over.
-            self.left -= want
-            if len(block) < size:  # pyright: ignore[reportUnknownArgumentType]
-                block = block + _PAD * (size - len(block))  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
-            return block  # pyright: ignore[reportUnknownVariableType]
-
+    def _give_up(self, ended):
+        # type: (bool) -> None
+        """Decide whether a block that did not arrive is a failure yet."""
         if ended:
             print("buddy.speak: stream ended", self.left, "bytes short")
             self.dead = True
         elif time.ticks_diff(time.ticks_ms(), self._last_progress) > _STALL_MS:
             print("buddy.speak: stream stalled with", self.left, "bytes left")
             self.dead = True
-        return None
 
     def close(self) -> None:
         """Let go of the socket. Safe to call twice."""
