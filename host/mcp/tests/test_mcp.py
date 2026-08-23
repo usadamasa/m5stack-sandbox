@@ -619,6 +619,55 @@ class LoggingTest(unittest.TestCase):
         self.assertTrue(any("stopped" in line for line in caught.output), caught.output)
 
 
+class ServeHttpTest(unittest.TestCase):
+    """Why the HTTP transport is built here instead of via `server.run`.
+
+    `run_streamable_http_async` builds its own `uvicorn.Config` and
+    passes only host, port and log level — there is no way to reach
+    `timeout_graceful_shutdown` through it. Without that timeout,
+    `Server._wait_tasks_to_complete` ends in `await server.wait_closed()`
+    with no escape for `force_exit`, so a stop that lands while a
+    request is in flight hangs until the client goes away. The daemon is
+    then SIGKILLed, and neither `main`'s `finally` nor the signal
+    handler runs — the serial port and the socket are left behind.
+    """
+
+    def _run(self) -> tuple[mock.MagicMock, mock.MagicMock]:
+        with (
+            mock.patch.object(buddy_mcp.server, "streamable_http_app") as build,
+            mock.patch("uvicorn.Config") as config,
+            mock.patch("uvicorn.Server"),
+        ):
+            buddy_mcp.serve_http({"host": "127.0.0.1", "port": 8787, "stateless_http": True})
+        return build, config
+
+    def test_the_graceful_shutdown_is_bounded(self) -> None:
+        _, config = self._run()
+        self.assertEqual(
+            config.call_args.kwargs["timeout_graceful_shutdown"],
+            buddy_mcp.SHUTDOWN_TIMEOUT,
+        )
+
+    def test_the_app_keeps_the_settings_the_transport_asked_for(self) -> None:
+        build, config = self._run()
+        self.assertTrue(build.call_args.kwargs["stateless_http"])
+        self.assertEqual(build.call_args.kwargs["streamable_http_path"], buddy_mcp.HTTP_PATH)
+        self.assertEqual(config.call_args.kwargs["port"], 8787)
+        self.assertEqual(config.call_args.kwargs["host"], "127.0.0.1")
+
+    def test_the_bounded_wait_leaves_room_for_the_cleanup(self) -> None:
+        # `buddy-mcpd` escalates to SIGKILL after TERM_GRACE. If uvicorn
+        # can still be inside its bounded wait by then, the timeout buys
+        # nothing — the daemon dies before its own cleanup runs.
+        import buddy_mcpd
+
+        self.assertLess(
+            buddy_mcp.SHUTDOWN_TIMEOUT + 1.0,
+            buddy_mcpd.TERM_GRACE,
+            "the wait plus the ~1s cleanup must finish inside the supervisor's patience",
+        )
+
+
 class TransportTest(unittest.TestCase):
     """How the process decides to listen. The daemon's half of it.
 

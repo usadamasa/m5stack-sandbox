@@ -86,6 +86,19 @@ DEFAULT_PORT = buddy_paths.environment().get("BUDDY_PORT") or FALLBACK_PORT
 # is actually serving, which is the place that discrepancy shows up.
 DEFAULT_HTTP_PORT = 8787
 HTTP_HOST = "127.0.0.1"
+HTTP_PATH = "/mcp"
+
+# How long uvicorn may wait for open connections before dropping them.
+#
+# It has to be bounded. `Server._wait_tasks_to_complete` finishes with
+# `await server.wait_closed()`, which has no escape for `force_exit` —
+# so a stop that lands while a request is in flight waits on a client
+# that may never come back. The supervisor then SIGKILLs the daemon, and
+# nothing in this process gets to release the serial port or the socket.
+#
+# Must leave room inside `buddy_mcpd.TERM_GRACE` for `_shutdown` (~1s),
+# or the bound buys nothing.
+SHUTDOWN_TIMEOUT = 3
 
 server = MCPServer(
     name="buddy",
@@ -684,6 +697,32 @@ def transport_options(
     }
 
 
+def serve_http(options: Mapping[str, Any]) -> None:
+    """Serve over streamable HTTP, with a bounded graceful shutdown.
+
+    Assembled here rather than through `server.run("streamable-http")`
+    because that path builds its own `uvicorn.Config` from host, port
+    and log level alone — `timeout_graceful_shutdown` cannot be reached
+    through it, and without it a stop can hang indefinitely on a single
+    in-flight request. See `SHUTDOWN_TIMEOUT`.
+    """
+    import uvicorn
+
+    app = server.streamable_http_app(
+        streamable_http_path=HTTP_PATH,
+        stateless_http=bool(options["stateless_http"]),
+        host=str(options["host"]),
+    )
+    config = uvicorn.Config(
+        app,
+        host=str(options["host"]),
+        port=int(options["port"]),
+        log_level=server.settings.log_level.lower(),
+        timeout_graceful_shutdown=SHUTDOWN_TIMEOUT,
+    )
+    uvicorn.Server(config).run()
+
+
 def http_port(env: Mapping[str, str]) -> int:
     """The configured port, or the agreed default.
 
@@ -717,7 +756,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         threading.Thread(target=_connect_on_start, name="buddy-connect", daemon=True).start()
     install_shutdown_handlers()
     try:
-        server.run(transport, **options)
+        if transport == "stdio":
+            server.run("stdio")
+        else:
+            serve_http(options)
     finally:
         _shutdown()
         log.info("stopped")

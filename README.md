@@ -246,10 +246,13 @@ MCP server は常駐 daemon で、セッションは `http://127.0.0.1:8787/mcp`
 デバイスに触るには daemon が要る。`uv tool` で入れて、CLI で起こす。
 
 ```bash
-uv tool install --force ./host/mcp   # buddy-mcp / buddy-mcpd が入る
+uv tool install --force --editable ./host/mcp   # buddy-mcp / buddy-mcpd が入る
 buddy-mcpd start
 buddy-mcpd status                    # pid・serve している URL・log の場所
 ```
+
+`--editable` を落とさないこと。これが無いと入るのはその時点のコピーで、`host/` を
+直しても `restart` では反映されず毎回入れ直すことになる。
 
 | コマンド | |
 | --- | --- |

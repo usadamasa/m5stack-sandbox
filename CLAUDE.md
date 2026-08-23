@@ -83,13 +83,16 @@ MCP server は 1 プロセスの常駐 daemon で、複数のセッションが 
 デバイスに繋がるのはこの daemon だけ。
 
 ```bash
-uv tool install --force ./host/mcp   # buddy-mcp / buddy-mcpd を入れる
+uv tool install --force --editable ./host/mcp   # buddy-mcp / buddy-mcpd を入れる
 buddy-mcpd start                     # 起こす。ポートを掴んで chatter が動き出す
 buddy-mcpd status                    # pid・serve している URL・log の場所
 buddy-mcpd restart                   # host/ を直したときはこれだけ
 buddy-mcpd stop                      # deploy や esptool の前に
 ```
 
+- **`--editable` を落とさない。** これが無いと `uv tool install` はその時点の
+  コピーを入れるので、`host/` を直しても restart では反映されず、毎回入れ直す
+  ことになる。editable なら working tree をそのまま見る
 - **ホスト側のコードを直したら `buddy-mcpd restart`。** セッションの再起動は要らない。
   daemon は import 済みのコードで動き続けるので、restart しない限り反映されない
 - **HTTP は `127.0.0.1:8787` 固定**。`mcp-servers.json` が静的な URL を持つので、

@@ -48,15 +48,20 @@ from typing import Any
 import buddy_paths
 from buddy_mcp import FALLBACK_PORT, HTTP_HOST, http_port
 
-# How long each stage of a stop waits. Split unevenly on purpose.
+# How long each stage of a stop waits.
 #
-# A daemon nobody is attached to answers the first SIGTERM in well under
-# a second, so waiting longer there only makes the common case slow. The
-# second stage is the one that needs room: it is reached only when a
-# session is holding an HTTP connection open, and after the interrupt
-# uvicorn still has to tear that down while the daemon lets go of the
-# serial port and the socket. Measured at ~1s for the cleanup alone.
-TERM_GRACE = 2.0
+# A daemon nobody is attached to answers the first SIGTERM in a second
+# or two. The worst case is a request in flight when the signal lands:
+# uvicorn then spends up to `buddy_mcp.SHUTDOWN_TIMEOUT` on the
+# connection before dropping it, and the daemon another second or so
+# letting go of the serial port and the socket. `TERM_GRACE` has to
+# cover both, or the supervisor kills the daemon before its own cleanup
+# runs and the bounded wait buys nothing. The pairing is asserted in the
+# tests rather than left as a comment.
+#
+# The second stage is a backstop for a daemon that is genuinely wedged
+# rather than merely busy, so it can afford to be generous.
+TERM_GRACE = 6.0
 INT_GRACE = 10.0
 
 Spawn = Callable[[list[str], Path], int]
