@@ -1,30 +1,51 @@
 ---
 name: buddy-device-limits
-description: Cardputer-Adv の実機で採った実測値。heap の量、PSRAM の有無、MicroPython ランタイムに何があるか (requests / Response.raw / socket API)。デバイス側の設計を決めるとき、メモリ不足で落ちたとき、参考記事の API が実機に無いときに参照する。測り直しは probe_device.py。
+description: Cardputer-Adv の実機の制約と、その測り方。heap がどれだけ残るか、PSRAM の有無、MicroPython ランタイムに何があるか (requests / Response.raw / socket API) を、どのコマンドのどの値で読むか。デバイス側の設計を決めるとき、メモリ不足で落ちたとき、参考記事の API が実機に無いときに参照する。
 ---
 
-# 実機の実測値
+# 実機の制約と、その測り方
 
-`host/tools/src/probe_device.py` で採った値。デバイス側の設計はここから来ている。
-ファームウェアを入れ替えたら測り直す (REPL が要る、read-only、JSON で出る)。
+デバイス側の設計はこの実機の制約から来ている。ただし **数値そのものはここに書かない**。
+ファームウェア、`.mpy` の載り方、ブート経路のどれが動いても数字は動く。書き置いた数値は
+黙って古くなるうえ、古い数値は測っていない状態より悪い — そのつもりで設計してしまうから。
+必要になった時点で測る。
+
+## 測る
 
 ```bash
 uv run python host/tools/src/probe_device.py --port /dev/cu.usbmodem101
 ```
 
-| 項目 | 実測 | 効いてくる場所 |
-| --- | --- | --- |
-| heap | `mem_free` 61248。`bytearray(200000)` は失敗 | 大きなバッファを持てない |
-| PSRAM | **無し** (`ESP32-S3-FN8`) | 同上。ストリーミング必須 |
-| アプリ読み込み時点の空き heap | 69920 (reboot 直後、`.mpy` + launcher 差し替え後) | ブート時から radio が上がっている分減る |
-| HTTP | `urequests` は無く **`requests`** (MicroPython 1.20 で改名) | 参考記事は `urequests` で書かれている |
-| `Response.raw` | ある (インスタンス属性なのでクラスの `dir()` には出ない) | ストリーミングの土台 |
-| socket | `settimeout` / `readinto` あり。既定はブロッキング | 40ms tick に載せられる |
-| WAV | `fmt `→`data`、PCM は offset 44。1ch/16bit | ヘッダ解析 |
-| 16000Hz 指定 | 2.56 秒で 81964 バイト (既定 24000 の 2/3) | 帯域と heap |
+REPL が要る (走っているアプリはハンドシェイクの Ctrl-C で畳まれる)。read-only で、flash に
+も状態にも触らない。JSON で出るので、ファームウェアを入れ替えたら前回の出力と diff する。
 
-`buddy_status` が返す `sys.heap` は transport と UI を上げた後の値なので、上表より 1 万ほど
-小さく出る。
+| 知りたいこと | どこを読むか |
+| --- | --- |
+| heap の上限 | probe の `heap`。`gc.collect()` した後の `gc.mem_free()` |
+| 目当てのバッファを確保できるか | REPL で `bytearray(N)` を実際の N で試す。無理なら `MemoryError` |
+| アプリ読み込み時点の空き heap | 起動ログの `claude_buddy: gc done, free=`。ブート起動とホストからの起動で違う値になる |
+| 走っているアプリの heap | `--dbg mem` ([buddy-debug](../buddy-debug/SKILL.md))、または `buddy_status` の `sys.heap` |
+| HTTP クライアントの名前 | probe の `network.http.module` |
+| `Response.raw` があるか | probe の `network.http.response` |
+| socket の API | probe の `network.socket` |
+| radio の状態 | probe の `network.wlan` |
+| フォント・行数・幅 | probe の `display`。読み方は [buddy-device-code](../buddy-device-code/SKILL.md) |
 
-画面側の実測 (フォント・行数・幅) は [buddy-device-code](../buddy-device-code/SKILL.md) にある。
-同じ `probe_device.py` が両方を出す。
+## 測っても変わらないこと
+
+数字と違って、これらは実機とファームウェアの性質そのもの。設計の前提はここに置く。
+
+- **PSRAM は無い** (`ESP32-S3-FN8`)。heap は内蔵 SRAM だけで、増やす手立てが無い。
+  だから音声はストリーミングが必須で、発話 1 回ぶんをバッファに持つ設計は取れない
+- **`urequests` ではなく `requests`。** MicroPython 1.20 での改名で、参考記事はたいてい
+  古い名前で書かれている。どちらが載っているかは probe の `network.http.module` が言う
+- **`Response.raw` はインスタンス属性。** クラスの `dir()` には出ないので、無いと判断する
+  前に実物を見る。これが無いとストリーミングができず、`content` で全体を heap に載せる
+  しかなくなる
+- **socket の既定はブロッキング。** アプリの 40ms tick に載せるには `settimeout` が要る
+- **`buddy_status` の `sys.heap` は probe の `heap` より小さい。** transport と UI を上げた
+  後の値だから。同じ量として比べない
+- **WAV は `fmt ` の後に `data` が来て、PCM は 1ch/16bit。** 通常は本体が offset 44 から
+  始まるが、`device/buddy_tts.py` はそれを前提にせずチャンクを歩く。取得バイト数は
+  `rate × 2 × 秒数 + ヘッダ` なので、`outputSamplingRate` を下げれば比例して減る
+  ([buddy-speak](../buddy-speak/SKILL.md))

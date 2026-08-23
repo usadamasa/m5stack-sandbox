@@ -27,8 +27,8 @@ on-device TTS は無い。Cardputer-Adv は ESP32-S3 で、M5Stack の on-device
 
 ## ストリーミングでしか流せない
 
-PSRAM が無く heap も 60KB 程度しかないので、WAV 全体をメモリに載せる経路は使えない
-(実測値は [buddy-device-limits](../buddy-device-limits/SKILL.md))。`M5.Speaker` の
+PSRAM が無く heap も数十 KB しかないので、WAV 全体をメモリに載せる経路は使えない
+(測り方は [buddy-device-limits](../buddy-device-limits/SKILL.md))。`M5.Speaker` の
 `playWav` / `playWavFile` も WAV 全体を渡す API なので使えず、`playRaw` にブロックを
 送り続けている。
 
