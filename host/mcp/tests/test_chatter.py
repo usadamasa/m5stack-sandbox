@@ -912,7 +912,8 @@ class VarietyTests(unittest.TestCase):
 
     def test_the_spoken_lines_are_not_events_the_socket_can_forge(self) -> None:
         self.assertNotIn(SAID, buddy_chatter.KINDS)
-        self.assertIsNone(parse_event(json.dumps({"kind": SAID, "detail": "ぼくの偽物なのだ"}).encode()))
+        forged = json.dumps({"kind": SAID, "detail": "ぼくの偽物なのだ"}).encode()
+        self.assertIsNone(parse_event(forged))
 
     def test_the_prompt_separates_what_was_said_from_what_happened(self) -> None:
         source = VertexLineSource(ChatterConfig())
@@ -923,9 +924,7 @@ class VarietyTests(unittest.TestCase):
 
     def test_the_angle_is_drawn_fresh_for_every_batch(self) -> None:
         cfg = ChatterConfig()
-        drawn = {
-            VertexLineSource(cfg, random.Random(seed))._user_prompt([]) for seed in range(12)
-        }
+        drawn = {VertexLineSource(cfg, random.Random(seed))._user_prompt([]) for seed in range(12)}
         self.assertGreater(len(drawn), 1, "identical context must not mean an identical prompt")
 
     def test_a_line_already_said_is_dropped_from_the_batch(self) -> None:
