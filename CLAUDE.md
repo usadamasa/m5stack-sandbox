@@ -39,7 +39,14 @@ uv run ruff check              # lint。ルートから 1 回で全 member を�
 uv run ruff format             # format。同上
 uv run python host/tools/src/buddy_deploy.py --compile-only   # device/ が MicroPython で通るか
 uv run poe license                                            # 依存のライセンスを trivy の分類で検査する
+uv run poe lines                                              # 行数のラチェット。しきい値超えのファイルが増えていないか
+uv run poe lines --update                                     # 縮んだぶんを baseline へ取り込む
 ```
+
+`poe lines` のしきい値は 400 行。超えたファイルは `file-length-baseline.json` に
+現在値で載り、そこから増やせない。減らしたぶんは `--update` が取り込んで baseline が
+下がる。上げる方向へは動かないので、baseline に並ぶ行数がそのままリファクタリングの
+backlog になる。新しく超えたファイルを意図して受け入れるときだけ `--adopt`。
 
 タスクランナーは poethepoet。定義はルートの `pyproject.toml` の `[tool.poe.tasks]`、一覧は
 `uv run poe --help`。CI に書くのはタスク名だけにして、コマンドと根拠は pyproject 側に置く。

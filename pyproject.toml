@@ -122,3 +122,15 @@ aqua exec -- trivy rootfs .venv
 help = "依存が名乗るライセンスを分類つきで一覧する (判定はしない)"
 env = { TRIVY_CACHE_DIR = "tmp/trivy-cache" }
 cmd = "aqua exec -- trivy rootfs .venv --scanners license --quiet --table-mode detailed"
+
+# 行数のラチェット。しきい値 (400 行) を超えたファイルは
+# `file-length-baseline.json` に現在値で載り、そこから増やせなくなる。減った
+# ぶんは `poe lines --update` が取り込む。上げる方向へは動かないので、
+# baseline に並ぶ行数がそのままリファクタリングの backlog になる。
+# 仕組みと `--adopt` の意味はスクリプトの docstring にある。
+#
+# ruff には行数のルールが無く、あったとしてもファイルごとのラチェット値は
+# 持てないので自前になっている。
+[tool.poe.tasks.lines]
+help = "しきい値を超えたファイルの行数が増えていないかを見る"
+cmd = "python host/tools/src/check_file_length.py"
