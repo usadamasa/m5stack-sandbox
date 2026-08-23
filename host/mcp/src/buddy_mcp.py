@@ -38,9 +38,12 @@ chatter only ever takes that lock when it is already free.
 ### Configuration
 
 `BUDDY_PORT` selects the device (default `/dev/cu.usbmodem101`).
-`BUDDY_CHATTER=0` turns the chatter off. Registered via `.mcp.json` at
-the repo root for Claude Code, and `[mcp_servers.buddy]` in the
-project-local `.codex/config.toml` for Codex — see `README.md`.
+`BUDDY_CHATTER=0` turns the chatter off. `BUDDY_CONNECT_ON_START=1` has
+the server open the port once as it starts, so that the muttering runs
+from the beginning of a session rather than from the first time somebody
+calls `buddy_connect`. Registered via `.mcp.json` at the repo root for
+Claude Code, and `[mcp_servers.buddy]` in the project-local
+`.codex/config.toml` for Codex — see `README.md`.
 """
 
 from __future__ import annotations
@@ -174,10 +177,56 @@ def _live_link() -> ResidentLink | None:
     """The link if one is already up, else None. Never opens the port.
 
     This is what the chatter is given. Handing it `_get_link` instead
-    would have it claim the port the moment the server starts, which is
-    exactly what `buddy_deploy.py` and `esptool` need it not to do.
+    would have it claim the port back whenever it fancied a line, which
+    is exactly what `buddy_deploy.py` and `esptool` need it not to do:
+    `buddy_disconnect` has to stay the last word on who holds the port.
+
+    `_connect_on_start` below is the one opening, and it is a single
+    attempt at startup rather than anything this function can trigger.
     """
     return _link if _link is not None and _link.connected else None
+
+
+# What `_connect_on_start` made of its one attempt, or None if it never
+# ran. Reported through `buddy_chatter_status`: a chatter that is silent
+# because the port was never opened looks the same from `skipped_offline`
+# as one whose device was unplugged mid-session.
+_startup_connect: dict[str, Any] | None = None
+
+
+def _connect_on_start_wanted(env: Mapping[str, str]) -> bool:
+    """Whether the server should take the port as it starts.
+
+    Off unless asked for. A server that grabs the port by default would
+    be a surprise to `buddy_deploy.py`, which needs it free, and this
+    repo turns it on where that is understood — in `.mcp.json` and
+    `.codex/config.toml`.
+    """
+    return env.get("BUDDY_CONNECT_ON_START", "") in ("1", "true", "yes")
+
+
+def _connect_on_start(port: str | None = None) -> dict[str, Any]:
+    """Open the port once, for the chatter's benefit. Never raises.
+
+    Runs on its own thread beside the session's first tool calls, so it
+    takes `_device_lock` like any of them; `_get_link` on a free port is
+    a reader thread and a handshake, not an exchange with the device,
+    but a tool call landing in the middle of it would still find a link
+    half-built.
+
+    One attempt. Failing here means the board is unplugged or another
+    process holds the port, and neither is fixed by trying again — the
+    agent can call `buddy_connect` once it is. Nobody is waiting on this
+    result either, so an exception would only end the thread silently:
+    it is recorded instead.
+    """
+    global _startup_connect
+    try:
+        with _device(port) as link:
+            _startup_connect = {"ok": True, "port": link.port}
+    except Exception as exc:
+        _startup_connect = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    return _startup_connect
 
 
 def _chatter_service() -> ChatterService:
@@ -572,8 +621,15 @@ def buddy_chatter_status() -> dict[str, Any]:
     the server's PATH, or not logged in.
 
     `backend`, `model` and `effort` say who is writing the lines.
+
+    `connect_on_start` appears when the server was asked to open the
+    port for itself (`BUDDY_CONNECT_ON_START=1`) and says how that one
+    attempt went. Absent means it was never asked.
     """
-    return _chatter_service().status()
+    status = _chatter_service().status()
+    if _startup_connect is not None:
+        status["connect_on_start"] = _startup_connect
+    return status
 
 
 if __name__ == "__main__":
@@ -581,4 +637,8 @@ if __name__ == "__main__":
     # bind a socket or spawn threads, or the tests (and any tooling that
     # merely inspects the server) would race a live one.
     _chatter_service().start()
+    if _connect_on_start_wanted(os.environ):
+        # On a thread: opening the port is a reader plus a handshake,
+        # and the agent's `initialize` should not wait behind it.
+        threading.Thread(target=_connect_on_start, name="buddy-connect", daemon=True).start()
     server.run("stdio")

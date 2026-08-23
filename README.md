@@ -298,8 +298,18 @@ datagram に乗せる `--agent` の両方を見る。デプロイ時にどちら
 静かな間は長いほうから引く。長い間隔を引いた直後に作業が始まったら、進行中の待ちもその場で
 縮む。今どのくらいの流量とみなされているかは `buddy_chatter_status` の `tempo`。
 
-`buddy_start_app` か `buddy_connect` でリンクが上がるまでは何も喋らない。chatter が
-自分からポートを開けることは無い (`buddy_deploy.py` や `esptool` のため)。
+リンクが上がるまでは何も喋らない。chatter が自分からポートを開けることは無い
+(`buddy_deploy.py` や `esptool` のため)。
+
+**このリポジトリでは、セッションを始めた時点でリンクが上がる。** `.mcp.json` と
+`.codex/config.toml` が `BUDDY_CONNECT_ON_START=1` を渡していて、MCP server は起動直後に
+一度だけポートを開く。デバイスは電源が入っていればアプリまで自分で立ち上がる
+(`device/main.py`) ので、これだけで最初のツール呼び出しから独り言が始まる。
+
+試行は一度きりで、失敗しても再試行しない。`buddy_disconnect` がポートの所有権について
+最後の一言であり続けるため — deploy の前に手放したポートを、あとから勝手に取り返す経路は
+無い。セッションの途中でデバイスを挿したときは `buddy_connect` を呼ぶ。開いたかどうかは
+`buddy_chatter_status` の `connect_on_start` に出る。
 
 **喋る内容を変えたいときは `host/mcp/src/chatter_prompt.md` を直す。** コードは触らなくてよい。
 

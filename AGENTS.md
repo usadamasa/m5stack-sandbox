@@ -93,7 +93,9 @@ overlay が何に何を重ねているかは [README の「overlay とは」](RE
 ## デバイスを触るときの前提
 
 - **ポートは 1 プロセスしか掴めない。** `buddy_deploy.py` や `esptool` を使う前に MCP の
-  `buddy_disconnect` を呼ぶ
+  `buddy_disconnect` を呼ぶ。このリポジトリの MCP server は `BUDDY_CONNECT_ON_START=1` で
+  起動直後にポートを開く (chatter をセッションの最初から動かすため) ので、掴んでいる前提で
+  考える。一度手放したポートを取り返す経路は無い
 - **アプリ起動は片道ではない。** Ctrl-C は有効なままで、アプリがそれを捕まえて reboot せずに
   REPL で止まる。MCP なら `buddy_interrupt`、CLI なら `--interrupt`。REPL を要求するツールは
   自分で Ctrl-C を打ってから入る。BtnRST は、それでも応答しないときの最後の手段
@@ -115,8 +117,9 @@ overlay が何に何を重ねているかは [README の「overlay とは」](RE
   `MemoryError: memory allocation failed` で落ちる。`enter_raw_repl(soft_reset=False)` を
   使っているため前のインスタンスが residual に残る
 - **chatter がデバイスを喋らせている。** MCP server の worker thread が hook 起点で独り言を
-  言う。デバイスに触る tool は全て `_device_lock` を握ること — 握らずに request を出すと
-  ack が入れ違う。詳細は `buddy-chatter` skill
+  言う。セッションを始めた時点でリンクが上がるので、何も呼ばなくても喋り出す。デバイスに
+  触る tool は全て `_device_lock` を握ること — 握らずに request を出すと ack が入れ違う。
+  詳細は `buddy-chatter` skill
 - **接続元が Claude Code か Codex かで台詞を書く LLM が変わる。** tool は全て共通で、
   分かれるのは chatter の生成器だけ (`buddy_agent.py` / `RoutingLineSource`)。判定は MCP の
   `clientInfo` と hook の `--agent` から実行時に取る。デプロイ時に固定しない
