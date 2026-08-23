@@ -101,9 +101,14 @@ def _failed(payload: dict) -> bool:
     )
 
 
+def _text(payload: dict, key: str) -> str:
+    """A payload field as a string. Missing, null and empty all read the same."""
+    return str(payload.get(key) or "")
+
+
 def classify(payload: dict) -> tuple[str, str] | None:
     """Reduce a hook payload to (kind, detail), or None to send nothing."""
-    event = str(payload.get("hook_event_name") or "")
+    event = _text(payload, "hook_event_name")
     if event == "PreToolUse":
         return "tool", _tool_detail(payload)
     if event == "PostToolUse":
@@ -111,13 +116,13 @@ def classify(payload: dict) -> tuple[str, str] | None:
     if event == "PostToolUseFailure":
         return "error", _tool_detail(payload)
     if event == "Notification":
-        return "notify", str(payload.get("message") or "")[:_MAX_DETAIL]
+        return "notify", _text(payload, "message")[:_MAX_DETAIL]
     if event == "Stop":
         return "stop", ""
     if event == "SessionStart":
-        return "session", str(payload.get("source") or "")
+        return "session", _text(payload, "source")
     if event == "UserPromptSubmit":
-        return "prompt", " ".join(str(payload.get("prompt") or "").split())[:_MAX_DETAIL]
+        return "prompt", " ".join(_text(payload, "prompt").split())[:_MAX_DETAIL]
     return None
 
 
