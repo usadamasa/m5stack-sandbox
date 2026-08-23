@@ -444,5 +444,85 @@ class ChatterToolTest(unittest.TestCase):
         self.assertEqual(buddy_mcp.buddy_chatter_status()["model"], "sonnet")
 
 
+class _LockWatchingLink(StubLink):
+    """Records whether the device lock was held as the port opened."""
+
+    def connect(self) -> None:
+        self.lock_held.append(buddy_mcp._device_lock.locked())
+        super().connect()
+
+
+class _RefusingLink(StubLink):
+    """A port that is not there — the board unplugged, or already taken."""
+
+    def connect(self) -> None:
+        raise OSError("no such port")
+
+
+class ConnectOnStartTest(_McpTestCase):
+    """The one opening the server makes for itself.
+
+    The chatter never opens the port, so a fresh session is silent until
+    somebody calls `buddy_connect`. This is the single exception: one
+    attempt as the server starts, so the muttering is on from the first
+    tool call rather than from whenever the agent happens to connect.
+
+    One attempt, and no retry loop. `buddy_disconnect` before a deploy
+    has to keep meaning what it says.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        buddy_mcp._startup_connect = None
+        self.addCleanup(setattr, buddy_mcp, "_startup_connect", None)
+        buddy_mcp._chatter = None
+        self.addCleanup(setattr, buddy_mcp, "_chatter", None)
+
+    def test_it_is_off_unless_the_environment_asks_for_it(self) -> None:
+        self.assertFalse(buddy_mcp._connect_on_start_wanted({}))
+        self.assertFalse(buddy_mcp._connect_on_start_wanted({"BUDDY_CONNECT_ON_START": "0"}))
+        self.assertTrue(buddy_mcp._connect_on_start_wanted({"BUDDY_CONNECT_ON_START": "1"}))
+
+    def test_it_opens_the_port(self) -> None:
+        result = buddy_mcp._connect_on_start()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["port"], buddy_mcp.DEFAULT_PORT)
+        self.assertIs(buddy_mcp._live_link(), StubLink.instances[0])
+
+    def test_it_holds_the_device_lock_while_it_opens(self) -> None:
+        # It runs on its own thread beside the first tool calls of the
+        # session; taking the port from under one of them would cross
+        # their acks.
+        buddy_mcp.ResidentLink = _LockWatchingLink  # pyright: ignore[reportAttributeAccessIssue]
+        buddy_mcp._connect_on_start()
+        self.assertEqual(StubLink.instances[0].lock_held, [True])
+
+    def test_a_port_that_will_not_open_is_recorded_rather_than_raised(self) -> None:
+        # Nobody is waiting on this thread, and a server that dies
+        # because the board is unplugged is worse than a silent one.
+        buddy_mcp.ResidentLink = _RefusingLink  # pyright: ignore[reportAttributeAccessIssue]
+        result = buddy_mcp._connect_on_start()
+        self.assertFalse(result["ok"])
+        self.assertIn("no such port", result["error"])
+        self.assertIsNone(buddy_mcp._live_link())
+
+    def test_the_attempt_shows_up_in_the_chatter_status(self) -> None:
+        # `skipped_offline` on its own cannot say whether the port was
+        # never taken or taken and then lost.
+        buddy_mcp._connect_on_start()
+        self.assertTrue(buddy_mcp.buddy_chatter_status()["connect_on_start"]["ok"])
+
+    def test_nothing_is_reported_when_it_did_not_run(self) -> None:
+        self.assertNotIn("connect_on_start", buddy_mcp.buddy_chatter_status())
+
+    def test_a_disconnect_afterwards_leaves_the_port_free(self) -> None:
+        # `buddy_disconnect` is what frees the port for buddy_deploy.py
+        # and esptool. Nothing here may take it back.
+        buddy_mcp._connect_on_start()
+        buddy_mcp.buddy_disconnect()
+        self.assertIsNone(buddy_mcp._live_link())
+        self.assertEqual(len(StubLink.instances), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
