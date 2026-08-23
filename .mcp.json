@@ -7,7 +7,8 @@
         "exec \"$(git rev-parse --show-toplevel)/.agents/bin/buddy-mcp\""
       ],
       "env": {
-        "BUDDY_PORT": "/dev/cu.usbmodem101"
+        "BUDDY_PORT": "/dev/cu.usbmodem101",
+        "BUDDY_CONNECT_ON_START": "1"
       }
     }
   }

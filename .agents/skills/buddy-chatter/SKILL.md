@@ -42,7 +42,11 @@ identity を消さない。
 ## 動かない・喋らないときの順序
 
 1. **リンクが上がっているか。** `buddy_chatter_status` の `skipped_offline` が増えていたら
-   これ。chatter は自分からポートを開けないので、`buddy_start_app` か `buddy_connect` が要る
+   これ。chatter は自分からポートを開けないので、`buddy_start_app` か `buddy_connect` が要る。
+   このリポジトリの `.mcp.json` / `.codex/config.toml` は `BUDDY_CONNECT_ON_START=1` を渡して
+   いて、MCP server が起動直後に一度だけ開く。その一度がどうだったかは同じ status の
+   `connect_on_start` に出る (`ok: false` なら `error`、キーごと無いなら opt-in が届いて
+   いない)。試行は一度きりなので、セッションの途中で挿したデバイスには手で繋ぐ
 2. **hook が届いているか。** `queued` と各カウンタが全部 0 のままなら socket に何も来ていない。
    手で叩ける:
    `echo '{"hook_event_name":"Stop"}' | python3 .agents/hooks/buddy_chatter_notify.py --agent claude-code`
@@ -94,6 +98,9 @@ required`)。trust するまでは発火しない。
   その数秒が発火したツール呼び出し全部に乗る
 - **worker は `_device_lock` を `blocking=False` でしか取らない。** ブロッキングにすると
   chatter が本物のツール呼び出しを待たせる側になる
+- **起動時の接続は一度きりで、再試行しない。** ここをループにすると `buddy_disconnect` が
+  意味を失い、deploy のために手放したポートを取り返してしまう。開けなかったときは
+  `_startup_connect` に理由を残して黙る
 - **台詞の生成はロックの外。** `claude -p` も `codex exec` もプロセスを 1 つ起こす。
   ロックを持ったままやるとそのままツール呼び出しの待ち時間になる。生成済みの
   行は `_pending` に置いて、デバイスが空くまで持ち越す
@@ -143,6 +150,7 @@ MCP server の環境から読む (`.mcp.json` の `env`、Codex なら
 | 変数 | 既定 | |
 | --- | --- | --- |
 | `BUDDY_CHATTER` | `1` | `0` / `false` / `no` で完全に無効。socket も張らない |
+| `BUDDY_CONNECT_ON_START` | (無効) | `1` / `true` / `yes` で server 起動時に一度だけポートを開く。読むのは server 側 (`buddy_mcp.py`) |
 | `BUDDY_CHATTER_SOCKET` | `<repo>/tmp/buddy-chatter.sock` | hook 側と一致していること |
 | `BUDDY_CHATTER_GAP_MIN` / `_MAX` | `40` / `150` | 発話間隔のゆらぎ幅 (秒) |
 | `BUDDY_CHATTER_IDLE_MIN` / `_MAX` | `60` / `180` | 独り言までの沈黙のゆらぎ幅 (秒) |
