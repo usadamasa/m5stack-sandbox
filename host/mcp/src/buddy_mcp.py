@@ -501,8 +501,8 @@ def buddy_chatter_start(
     than being fixed, because a metronome is what makes this annoying.
     Where in that range it is drawn follows how busy the session is:
     `busy_rate` is the hook events per minute that count as fully busy
-    and put the gap at `gap_min`. Raise it to make the device harder to
-    excite. `voice_every` speaks aloud on every Nth utterance and shows
+    and put the gap at the short end of the range. Raise it to make the
+    device harder to excite. `voice_every` speaks aloud on every Nth utterance and shows
     the rest on the panel only — raise it when the room has other people
     in it.
 

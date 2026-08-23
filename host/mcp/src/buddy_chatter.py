@@ -744,10 +744,22 @@ class ChatterService:
         Prunes on read rather than on arrival: nothing else needs the
         deque trimmed, and doing it here means the answer is current
         even on a tick where no event came in.
+
+        Two threads read this — the worker on every tick, and whichever
+        one is answering `buddy_chatter_status` — so two pruners can
+        race for the last element and one of them find it already gone.
+        Appends only ever happen on the right, so catching that is
+        enough; a lock here would be one more thing a tool call could
+        end up waiting behind.
         """
         now = self._clock()
-        while self._activity and now - self._activity[0] > _ACTIVITY_WINDOW:
-            self._activity.popleft()
+        while self._activity:
+            try:
+                if now - self._activity[0] <= _ACTIVITY_WINDOW:
+                    break
+                self._activity.popleft()
+            except IndexError:
+                break
         if not self._activity:
             return 0.0
         rate = self._cfg.busy_rate
