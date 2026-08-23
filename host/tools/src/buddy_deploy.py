@@ -683,6 +683,69 @@ def _log(message: str) -> None:
     sys.stderr.flush()
 
 
+def _build(build_dir: Path) -> list[Job]:
+    """Compile the overlay, after checking that the ABI still lines up."""
+    abi = mpy_cross_abi()
+    if abi != MPY_CROSS_ABI:
+        raise DeployError(
+            f"mpy-cross emits .mpy v{abi}, this bundle is pinned to v{MPY_CROSS_ABI}. "
+            "Bytecode does not cross ABI versions: check the board's firmware "
+            "and move the pin in pyproject.toml and MPY_CROSS_ABI together."
+        )
+    _log(f"mpy-cross emits .mpy v{abi}")
+
+    jobs = build_overlay(build_dir)
+    for job in jobs:
+        _log(f"  compiled {job.origin} -> {job.dest} ({job.size} bytes)")
+    _log(f"  compiled device/{LAUNCHER} as a syntax check ({check_launcher(build_dir)} bytes)")
+    return jobs
+
+
+def _compile_upstream(vendor: Path, build_dir: Path) -> int:
+    """`--compile-only` の残り: 名前を挙げた peer だけを通しにかける。
+
+    vendor/ の全部ではない。あのディレクトリは flash のスナップショットで、
+    ここが push しないファイル — push 対象の隣に main.mpy として置かれては
+    困る launcher を含む — も持っているため。
+    """
+    missing: list[str] = []
+    for name in UPSTREAM:
+        src = vendor / f"{name}.py"
+        if not src.is_file():
+            missing.append(name)
+            continue
+        size = compile_source(src, build_dir / f"{name}.mpy")
+        _log(f"  compiled {src} -> {name}.mpy ({size} bytes)")
+    if missing:
+        _log(f"  not under {vendor}, so not checked: {', '.join(missing)}")
+    return 0
+
+
+def _push(repl: Repl, jobs: list[Job], vendor: Path, build_dir: Path, deadline: Deadline) -> None:
+    """バイトコードをデバイスへ載せて、載ったことを確かめる。"""
+    device_abi = device_mpy_abi(repl)
+    if device_abi != int(MPY_CROSS_ABI.split(".")[0]):
+        raise DeployError(
+            f"the device loads .mpy v{device_abi}, mpy-cross emits "
+            f"v{MPY_CROSS_ABI}. Pushing this would install modules the "
+            "firmware refuses to import."
+        )
+
+    staged = [*jobs, *stage_upstream(repl, vendor, build_dir, deadline, _log)]
+    push_jobs(repl, staged, deadline, _log)
+    install_launcher(repl, vendor, deadline, _log)
+    prune(repl, vendor, deadline, _log)
+    prune_stale(repl, deadline, _log)
+
+    shadows = find_shadows(repl, staged)
+    if shadows:
+        raise DeployError(
+            "source files are still shadowing the bytecode, so the device "
+            f"would go on parsing them: {', '.join(shadows)}"
+        )
+    report_flash(repl, _log)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     if not args.compile_only and not args.port:
@@ -694,36 +757,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     vendor: Path = args.vendor
 
     try:
-        abi = mpy_cross_abi()
-        if abi != MPY_CROSS_ABI:
-            raise DeployError(
-                f"mpy-cross emits .mpy v{abi}, this bundle is pinned to v{MPY_CROSS_ABI}. "
-                "Bytecode does not cross ABI versions: check the board's firmware "
-                "and move the pin in pyproject.toml and MPY_CROSS_ABI together."
-            )
-        _log(f"mpy-cross emits .mpy v{abi}")
-
-        jobs = build_overlay(build_dir)
-        for job in jobs:
-            _log(f"  compiled {job.origin} -> {job.dest} ({job.size} bytes)")
-        _log(f"  compiled device/{LAUNCHER} as a syntax check ({check_launcher(build_dir)} bytes)")
-
+        jobs = _build(build_dir)
         if args.compile_only:
-            # Only the named peers, not everything under vendor/: that
-            # directory is a snapshot of flash and holds files nothing
-            # here pushes, including a launcher that must not be turned
-            # into a main.mpy sitting next to the pushable modules.
-            missing: list[str] = []
-            for name in UPSTREAM:
-                src = vendor / f"{name}.py"
-                if not src.is_file():
-                    missing.append(name)
-                    continue
-                size = compile_source(src, build_dir / f"{name}.mpy")
-                _log(f"  compiled {src} -> {name}.mpy ({size} bytes)")
-            if missing:
-                _log(f"  not under {vendor}, so not checked: {', '.join(missing)}")
-            return 0
+            return _compile_upstream(vendor, build_dir)
 
         deadline.check("opening the port")
         repl = connect_repl(
@@ -744,28 +780,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # a transfer goes through it, so this is the whole reason the run
         # cannot hang.
         repl.serial.timeout = SERIAL_READ_TIMEOUT_S
-
-        device_abi = device_mpy_abi(repl)
-        if device_abi != int(MPY_CROSS_ABI.split(".")[0]):
-            raise DeployError(
-                f"the device loads .mpy v{device_abi}, mpy-cross emits "
-                f"v{MPY_CROSS_ABI}. Pushing this would install modules the "
-                "firmware refuses to import."
-            )
-
-        jobs += stage_upstream(repl, vendor, build_dir, deadline, _log)
-        push_jobs(repl, jobs, deadline, _log)
-        install_launcher(repl, vendor, deadline, _log)
-        prune(repl, vendor, deadline, _log)
-        prune_stale(repl, deadline, _log)
-
-        shadows = find_shadows(repl, jobs)
-        if shadows:
-            raise DeployError(
-                "source files are still shadowing the bytecode, so the device "
-                f"would go on parsing them: {', '.join(shadows)}"
-            )
-        report_flash(repl, _log)
+        _push(repl, jobs, vendor, build_dir, deadline)
 
         if args.no_speak:
             _log("done. Launch with: buddy_start_app (MCP) or buddy_bridge --start")
