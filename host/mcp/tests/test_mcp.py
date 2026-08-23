@@ -10,21 +10,16 @@ every tool holds the device lock for the whole of its exchange, and the
 chatter's link provider never opens a port of its own.
 """
 
-import asyncio
 import os
 import unittest
 from collections.abc import Callable
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from types import SimpleNamespace
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar
 from unittest import mock
-
-from mcp.server.context import ServerRequestContext
 
 import buddy_mcp
 import buddy_verbs
-from buddy_agent import CLAUDE_CODE, CODEX, UNKNOWN, AgentIdentity
 from buddy_wire import Message
 
 
@@ -312,76 +307,6 @@ class ChatterWiringTest(_McpTestCase):
         buddy_mcp.buddy_connect()
         buddy_mcp.buddy_disconnect()
         self.assertIsNone(buddy_mcp._live_link())
-
-
-class ClientProbeTest(unittest.TestCase):
-    """Reading the peer's name off the handshake.
-
-    The tools are identical for Claude Code and Codex; the only thing
-    that turns on who connected is which model writes the chatter's
-    lines. So this is the whole of the compatibility layer on the server
-    side, and it has to be unable to break a connection.
-    """
-
-    def _run(self, identity: AgentIdentity, method: str, params: object) -> list[str]:
-        """Push one request through the probe, and report what ran."""
-        probe = buddy_mcp._ClientProbe(identity)
-        ran: list[str] = []
-
-        async def call_next(_ctx: object) -> None:
-            ran.append(method)
-
-        ctx = cast("ServerRequestContext[Any, Any]", SimpleNamespace(method=method, params=params))
-        asyncio.run(probe(ctx, cast("Any", call_next)))
-        return ran
-
-    def test_the_handshake_names_the_agent(self) -> None:
-        identity = AgentIdentity()
-        self._run(identity, "initialize", {"clientInfo": {"name": "codex-mcp-client"}})
-        self.assertEqual(identity.current, CODEX)
-        self.assertEqual(identity.client_name, "codex-mcp-client")
-
-    def test_claude_code_is_recognised_too(self) -> None:
-        identity = AgentIdentity(default=CODEX)
-        self._run(identity, "initialize", {"clientInfo": {"name": "claude-code"}})
-        self.assertEqual(identity.current, CLAUDE_CODE)
-
-    def test_the_chain_still_runs(self) -> None:
-        ran = self._run(AgentIdentity(), "initialize", {"clientInfo": {"name": "claude-code"}})
-        self.assertEqual(ran, ["initialize"])
-
-    def test_other_methods_are_passed_through_untouched(self) -> None:
-        identity = AgentIdentity()
-        ran = self._run(identity, "tools/call", {"name": "buddy_status"})
-        self.assertEqual(ran, ["tools/call"])
-        self.assertEqual(identity.observed, UNKNOWN)
-
-    def test_a_handshake_without_client_info_is_not_a_failure(self) -> None:
-        # `clientInfo` is optional on recent protocol versions, and a
-        # peer that omits it must still be able to connect.
-        identity = AgentIdentity()
-        for params in (None, {}, {"clientInfo": None}, {"clientInfo": {"version": "1"}}):
-            with self.subTest(params=params):
-                self.assertEqual(self._run(identity, "initialize", params), ["initialize"])
-                self.assertEqual(identity.observed, UNKNOWN)
-
-    def test_an_unknown_client_connects_and_gets_the_default(self) -> None:
-        identity = AgentIdentity()
-        self._run(identity, "initialize", {"clientInfo": {"name": "some-editor"}})
-        self.assertEqual(identity.observed, UNKNOWN)
-        self.assertEqual(identity.current, CLAUDE_CODE)
-
-    def test_the_server_is_wired_to_the_shared_identity(self) -> None:
-        # The chatter reads this same object; a probe pointed at a
-        # different one would look correct and change nothing.
-        probes = [m for m in buddy_mcp.server.middleware if isinstance(m, buddy_mcp._ClientProbe)]
-        self.assertEqual(len(probes), 1)
-        self.assertIs(probes[0]._identity, buddy_mcp._identity)
-
-    def test_the_chatter_shares_it(self) -> None:
-        buddy_mcp._chatter = None
-        self.addCleanup(setattr, buddy_mcp, "_chatter", None)
-        self.assertIs(buddy_mcp._chatter_service().identity, buddy_mcp._identity)
 
 
 class ChatterToolTest(unittest.TestCase):

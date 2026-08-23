@@ -5,15 +5,6 @@ device through tool calls instead of shelling out. The link is held open
 across calls, which is what makes device-initiated traffic visible to
 `buddy_events` rather than being lost between invocations.
 
-### Claude Code and Codex
-
-Both drive this server, and every tool below is the same either way —
-the device does not care who asked. The one thing that differs is where
-the chatter's lines come from, and that is decided from the `initialize`
-handshake rather than from how the server was registered: see
-`buddy_agent`, and `_ClientProbe` at the bottom of the configuration
-section for the half of it that lives here.
-
 ### The open question this server answers
 
 Claude Code's sandbox is documented as covering the Bash tool and its
@@ -41,9 +32,7 @@ chatter only ever takes that lock when it is already free.
 `BUDDY_CHATTER=0` turns the chatter off. `BUDDY_CONNECT_ON_START=1` has
 the server open the port once as it starts, so that the muttering runs
 from the beginning of a session rather than from the first time somebody
-calls `buddy_connect`. Registered via `.mcp.json` at the repo root for
-Claude Code, and `[mcp_servers.buddy]` in the project-local
-`.codex/config.toml` for Codex — see `README.md`.
+calls `buddy_connect`. Registered via `.mcp.json` — see `README.md`.
 """
 
 from __future__ import annotations
@@ -56,17 +45,15 @@ import threading
 import time
 from collections.abc import Generator, Mapping
 from dataclasses import replace
-from typing import Any, cast
+from typing import Any
 
 # The server is launched by the agent from an arbitrary cwd, so make the
 # sibling module importable by absolute path rather than relying on the
 # working directory.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from mcp.server.context import CallNext, HandlerResult, ServerRequestContext
 from mcp.server.mcpserver import MCPServer
 
-from buddy_agent import AgentIdentity
 from buddy_chatter import ChatterConfig, ChatterService
 from buddy_link import ResidentLink
 from buddy_text import DEFAULT_PACE
@@ -84,55 +71,9 @@ from device_repl import ReplError
 
 DEFAULT_PORT = os.environ.get("BUDDY_PORT", "/dev/cu.usbmodem101")
 
-# Who is driving. Written by `_ClientProbe` below from the handshake and
-# by the chatter from any hook datagram that names its sender; read by
-# the chatter to pick which model writes a line.
-#
-# Built at import because the middleware that writes it is a constructor
-# argument to the server. Only the fallback is read from the environment
-# here — the rest of the chatter's settings stay a lazy read, so that
-# rebuilding the service picks up a changed environment.
-_identity = AgentIdentity(ChatterConfig.from_env().agent)
-
-
-class _ClientProbe:
-    """Notes the peer's `clientInfo` as the handshake goes past.
-
-    A `ServerMiddleware` rather than a `Context` parameter on every
-    tool: the identity is a property of the connection, so it should be
-    read once where the connection is established instead of being
-    re-derived at each call — and threading a context argument through
-    fourteen tool signatures to answer one question is a poor trade.
-
-    Observation only. It never rewrites the context and never fails a
-    request: which model writes the muttering is not worth breaking a
-    handshake over, so anything unexpected in the params is swallowed
-    and the default backend applies.
-    """
-
-    def __init__(self, identity: AgentIdentity) -> None:
-        self._identity = identity
-
-    async def __call__(
-        self,
-        ctx: ServerRequestContext[Any, Any],
-        call_next: CallNext,
-    ) -> HandlerResult:
-        if ctx.method == "initialize":
-            with contextlib.suppress(Exception):
-                params: Mapping[str, Any] = ctx.params or {}
-                info = params.get("clientInfo")
-                if isinstance(info, Mapping):
-                    name = cast("Mapping[str, Any]", info).get("name")
-                    if isinstance(name, str):
-                        self._identity.observe(name)
-        return await call_next(ctx)
-
-
 server = MCPServer(
     name="buddy",
     version="0.1.0",
-    middleware=[_ClientProbe(_identity)],
     instructions=(
         "Talks to an M5Stack Cardputer-Adv running the Claude Buddy app over "
         "USB serial. Call probe_serial first on a new machine or after a "
@@ -199,8 +140,7 @@ def _connect_on_start_wanted(env: Mapping[str, str]) -> bool:
 
     Off unless asked for. A server that grabs the port by default would
     be a surprise to `buddy_deploy.py`, which needs it free, and this
-    repo turns it on where that is understood — in `.mcp.json` and
-    `.codex/config.toml`.
+    repo turns it on where that is understood — in `.mcp.json`.
     """
     return env.get("BUDDY_CONNECT_ON_START", "") in ("1", "true", "yes")
 
@@ -232,9 +172,7 @@ def _connect_on_start(port: str | None = None) -> dict[str, Any]:
 def _chatter_service() -> ChatterService:
     global _chatter
     if _chatter is None:
-        _chatter = ChatterService(
-            ChatterConfig.from_env(), _live_link, _device_lock, identity=_identity
-        )
+        _chatter = ChatterService(ChatterConfig.from_env(), _live_link, _device_lock)
     return _chatter
 
 
@@ -597,10 +535,7 @@ def buddy_chatter_start(
     if overrides:
         cfg = replace(service.cfg, **overrides)
         service.stop()
-        # The same identity object, not a fresh one: retuning the pacing
-        # must not forget who is connected — there is no second
-        # handshake to learn it again from.
-        _chatter = service = ChatterService(cfg, _live_link, _device_lock, identity=_identity)
+        _chatter = service = ChatterService(cfg, _live_link, _device_lock)
     service.start()
     return service.status()
 

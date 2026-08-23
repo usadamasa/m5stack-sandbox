@@ -53,14 +53,12 @@ after a long gap was already drawn shortens the wait under way — which
 is the case that matters, because it is the one anybody notices. The
 jitter is what is fixed per utterance; where it lands moves.
 
-### Two agents, two models
+### Where the lines come from
 
-Claude Code and Codex both drive this. The device does not care which,
-but the lines have to come from a model the machine can actually reach,
-and that differs: each agent's own CLI is the one thing its machine is
-certain to have installed and logged in. So both backends spawn a CLI —
-`claude -p` and `codex exec` — and `RoutingLineSource` picks by whoever
-is connected. See `buddy_agent` for how that is decided.
+`claude -p`, spawned for one turn per batch. Not an API client: the CLI
+is the one thing the machine running this is certain to have installed
+and logged in, and it inherits whatever model and credentials the user
+is already set up with. See `ClaudeCliLineSource`.
 """
 
 from __future__ import annotations
@@ -82,7 +80,6 @@ from pathlib import Path
 from queue import Empty, Full, Queue
 from typing import Any, Protocol, cast
 
-from buddy_agent import CLAUDE_CODE, CODEX, AgentIdentity
 from buddy_verbs import DEFAULT_RATE, ZUNDAMON, say, speak, voicevox_url
 from buddy_wire import Message
 
@@ -193,16 +190,10 @@ class ChatLink(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class Event:
-    """Something the hook saw, reduced to what a line can be built from.
-
-    `agent` is who saw it, as the hook named itself. Empty when the
-    sender did not say, which is not a problem — it only means this
-    event is not a witness and the identity stands as it was.
-    """
+    """Something the hook saw, reduced to what a line can be built from."""
 
     kind: str
     detail: str = ""
-    agent: str = ""
 
 
 class LineSource(Protocol):
@@ -271,10 +262,7 @@ class ChatterConfig:
     # Lines produced per generation. One call covers several minutes,
     # which is what keeps this cheap.
     batch: int = 6
-    # Who to assume is driving before anyone says. Only used until the
-    # MCP handshake or a hook datagram settles it.
-    agent: str = CLAUDE_CODE
-    # ----- the Claude CLI, used when Claude Code is driving
+    # ----- the Claude CLI, which writes the lines
     #
     # An alias rather than a pinned id, so this follows whatever the
     # current Sonnet is. Writing one line of muttering is not work that
@@ -287,17 +275,6 @@ class ChatterConfig:
     # stuck-process guard, not a latency budget. Nothing waits on it but
     # the chatter's own thread.
     claude_timeout: float = 120.0
-    # ----- the Codex CLI, used when Codex is driving
-    #
-    # An empty model means "whatever `~/.codex/config.toml` already
-    # says", which is the right default: the point of going through the
-    # CLI is to inherit the setup Codex is already running on.
-    codex_bin: str = "codex"
-    codex_model: str = ""
-    # Generous. A `codex exec` turn is a whole agent loop and nothing is
-    # waiting on it, so the timeout is a stuck-process guard rather than
-    # a latency budget.
-    codex_timeout: float = 180.0
     speaker: int = ZUNDAMON
     rate: int = DEFAULT_RATE
     engine: str = ""
@@ -329,14 +306,10 @@ class ChatterConfig:
             busy_rate=_float_env(env, "BUDDY_CHATTER_BUSY_RATE", 12.0),
             voice_every=max(1, _int_env(env, "BUDDY_CHATTER_VOICE_EVERY", 1)),
             batch=max(1, _int_env(env, "BUDDY_CHATTER_BATCH", 6)),
-            agent=env.get("BUDDY_CHATTER_AGENT", CLAUDE_CODE),
             claude_bin=env.get("BUDDY_CHATTER_CLAUDE_BIN", "claude"),
             model=env.get("BUDDY_CHATTER_MODEL", "sonnet"),
             effort=env.get("BUDDY_CHATTER_EFFORT", "low"),
             claude_timeout=_float_env(env, "BUDDY_CHATTER_CLAUDE_TIMEOUT", 120.0),
-            codex_bin=env.get("BUDDY_CHATTER_CODEX_BIN", "codex"),
-            codex_model=env.get("BUDDY_CHATTER_CODEX_MODEL", ""),
-            codex_timeout=_float_env(env, "BUDDY_CHATTER_CODEX_TIMEOUT", 180.0),
             speaker=_int_env(env, "BUDDY_CHATTER_SPEAKER", ZUNDAMON),
             rate=_int_env(env, "BUDDY_CHATTER_RATE", DEFAULT_RATE),
             engine=env.get("VOICEVOX_URL", ""),
@@ -365,14 +338,9 @@ def parse_event(payload: bytes) -> Event | None:
     detail = obj.get("detail", "")
     if not isinstance(detail, str):
         detail = ""
-    agent = obj.get("agent", "")
-    if not isinstance(agent, str):
-        agent = ""
     # The detail is pasted into a prompt, so it is clamped here rather
-    # than trusting the sender to have been reasonable about it. The
-    # agent name never reaches a prompt, but it is a stranger's string
-    # all the same and only the first few characters can ever matter.
-    return Event(kind, " ".join(detail.split())[:120], agent[:40])
+    # than trusting the sender to have been reasonable about it.
+    return Event(kind, " ".join(detail.split())[:120])
 
 
 def _clean(line: object, limit: int) -> str:
@@ -635,177 +603,6 @@ def _cli_answer(stdout: str) -> Mapping[str, Any]:
     return cast("Mapping[str, Any]", json.loads(result["result"]))
 
 
-class CodexLineSource(BatchedLineSource):
-    """Generates lines by running one `codex exec` turn. Codex's backend.
-
-    ### Why the CLI and not an SDK
-
-    "The model Codex uses" is not a fixed endpoint. It is whatever
-    `~/.codex/config.toml` resolves to — a `model_provider` that may be
-    a local proxy, and credentials that may be a rotating ChatGPT token
-    rather than an API key. Reproducing that resolution here would mean
-    reimplementing Codex's config and auth and then keeping up with
-    them. Spawning the CLI inherits both by construction, and costs a
-    process on a thread that has minutes to spare.
-
-    ### Why a sandboxed, ephemeral turn
-
-    `codex exec` is a whole agent, tools included, and this wants a
-    sentence. `--sandbox read-only` and `--ephemeral` reduce it to what
-    is actually needed: no writes, no session file, nothing left behind.
-    `--output-schema` gets the same `{"lines": [...]}` the Claude path
-    asks for, so both sides parse identically.
-
-    The prompt is one blob rather than a system/user pair — `codex exec`
-    has no system slot. The persona goes first, which is the same order
-    the API would have applied it in.
-    """
-
-    backend = "codex"
-
-    def __init__(
-        self,
-        cfg: ChatterConfig,
-        rng: random.Random | None = None,
-        run: Callable[[str], str] | None = None,
-    ) -> None:
-        super().__init__(cfg, rng)
-        # Injectable so the tests do not need a Codex install, and so a
-        # different launcher can be dropped in without touching parsing.
-        self._run = run if run is not None else self._run_codex
-
-    @property
-    def model(self) -> str:
-        return self._cfg.codex_model or "codex-default"
-
-    def _generate(self, context: Sequence[Event]) -> Sequence[object]:
-        prompt = f"{self._system_prompt()}\n\n---\n\n{self._user_prompt(context)}"
-        return cast("Sequence[object]", json.loads(self._run(prompt))["lines"])
-
-    def _run_codex(self, prompt: str) -> str:
-        """Run one turn and return the final message. Raises on trouble."""
-        with tempfile.TemporaryDirectory(prefix="buddy-chatter-") as tmp:
-            work = Path(tmp)
-            schema = work / "schema.json"
-            schema.write_text(json.dumps(LINES_SCHEMA), encoding="utf-8")
-            answer = work / "lines.json"
-            argv = [
-                self._cfg.codex_bin,
-                "exec",
-                "--ephemeral",
-                "--skip-git-repo-check",
-                "--sandbox",
-                "read-only",
-                "--color",
-                "never",
-                "--output-schema",
-                str(schema),
-                "--output-last-message",
-                str(answer),
-            ]
-            if self._cfg.codex_model:
-                argv += ["--model", self._cfg.codex_model]
-            # `-` reads the prompt from stdin, which keeps a persona of
-            # any length off the argument list.
-            argv.append("-")
-            proc = subprocess.run(
-                argv,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                timeout=self._cfg.codex_timeout,
-                # The turn is read-only and ephemeral; give it the empty
-                # directory rather than wherever the server was launched
-                # from, so no project config or AGENTS.md steers it.
-                cwd=tmp,
-                check=False,
-            )
-            if not answer.is_file():
-                # stderr is where a missing login, an unreachable
-                # provider and a config error all land. Truncated
-                # because this ends up in a status field.
-                detail = " ".join((proc.stderr or proc.stdout or "").split())[-300:]
-                raise RuntimeError(f"codex exec wrote no answer (rc {proc.returncode}): {detail}")
-            return answer.read_text(encoding="utf-8")
-
-
-def line_source_for(agent: str, cfg: ChatterConfig, rng: random.Random | None = None) -> LineSource:
-    """The generator that goes with an agent. The pairing is fixed.
-
-    Deliberately not a 2x2: each agent gets the model its machine is
-    already set up and paying for, and offering the cross combinations
-    would mean supporting credentials nobody has.
-    """
-    if agent == CODEX:
-        return CodexLineSource(cfg, rng)
-    return ClaudeCliLineSource(cfg, rng)
-
-
-class RoutingLineSource:
-    """Delegates to whichever backend matches the agent now connected.
-
-    Built once and kept for the life of the chatter, because the
-    identity can change under it: the standalone runner starts with no
-    witness at all, and the MCP server learns who its client is at the
-    handshake rather than at import.
-
-    Backends are constructed on first use and then kept. Building one
-    is cheap; spawning either CLI is not, so a session that never speaks
-    as Codex never looks for a Codex install.
-    """
-
-    def __init__(
-        self,
-        cfg: ChatterConfig,
-        identity: AgentIdentity,
-        rng: random.Random | None = None,
-        factory: Callable[[str, ChatterConfig, random.Random | None], LineSource] | None = None,
-    ) -> None:
-        self._cfg = cfg
-        self._identity = identity
-        self._rng = rng
-        self._factory = factory if factory is not None else line_source_for
-        self._sources: dict[str, LineSource] = {}
-        self._active: LineSource | None = None
-
-    @property
-    def agent(self) -> str:
-        return self._identity.current
-
-    @property
-    def backend(self) -> str:
-        active = self._active
-        if active is not None:
-            return getattr(active, "backend", "")
-        # Nothing built yet: name what would be, without building it.
-        return "codex" if self.agent == CODEX else "claude-cli"
-
-    @property
-    def model(self) -> str:
-        return getattr(self._active, "model", "") if self._active is not None else ""
-
-    @property
-    def generated(self) -> int:
-        return sum(int(getattr(s, "generated", 0)) for s in self._sources.values())
-
-    @property
-    def failures(self) -> int:
-        return sum(int(getattr(s, "failures", 0)) for s in self._sources.values())
-
-    @property
-    def last_error(self) -> str:
-        return str(getattr(self._active, "last_error", "")) if self._active is not None else ""
-
-    def next_line(self, context: Sequence[Event]) -> str | None:
-        agent = self.agent
-        source = self._sources.get(agent)
-        if source is None:
-            source = self._factory(agent, self._cfg, self._rng)
-            self._sources[agent] = source
-        self._active = source
-        return source.next_line(context)
-
-
 class ChatterService:
     """Listens for hook events and speaks, on its own two threads.
 
@@ -815,11 +612,6 @@ class ChatterService:
 
     `device_lock` is the MCP server's — held blocking by tool calls, and
     taken here only if it is free.
-
-    `identity` is who is driving. The MCP server writes to it from the
-    handshake and the chatter writes to it from any event that names a
-    sender; the default source reads it to pick a model. Passed in
-    rather than owned so the server and the chatter share one.
     """
 
     def __init__(
@@ -830,13 +622,11 @@ class ChatterService:
         source: LineSource | None = None,
         rng: random.Random | None = None,
         clock: Callable[[], float] = time.monotonic,
-        identity: AgentIdentity | None = None,
     ) -> None:
         self._cfg = cfg
         self._link = link_provider
         self._lock = device_lock
-        self._identity = identity if identity is not None else AgentIdentity(cfg.agent)
-        self._source = source if source is not None else RoutingLineSource(cfg, self._identity, rng)
+        self._source = source if source is not None else ClaudeCliLineSource(cfg, rng)
         self._rng = rng or random.Random()
         self._clock = clock
 
@@ -877,11 +667,6 @@ class ChatterService:
     def cfg(self) -> ChatterConfig:
         """The settings in force. Frozen — retune by rebuilding the service."""
         return self._cfg
-
-    @property
-    def identity(self) -> AgentIdentity:
-        """Who is driving. Shared with the MCP server, which also writes it."""
-        return self._identity
 
     # ----- pacing
 
@@ -1002,11 +787,6 @@ class ChatterService:
 
     def step(self, ev: Event | None) -> None:
         """One turn of the worker. Public so the tests can drive it."""
-        if ev is not None and ev.agent:
-            # Before the due check, not after: an event that arrives
-            # inside the gap says nothing worth speaking to, but it
-            # still tells us who is at the keyboard.
-            self._identity.observe(ev.agent)
         trigger = self._due(ev)
         if trigger is None:
             return
@@ -1162,8 +942,6 @@ class ChatterService:
             "tempo": round(self._tempo(), 2),
             "busy_rate": self._cfg.busy_rate,
             "voice_every": self._cfg.voice_every,
-            "agent": self._identity.current,
-            "client": self._identity.client_name,
             "backend": getattr(source, "backend", ""),
             "model": getattr(source, "model", "") or self._cfg.model,
             "effort": self._cfg.effort,
@@ -1206,12 +984,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--busy-rate", type=float, default=None)
     parser.add_argument("--voice-every", type=int, default=None)
     parser.add_argument(
-        "--agent",
-        choices=(CLAUDE_CODE, CODEX),
-        default=None,
-        help="which backend writes the lines; there is no MCP handshake to ask",
-    )
-    parser.add_argument(
         "--once", action="store_true", help="say one line, report, and exit — a smoke test"
     )
     args = parser.parse_args(argv)
@@ -1225,8 +997,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         cfg = replace(cfg, busy_rate=args.busy_rate)
     if args.voice_every is not None:
         cfg = replace(cfg, voice_every=max(1, args.voice_every))
-    if args.agent is not None:
-        cfg = replace(cfg, agent=args.agent)
 
     link = ResidentLink(args.port)
     link.connect()

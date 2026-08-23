@@ -5,19 +5,6 @@ Registered on most of the agent's hook events. Reduces the payload to a
 kind and a short subject, sends one datagram, and exits 0 — whatever
 happened.
 
-### One script, both agents
-
-Claude Code and Codex share the command-handler shape and the common
-event fields on stdin. Their event sets are not identical, so each
-product keeps a thin registration file. Both registrations call this
-script unchanged, apart from `--agent`.
-
-That flag is the point of the difference. It rides along in the datagram
-and is how the server knows which CLI should write the muttering —
-`claude -p` for Claude Code, `codex exec` for Codex. Registering without
-it is not an error: the server falls back to guessing from the
-environment, and then to its default.
-
 ### Why a datagram
 
 The socket is `AF_UNIX`/`SOCK_DGRAM`, which has no connection to set up,
@@ -59,39 +46,6 @@ _PATH_KEYS = ("file_path", "notebook_path", "path")
 # clamps it too, but there is no reason to put a whole Bash heredoc on
 # the wire first.
 _MAX_DETAIL = 100
-
-# Variables each agent leaves in a hook's environment, checked only when
-# `--agent` was not passed. Neither agent documents these as an
-# interface, so a wrong answer has to be harmless — and it is: it picks
-# which model writes a line of muttering. Kept in step with
-# `_ENV_MARKERS` in host/mcp/src/buddy_agent.py, and duplicated rather
-# than imported because this runs on every tool call and may not have
-# the repo's src directory on its path.
-_ENV_AGENTS = (
-    ("CODEX_HOME", "codex"),
-    ("CODEX_SANDBOX", "codex"),
-    ("CLAUDECODE", "claude-code"),
-    ("CLAUDE_CODE_ENTRYPOINT", "claude-code"),
-    ("CLAUDE_PROJECT_DIR", "claude-code"),
-)
-
-
-def agent_from(argv: list[str], env: dict[str, str]) -> str:
-    """Who is running us: `--agent NAME`, else a guess, else nothing.
-
-    Parsed by hand rather than with argparse. This is on the critical
-    path of every tool call, and importing argparse to read one flag is
-    more work than reading the flag.
-    """
-    for i, arg in enumerate(argv):
-        if arg.startswith("--agent="):
-            return arg.split("=", 1)[1]
-        if arg == "--agent" and i + 1 < len(argv):
-            return argv[i + 1]
-    for var, agent in _ENV_AGENTS:
-        if env.get(var):
-            return agent
-    return ""
 
 
 def _tool_detail(payload: dict) -> str:
@@ -156,9 +110,6 @@ def main() -> int:
             return 0
         kind, detail = classified
         message = {"kind": kind, "detail": detail}
-        agent = agent_from(sys.argv[1:], dict(os.environ))
-        if agent:
-            message["agent"] = agent
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         try:
             # Bounded so a full receive buffer cannot park a tool call
