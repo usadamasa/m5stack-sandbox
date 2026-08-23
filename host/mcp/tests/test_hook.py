@@ -1,7 +1,9 @@
 """Contract tests for the hook that feeds the chatter.
 
-The hook lives in the shared `.agents/hooks/` rather than in this package.
-It is loaded here by path anyway:
+The hook lives in the plugin's `scripts/` rather than in this package —
+it is shipped to whoever installs the plugin, and runs on the system
+`python3` with nothing of this workspace importable. It is loaded here
+by path anyway:
 what it puts on the wire and what `parse_event` takes off it are two
 halves of one format, and nothing else checks that they still agree.
 
@@ -21,7 +23,7 @@ from typing import Any, cast
 import buddy_paths
 from buddy_chatter import Event, parse_event
 
-HOOK_PATH = Path(__file__).resolve().parents[3] / ".agents" / "hooks" / "buddy_chatter_notify.py"
+HOOK_PATH = Path(__file__).resolve().parents[3] / "scripts" / "buddy_chatter_notify.py"
 
 
 def _load_hook() -> tuple[
@@ -50,9 +52,22 @@ classify, hook_socket_path = _load_hook()
 
 class HookExistsTests(unittest.TestCase):
     def test_the_registered_path_is_the_one_tested(self) -> None:
-        # `.claude/settings.json` names this path; a rename that misses
-        # it is silent.
+        # `hooks/hooks.json` names this path under ${CLAUDE_PLUGIN_ROOT};
+        # a rename that misses it is silent.
         self.assertTrue(HOOK_PATH.is_file(), HOOK_PATH)
+
+    def test_the_plugin_registers_the_path_that_exists(self) -> None:
+        registered = json.loads(
+            (HOOK_PATH.parents[1] / "hooks" / "hooks.json").read_text(encoding="utf-8")
+        )
+        commands = {
+            part
+            for entries in registered["hooks"].values()
+            for entry in entries
+            for hook in entry["hooks"]
+            for part in hook["command"]
+        }
+        self.assertIn("${CLAUDE_PLUGIN_ROOT}/scripts/buddy_chatter_notify.py", commands)
 
 
 class SocketPathTests(unittest.TestCase):
