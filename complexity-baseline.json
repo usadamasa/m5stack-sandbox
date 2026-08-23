@@ -11,6 +11,5 @@
   "host/link/src/buddy_text.py::split_for_device": 11,
   "host/tools/src/buddy_deploy.py::main": 15,
   "host/tools/src/fetch_firmware.py::_pick_version": 16,
-  "host/tools/src/fetch_firmware.py::download": 29,
   "scripts/buddy_chatter_notify.py::classify": 13
 }
