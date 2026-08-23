@@ -204,15 +204,17 @@ _WIFI_STATUS = {
 # How long to leave the device alone after a reset before asking for a
 # REPL.
 #
-# Not politeness — polling through the boot does not work. Measured:
-# starting to poll straight after `machine.reset()` failed to reach the
-# raw REPL for 90 s, while waiting 25 s first got in on the first
-# attempt in 0.1 s. The repeated handshake attempts land while
-# `/flash/main.py` is initialising NimBLE and running its WiFi splash,
-# and the device does not come back from them.
+# Not politeness — polling through the boot does not work. Measured
+# against the bundle's own launcher: starting to poll straight after
+# `machine.reset()` failed to reach the raw REPL for 90 s, while waiting
+# 25 s first got in on the first attempt in 0.1 s. The repeated
+# handshake attempts land while `/flash/main.py` is still coming up, and
+# the device does not come back from them.
 #
-# 25 s covers that boot: NimBLE, then `wifi_event.CONNECT_TIMEOUT_MS`
-# (8 s), then the launcher menu.
+# 25 s covers the boot this bundle actually does: `M5.begin()`, then
+# `wifi_event.CONNECT_TIMEOUT_MS` (8 s), then the app's own start-up.
+# The app being up at the end of that is fine — the handshake Ctrl-Cs
+# it out of the way, which is what every other REPL caller here does.
 _SETTLE_S = 25.0
 
 # And then how long to wait for the REPL, which by that point answers

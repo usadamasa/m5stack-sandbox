@@ -35,6 +35,11 @@ uv run python host/tools/src/buddy_deploy.py --compile-only            # 実機�
 - **`main.py` だけはソースのまま。** MicroPython は `/flash/main.py` を実行し、`main.mpy` を
   探さない。`--compile-only` はパーサに通すためだけにコンパイルし、結果は push 対象と別の
   ディレクトリに落とす
+- **`main.py` はブート時にアプリを起動する。** WiFi を上げてから `claude_buddy` を import
+  するところまでが `/flash/main.py` の仕事で、`buddy_bridge.LAUNCH_SOURCE` と同じ 3 手
+  (`sys.path` へ `/flash` と `/flash/apps`、`gc.collect()`、import) を踏む。両者が揃って
+  いることは `device/tests/test_boot.py` が見る。だから REPL を要求する側は、デバイスが
+  REPL に居ることを前提にしてはいけない — ハンドシェイクの Ctrl-C で取り返す
 - **タイムアウトはスクリプトの中。** `mpremote` はポートを `timeout=None` で開き、
   `raw_paste_write` は素の `serial.read(1)` で待つので、応答が止まると永久にブロックする。
   `bash` の `timeout` で包まない。ポートへ有限の read timeout を掛け、`--timeout` の予算を
@@ -64,7 +69,8 @@ raw REPL ならどちらも無い。`repl.exec()` は完走するか例外を投
 Python の値をそのまま返す (デバイス側で `print(repr(...))` してホストで `literal_eval`)。
 
 - **`enter_raw_repl(soft_reset=False)` を使う。** 既定の `soft_reset=True` は
-  boot.py / main.py を走らせ直すので、UIFlow のランチャーが再起動してしまう
+  boot.py / main.py を走らせ直す。`main.py` はアプリを起動するので、せっかく Ctrl-C で
+  取り返した REPL をその場で手放すことになる
 - **待ちのループだけは自前。** `mpremote` の `wait=` は `open()` の失敗しかリトライしない。
   ポートは開くのに応答しない状態 — アプリの teardown 中、あるいは Python の下で刺さった
   デバイス — を待てない。かつてはアプリが `kbd_intr(-1)` で Ctrl-C を殺していたのでこれが

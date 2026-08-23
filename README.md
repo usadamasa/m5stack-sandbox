@@ -122,7 +122,7 @@ PORT=/dev/cu.usbmodem101
 # 転送後はアプリが起動して喋る。喋らせないなら --no-speak
 uv run python host/tools/src/buddy_deploy.py --port $PORT
 
-# アプリを起動して状態を取得する
+# アプリを起動して状態を取得する (電源投入なら --start は要らない)
 uv run python host/link/src/buddy_bridge.py --port $PORT --start --status
 
 # 走っているアプリへコマンドを送る
@@ -149,6 +149,10 @@ uv run python host/link/src/buddy_bridge.py --port $PORT --dbg eval --dbg-src 'c
 # アプリを畳んで REPL に戻す (reboot しない。画面に REPL と出る)
 uv run python host/link/src/buddy_bridge.py --port $PORT --interrupt
 ```
+
+電源を入れるだけでアプリは立ち上がる。`/flash/main.py` が WiFi を上げてから
+`claude_buddy` を import する。`--start` や `buddy_start_app` が要るのは、Ctrl-C で
+REPL に落とした後に立ち上げ直すときだけ。
 
 REPL を要求するもの (`buddy_deploy.py`、`provision_wifi.py`、`buddy_bridge.py --start`、
 `probe_device.py`) は、走っているアプリを Ctrl-C で畳んでから入る。それでも応答しない
@@ -289,6 +293,9 @@ uv run poe license-list   # 依存が名乗るライセンスを一覧するだ�
   `IOUSBHostInterface` が 0 個なら、列挙はしているがインタフェースが構成されていない中間状態で、
   電源の入れ直しで解消する
 - ポートは 1 プロセスしか掴めない。MCP server が掴んでいる間は CLI から触れない
+- アプリが未捕捉例外で落ちると `machine.reset()` が走り、自動起動でまた同じところへ着く。
+  起動直後の WiFi 接続中 (8 秒ほど) に Ctrl-C を打つと REPL に落ちて止まる。REPL を要求する
+  ホスト側のツールは待ちながらこれを繰り返すので、放っておいても抜けられる
 
 ## ライセンス
 
