@@ -39,14 +39,9 @@ extend = "../pyproject.toml"
 ignore = ["ANN", "UP", "SIM105", "B904"]
 
 [tool.ruff.lint.per-file-ignores]
-# Derived from upstream (see NOTICE). Imports sit below a sys.path fixup by
-# necessity, and holding the order to upstream's keeps the diff readable.
-"apps/*.py" = ["E402", "I001"]
-
-[tool.ruff.format]
-# Left byte-identical to upstream apart from the transport hook, so that a
-# diff against the clone still shows only the intentional change.
-exclude = ["apps/*.py"]
+# `/flash` と `/flash/apps` を sys.path に入れてからでないと peer module を
+# import できないので、import が冒頭に来ない。E402 はそのぶん。
+"apps/*.py" = ["E402"]
 
 # ---------------------------------------------------------------- pytest
 
