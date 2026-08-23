@@ -28,6 +28,15 @@ Three consequences, and this module is all three:
     speech socket then cannot get. `main.py` stays source — MicroPython
     runs `/flash/main.py` and never looks for `main.mpy`.
 
+### 分かれ方
+
+依存は下から上への一方向で、ここが一番上にいる。
+
+    deploy_spec.py    何をどこへ置くか、と run 全体の型 (Deadline / Job)
+    deploy_build.py   mpy-cross を呼んで overlay をバイトコードにする
+    deploy_device.py  flash を書き換える。ここから先はデバイスが要る
+    buddy_deploy.py   発話で確かめる + CLI
+
 ### Why it ends by talking
 
 Everything above proves bytes landed on flash, which is not the same as
@@ -67,481 +76,41 @@ that does not take.
 from __future__ import annotations
 
 import argparse
-import re
-import subprocess
 import sys
-import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from pathlib import Path
 
 from buddy_link import DEFAULT_READ_TIMEOUT, LAUNCH_SOURCE, BuddyLink
 from buddy_verbs import say, speak, voicevox_url
 from buddy_wire import Message
-from device_repl import (
-    Repl,
-    ReplError,
-    connect_repl,
-    run_and_release,
+from deploy_build import build_overlay, check_launcher, compile_source, mpy_cross_abi
+from deploy_device import (
+    device_mpy_abi,
+    find_shadows,
+    install_launcher,
+    prune,
+    prune_stale,
+    push_jobs,
+    report_flash,
+    stage_upstream,
 )
-
-# host/tools/src/buddy_deploy.py から 3 つ上。デバイスへ載せるソースは
-# workspace member をまたいで device/ の下にあるので、member 単位ではなく
-# リポジトリのルートを起点にする必要がある。
-REPO = Path(__file__).resolve().parents[3]
-
-DEVICE_ROOT = REPO / "device"
-
-DEST_ROOT = "/flash"
-
-# The .mpy ABI mpy-cross must emit. Bytecode is only portable within one
-# ABI, and the board reports 6 (`sys.implementation._mpy & 0xff`) under
-# MicroPython 1.27. Pinned here as well as in pyproject.toml because a
-# dependency bump is the way this breaks, and the failure on the device
-# is an ImportError with nothing pointing back at the host.
-MPY_CROSS_ABI = "6.3"
-
-# Modules this repository owns, relative to device/. The `buddy` package
-# keeps them together on flash — `/flash/buddy/` is this repository's,
-# `/flash/` root is the firmware's and upstream's.
-OVERLAY: tuple[str, ...] = (
-    # Empty, and pushed anyway: MicroPython has no namespace packages, so
-    # without it `/flash/buddy/` is a directory rather than a package and
-    # every import below fails.
-    "buddy/__init__.py",
-    "buddy/serial.py",
-    "buddy/chat.py",
-    # Shipped but never imported: the app pulls it in only when a `dbg.*`
-    # frame arrives and drops it again on `dbg.off`, so it costs flash
-    # and no heap. Leaving it off the device would mean the one bundle
-    # that cannot be inspected is the one already misbehaving.
-    "buddy/debug.py",
-    "buddy/speak.py",
-    "buddy/tts.py",
-    "apps/claude_buddy.py",
+from deploy_spec import (
+    DEFAULT_BUILD,
+    DEFAULT_TIMEOUT_S,
+    DEFAULT_VENDOR,
+    DEFAULT_WAIT_S,
+    LAUNCH_SETTLE_S,
+    LAUNCHER,
+    MPY_CROSS_ABI,
+    SERIAL_READ_TIMEOUT_S,
+    UPSTREAM,
+    VERIFY_TEXT,
+    VERIFY_TIMEOUT_S,
+    Deadline,
+    DeployError,
+    Job,
 )
-
-# Peers that live on the device and come from upstream. Read off flash,
-# compiled, pushed back as bytecode. `buddy_ble` is deliberately not
-# here: the serial transport never imports it, and the NimBLE stack
-# behind it reserves the heap speech needs.
-UPSTREAM: tuple[str, ...] = (
-    "buddy_chars",
-    "buddy_protocol",
-    "buddy_state",
-    "buddy_ui_cp",
-)
-
-# Replaces upstream's launcher. Pushed as source: MicroPython executes
-# /flash/main.py directly and never looks for a main.mpy.
-LAUNCHER = "main.py"
-
-# Launcher-only or BLE-only. Nothing the serial build imports reaches
-# these, and each one is heap the app would otherwise never get back.
-REMOVE: tuple[str, ...] = (
-    "burst_frames.py",
-    "buddy_ble.py",
-    "buddy_ble.mpy",
-    "apps/snake.py",
-    "apps/hello_cardputer.py",
-)
-
-# Where OVERLAY used to land, before the `buddy` package existed. Deleted
-# rather than archived: these are this repository's own modules and git
-# has them. Left behind they are flash nothing imports, and — worse — a
-# stale copy that an old `sys.path` entry could still resolve.
-STALE: tuple[str, ...] = (
-    "buddy_serial.mpy",
-    "buddy_chat.mpy",
-    "buddy_debug.mpy",
-    "buddy_speak.mpy",
-    "buddy_tts.mpy",
-    "buddy_serial.py",
-    "buddy_chat.py",
-    "buddy_debug.py",
-    "buddy_speak.py",
-    "buddy_tts.py",
-)
-
-# Build output. tmp/ is the scratch directory and may be wiped at any
-# time, which is fine — everything in here is regenerated from source.
-DEFAULT_BUILD = REPO / "tmp" / "mpy"
-
-# Upstream sources pulled off the device. Not scratch: for the modules
-# this repository does not carry, this is the only copy on the host once
-# flash holds bytecode. Untracked, because redistributing them is
-# exactly what the NOTICE says this repository does not do.
-DEFAULT_VENDOR = REPO / "vendor" / "device"
-
-# Whole-run budget. Generous: a full deploy is nine transfers over a
-# 115200 line plus however long it takes a human to reach the reset
-# button.
-DEFAULT_TIMEOUT_S = 300.0
-
-# How long to wait for the REPL when the interrupt does not get us one.
-# Long enough to reach over and press BtnRST, short enough that an
-# unattended device fails the command.
-DEFAULT_WAIT_S = 45.0
-
-# Read timeout on the port once it is open. mpremote's own default is
-# None, i.e. block forever; this is what turns a device that stopped
-# answering into an error instead of a wedged process.
-SERIAL_READ_TIMEOUT_S = 5.0
-
-# mpy-cross on five small modules is milliseconds. This only exists so
-# that a wedged child cannot outlive the budget it was checked against.
-COMPILE_TIMEOUT_S = 60.0
-
-# What the device says once the bundle is on flash. Short on purpose:
-# the panel holds four rows of nine wide glyphs, and synthesis is the
-# slow part of the round trip.
-VERIFY_TEXT = "デプロイ完了なのだ"
-
-# Seconds to let the app talk after the launch before anything is asked
-# of it. The same settle `buddy_bridge --start` uses: a failed import
-# prints its traceback in this window, and reading it is how the run
-# gets to say what went wrong instead of just timing out.
-LAUNCH_SETTLE_S = 4.0
-
-# Per-request patience once the app is up. Synthesis has its own, much
-# longer budget inside `buddy_verbs.speak`.
-VERIFY_TIMEOUT_S = 10.0
-
-
-class DeployError(RuntimeError):
-    """The deploy cannot go ahead. `ReplError` means the link; this means us."""
-
-
-class DeployTimeout(DeployError):
-    """The budget ran out. A distinct type so the message can say so."""
-
-
-class Deadline:
-    """A budget for the whole run, checked between steps.
-
-    Steps are not interruptible — mpremote's transfers either complete
-    or raise on the port's read timeout — so this cannot cut one short.
-    What it does is stop the run from starting a step it has no time
-    left for, and name the step it stopped at.
-    """
-
-    def __init__(self, budget: float, clock: Callable[[], float] = time.monotonic) -> None:
-        self.budget = budget
-        self._clock = clock
-        self._end = clock() + budget
-
-    def remaining(self) -> float:
-        return self._end - self._clock()
-
-    def check(self, step: str) -> None:
-        if self.remaining() <= 0.0:
-            raise DeployTimeout(
-                f"the {self.budget:.0f}s budget ran out before: {step}. "
-                "Raise --timeout if the link is just slow; if it is not, the "
-                "device stopped answering."
-            )
-
-
-@dataclass(frozen=True)
-class Job:
-    """One compiled module, ready to push.
-
-    `origin` is only for the log, and it earns its place: "which copy of
-    buddy_ui_cp did this run compile" is the first question when the app
-    starts behaving like a different version.
-    """
-
-    built: Path
-    dest: str
-    origin: str
-    size: int
-
-    @property
-    def shadow(self) -> str:
-        """The source path on the device that would hide this bytecode."""
-        return f"{DEST_ROOT}/{self.dest[: -len('.mpy')]}.py"
-
-
-# ---------------------------------------------------------------- mpy-cross
-
-
-def _mpy_cross_binary() -> str:
-    try:
-        # PyPI 版の mpy-cross に型情報が無く、stub パッケージも存在しない。
-        import mpy_cross  # pyright: ignore[reportMissingTypeStubs]
-    except ImportError:
-        raise DeployError(
-            "mpy-cross is not installed. It is in the dev dependency group: run `uv sync`."
-        ) from None
-    return str(mpy_cross.mpy_cross)
-
-
-def mpy_cross_abi(binary: str | None = None) -> str:
-    """The `.mpy` ABI this mpy-cross emits, as "<version>.<sub-version>"."""
-    text = _run([binary or _mpy_cross_binary(), "--version"], "mpy-cross --version")
-    match = re.search(r"mpy v(\d+\.\d+)", text)
-    if match is None:
-        raise DeployError(f"mpy-cross did not report an .mpy version: {text.strip()!r}")
-    return match.group(1)
-
-
-def compile_source(src: Path, out: Path, binary: str | None = None) -> int:
-    """Compile one module. Returns the size of the bytecode written."""
-    out.parent.mkdir(parents=True, exist_ok=True)
-    _run([binary or _mpy_cross_binary(), "-o", str(out), str(src)], f"mpy-cross on {src}")
-    return out.stat().st_size
-
-
-def _run(argv: list[str], what: str) -> str:
-    try:
-        res = subprocess.run(
-            argv, capture_output=True, text=True, check=False, timeout=COMPILE_TIMEOUT_S
-        )
-    except subprocess.TimeoutExpired:
-        raise DeployError(f"{what} did not finish within {COMPILE_TIMEOUT_S:.0f}s") from None
-    if res.returncode:
-        raise DeployError(f"{what} failed: {(res.stderr or res.stdout).strip()}")
-    # --version goes to stdout on some builds and stderr on others.
-    return res.stdout + res.stderr
-
-
-def mpy_abi_of(data: bytes) -> int:
-    """The `.mpy` format version out of a compiled module's header.
-
-    Byte 0 is 'M' and byte 1 is the version. The remaining header bytes
-    encode the sub-version, feature flags and native architecture; none
-    of them matter here, because bytecode-only output carries no native
-    code and mpy-cross leaves that byte at zero.
-    """
-    if len(data) < 4 or data[0:1] != b"M":
-        raise DeployError("not a .mpy file: the 'M' magic is missing")
-    return data[1]
-
-
-def device_mpy_abi(repl: Repl) -> int:
-    """The `.mpy` version the firmware on the far end will load.
-
-    `sys.implementation._mpy` packs the version into the low byte and
-    the sub-version and native arch above it. Only the low byte has to
-    match what we emit, since we emit no native code.
-    """
-    repl.exec("import sys")
-    return int(repl.eval("sys.implementation._mpy")) & 0xFF
-
-
-# ------------------------------------------------------------------- build
-
-
-def build_overlay(build_dir: Path, src_dir: Path | None = None) -> list[Job]:
-    """Compile the modules this repository owns.
-
-    Runs before the port is opened. A syntax error in the overlay should
-    not be discovered halfway through rewriting flash.
-    """
-    src_dir = src_dir if src_dir is not None else DEVICE_ROOT
-    jobs: list[Job] = []
-    for rel in OVERLAY:
-        src = src_dir / rel
-        if not src.is_file():
-            raise DeployError(f"missing overlay source: {src}")
-        stem = rel[: -len(".py")]
-        out = build_dir / f"{stem}.mpy"
-        jobs.append(Job(out, f"{stem}.mpy", str(src.relative_to(REPO)), compile_source(src, out)))
-    return jobs
-
-
-def check_launcher(build_dir: Path, src_dir: Path | None = None) -> int:
-    """Compile device/main.py purely to have MicroPython's parser see it.
-
-    The result is never pushed — the launcher has to stay source — so it
-    lands in a directory of its own rather than next to the modules that
-    are, where a stray `main.mpy` would be an invitation.
-    """
-    src_dir = src_dir if src_dir is not None else DEVICE_ROOT
-    src = src_dir / LAUNCHER
-    if not src.is_file():
-        raise DeployError(f"missing launcher source: {src}")
-    return compile_source(src, build_dir / "syntax-check" / "main.mpy")
-
-
-# ---------------------------------------------------------------- transfer
-
-
-def push_file(repl: Repl, src: Path, dest: str, *, quiet: bool = False) -> int:
-    """Copy `src` to `/flash/<dest>`. Returns the size the device reports.
-
-    What is left of `buddy/scripts/push.py`, which this repository used
-    to borrow from the upstream clone and then reimplemented over paste
-    mode (Apache-2.0, see NOTICE). `mpremote` owns the transfer now — see
-    host/device_repl.py for why — so what remains is the part specific to
-    this install layout: peer modules at `/flash/`, apps at
-    `/flash/apps/`, hence the one directory level that gets created.
-    """
-    data = src.read_bytes()
-    target = f"{DEST_ROOT}/{dest}"
-
-    def progress(written: int, total: int) -> None:
-        sys.stderr.write(f"\r  {dest}: {written}/{total} bytes")
-        sys.stderr.flush()
-
-    try:
-        if "/" in dest:
-            parent = f"{DEST_ROOT}/{dest.rsplit('/', 1)[0]}"
-            if not repl.fs_isdir(parent):
-                repl.fs_mkdir(parent)
-        repl.fs_writefile(target, data, progress_callback=None if quiet else progress)
-        # Stat what landed rather than trusting the write. A short
-        # transfer is otherwise indistinguishable from a good one until
-        # the app fails to import.
-        landed = repl.fs_stat(target).st_size
-    except Exception as exc:
-        # mpremote raises TransportError for a link problem and OSError
-        # for a device-side filesystem error; both mean the same thing
-        # to the operator, and neither names the file on its own.
-        raise ReplError(f"{dest}: transfer failed: {exc}") from None
-    finally:
-        if not quiet:
-            sys.stderr.write("\n")
-
-    if landed != len(data):
-        raise ReplError(f"{dest}: {landed} bytes on flash, sent {len(data)}")
-    return landed
-
-
-# ------------------------------------------------------------------ device
-
-
-def _archive(vendor: Path, name: str, data: bytes) -> Path:
-    path = vendor / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
-    return path
-
-
-def stage_upstream(
-    repl: Repl, vendor: Path, build_dir: Path, deadline: Deadline, log: Callable[[str], None]
-) -> list[Job]:
-    """Get every upstream peer onto the device as bytecode.
-
-    Three states, because a deploy is run more than once:
-
-      - source still on flash: read it, archive it, compile it, push it.
-      - already converted: nothing to do, and saying so is the point —
-        silence would look the same as a module that got skipped.
-      - neither source nor bytecode: fall back to the archive, and if
-        that is empty too, say which module and how to get it back
-        rather than pushing a half-installed bundle.
-    """
-    jobs: list[Job] = []
-    for name in UPSTREAM:
-        deadline.check(f"staging {name}")
-        on_device = f"{DEST_ROOT}/{name}.py"
-        cached = vendor / f"{name}.py"
-
-        if repl.fs_exists(on_device):
-            _archive(vendor, f"{name}.py", bytes(repl.fs_readfile(on_device)))
-            log(f"  archived {name}.py from flash -> {cached}")
-        elif repl.fs_exists(f"{DEST_ROOT}/{name}.mpy"):
-            log(f"  {name}: already bytecode on flash, left alone")
-            continue
-        elif not cached.is_file():
-            raise DeployError(
-                f"{name} is on neither the device nor in {vendor}. It comes from "
-                "upstream, not from this repository — reinstall the bundle with "
-                "the m5-onboard skill and run this again."
-            )
-
-        out = build_dir / f"{name}.mpy"
-        jobs.append(Job(out, f"{name}.mpy", str(cached), compile_source(cached, out)))
-    return jobs
-
-
-def push_jobs(
-    repl: Repl, jobs: Sequence[Job], deadline: Deadline, log: Callable[[str], None]
-) -> None:
-    """Push each module, then delete the source that would shadow it."""
-    for job in jobs:
-        deadline.check(f"pushing {job.dest}")
-        push_file(repl, job.built, job.dest, quiet=True)
-        note = ""
-        if repl.fs_exists(job.shadow):
-            repl.fs_rmfile(job.shadow)
-            note = f", removed {job.shadow}"
-        log(f"  {job.dest}: {job.size} bytes from {job.origin}{note}")
-
-
-def install_launcher(
-    repl: Repl,
-    vendor: Path,
-    deadline: Deadline,
-    log: Callable[[str], None],
-    src_dir: Path | None = None,
-) -> None:
-    """Replace the launcher, keeping upstream's if this is the first run."""
-    src_dir = src_dir if src_dir is not None else DEVICE_ROOT
-    deadline.check("installing the launcher")
-    ours = (src_dir / LAUNCHER).read_bytes()
-    target = f"{DEST_ROOT}/{LAUNCHER}"
-
-    if repl.fs_exists(target):
-        current = bytes(repl.fs_readfile(target))
-        # Only upstream's launcher is worth keeping, and after the first
-        # run the file on flash is ours. Comparing is what stops a second
-        # run from overwriting the archive with a copy of device/main.py.
-        if current != ours and not (vendor / LAUNCHER).is_file():
-            _archive(vendor, LAUNCHER, current)
-            log(f"  archived the upstream launcher -> {vendor / LAUNCHER}")
-
-    push_file(repl, src_dir / LAUNCHER, LAUNCHER, quiet=True)
-    log(f"  {LAUNCHER}: {len(ours)} bytes (source, not bytecode)")
-
-
-def prune(repl: Repl, vendor: Path, deadline: Deadline, log: Callable[[str], None]) -> None:
-    """Delete what the serial build never imports, archiving it first."""
-    for rel in REMOVE:
-        deadline.check(f"removing {rel}")
-        target = f"{DEST_ROOT}/{rel}"
-        if not repl.fs_exists(target):
-            continue
-        if not (vendor / rel).is_file():
-            _archive(vendor, rel, bytes(repl.fs_readfile(target)))
-        repl.fs_rmfile(target)
-        log(f"  removed {rel} (archived under {vendor})")
-
-
-def prune_stale(repl: Repl, deadline: Deadline, log: Callable[[str], None]) -> None:
-    """Delete what an older layout left on flash. See `STALE`."""
-    for rel in STALE:
-        deadline.check(f"removing {rel}")
-        target = f"{DEST_ROOT}/{rel}"
-        if not repl.fs_exists(target):
-            continue
-        repl.fs_rmfile(target)
-        log(f"  removed {rel} (moved into the buddy package)")
-
-
-def find_shadows(repl: Repl, jobs: Sequence[Job]) -> list[str]:
-    """Sources still hiding the bytecode next to them.
-
-    The deploy is not done while one of these exists: the device would
-    keep parsing source, the heap would stay where it was, and every
-    visible sign would say the push succeeded.
-    """
-    return [job.shadow for job in jobs if repl.fs_exists(job.shadow)]
-
-
-def report_flash(repl: Repl, log: Callable[[str], None]) -> None:
-    for path in (DEST_ROOT, f"{DEST_ROOT}/buddy", f"{DEST_ROOT}/apps"):
-        try:
-            names = sorted(entry.name for entry in repl.fs_listdir(path))
-        except OSError as exc:
-            # Said rather than skipped. A missing /flash/apps means the
-            # app is not where the launcher looks for it, and a silent
-            # gap in this listing reads as an empty directory.
-            log(f"  {path}: could not be listed: {exc}")
-            continue
-        log(f"  {path}: {', '.join(names)}")
-
+from device_repl import Repl, ReplError, connect_repl, run_and_release
 
 # ------------------------------------------------------------ confirmation
 
