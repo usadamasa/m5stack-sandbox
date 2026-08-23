@@ -37,6 +37,17 @@ jobs:
       - run: uv run ruff format --check
       # 行数のラチェット。git ls-files でファイルを挙げるので checkout が要る。
       - run: uv run poe lines
+      # メトリクスは読ませるのが目的なので summary へも出す。落ちるのは
+      # 循環依存があるときだけ。
+      - name: Architecture metrics
+        if: always()
+        # shell を書かないと `bash -e {0}` で走り、pipefail が付かない。
+        # tee の exit code だけが残って、循環依存で落ちても素通りする。
+        shell: bash
+        run: |
+          printf '### metrics\n\n```\n' >> "$GITHUB_STEP_SUMMARY"
+          uv run poe metrics | tee -a "$GITHUB_STEP_SUMMARY"
+          printf '```\n' >> "$GITHUB_STEP_SUMMARY"
 
   typecheck:
     runs-on: ubuntu-latest

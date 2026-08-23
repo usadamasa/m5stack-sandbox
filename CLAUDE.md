@@ -41,12 +41,18 @@ uv run python host/tools/src/buddy_deploy.py --compile-only   # device/ が Micr
 uv run poe license                                            # 依存のライセンスを trivy の分類で検査する
 uv run poe lines                                              # 行数のラチェット。しきい値超えのファイルが増えていないか
 uv run poe lines --update                                     # 縮んだぶんを baseline へ取り込む
+uv run poe metrics                                            # 複雑度・凝集度・結合度・循環依存
 ```
 
 `poe lines` のしきい値は 400 行。超えたファイルは `file-length-baseline.json` に
 現在値で載り、そこから増やせない。減らしたぶんは `--update` が取り込んで baseline が
 下がる。上げる方向へは動かないので、baseline に並ぶ行数がそのままリファクタリングの
 backlog になる。新しく超えたファイルを意図して受け入れるときだけ `--adopt`。
+
+`poe metrics` は関数ごとの循環的複雑度、モジュールの凝集度 (定義が参照でいくつの塊に
+分かれるか)、コンポーネント間の結合度 (Ca/Ce/instability)、依存の循環を出す。落ちるのは
+循環依存があるときだけで、残りは並べるだけ。判定を持っているのは ruff (C901) と
+行数のラチェット。
 
 タスクランナーは poethepoet。定義はルートの `pyproject.toml` の `[tool.poe.tasks]`、一覧は
 `uv run poe --help`。CI に書くのはタスク名だけにして、コマンドと根拠は pyproject 側に置く。
