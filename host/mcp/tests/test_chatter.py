@@ -123,12 +123,27 @@ class Clock:
         self.t += seconds
 
 
+class PinnedRandom(random.Random):
+    """Jitter pinned to the middle of whatever range it is asked for.
+
+    The activity tests reason about where one draw lands relative to a
+    threshold, which a real generator would turn into a coin toss.
+    """
+
+    def random(self) -> float:
+        return 0.5
+
+    def uniform(self, a: float, b: float) -> float:
+        return (a + b) / 2
+
+
 def build(
     link: StubLink | None,
     source: ListSource | None = None,
     lock: threading.Lock | None = None,
     real_clock: bool = False,
     identity: AgentIdentity | None = None,
+    rng: random.Random | None = None,
     **overrides: Any,  # noqa: ANN401 — mirrors ChatterConfig's own field types
 ) -> tuple[ChatterService, Clock, ListSource]:
     """A service wired to stubs, with the jitter pinned to fixed values.
@@ -154,7 +169,7 @@ def build(
         lambda: link,
         lock if lock is not None else threading.Lock(),
         source=src,
-        rng=random.Random(1),
+        rng=rng if rng is not None else random.Random(1),
         clock=time.monotonic if real_clock else clock,
         identity=identity,
     )
@@ -219,6 +234,10 @@ class ConfigTests(unittest.TestCase):
         cfg = ChatterConfig.from_env({"BUDDY_CHATTER_GAP_MIN": "soon", "BUDDY_CHATTER_BATCH": ""})
         self.assertEqual(cfg.gap_min, 40.0)
         self.assertEqual(cfg.batch, 6)
+
+    def test_the_saturation_rate_is_tunable(self) -> None:
+        self.assertEqual(ChatterConfig.from_env({}).busy_rate, 12.0)
+        self.assertEqual(ChatterConfig.from_env({"BUDDY_CHATTER_BUSY_RATE": "30"}).busy_rate, 30.0)
 
     def test_voice_every_cannot_be_zero(self) -> None:
         # A zero would make the modulo in _transmit raise on every line.
@@ -302,6 +321,75 @@ class PacingTests(unittest.TestCase):
         clock.advance(1000.0)
         service.step(Event("tool", "Read"))
         self.assertGreaterEqual(service.status()["next_gap_s"], 90.0)
+
+
+class ActivityPacingTests(unittest.TestCase):
+    """The gap tracks how busy the session is, not just the dice.
+
+    The jitter is pinned to the middle of its range throughout, so every
+    assertion here is about where the range itself sat.
+    """
+
+    def busy(self, **overrides: Any) -> tuple[ChatterService, Clock, ListSource]:  # noqa: ANN401
+        settings: dict[str, Any] = {"gap_min": 40.0, "gap_max": 150.0, "busy_rate": 12.0}
+        settings.update(overrides)
+        return build(StubLink(), rng=PinnedRandom(), **settings)
+
+    def test_a_quiet_session_waits_near_the_top_of_the_range(self) -> None:
+        service, _, _ = self.busy()
+        service.step(Event("tool", "Read"))
+        self.assertEqual(service.spoken, 0, "one event inside the gap says nothing yet")
+        self.assertGreater(service.status()["next_gap_s"], 95.0)
+
+    def test_a_busy_session_waits_near_the_bottom_of_the_range(self) -> None:
+        service, _, _ = self.busy()
+        for _ in range(24):
+            service.step(Event("tool", "Read"))
+        self.assertEqual(service.status()["tempo"], 1.0)
+        self.assertLess(service.status()["next_gap_s"], 95.0)
+
+    def test_the_gap_never_leaves_the_configured_range(self) -> None:
+        service, _, _ = self.busy()
+        for _ in range(64):
+            service.step(Event("tool", "Read"))
+            gap = service.status()["next_gap_s"]
+            self.assertGreaterEqual(gap, 40.0)
+            self.assertLessEqual(gap, 150.0)
+
+    def test_a_burst_shortens_the_wait_already_under_way(self) -> None:
+        service, clock, _ = self.busy()
+        clock.advance(80.0)
+        service.step(Event("tool", "Read"))
+        self.assertEqual(service.spoken, 0, "80s is still inside a quiet session's gap")
+        for _ in range(24):
+            service.step(Event("tool", "Read"))
+        self.assertEqual(service.spoken, 1, "the burst pulled the threshold under the 80s spent")
+
+    def test_activity_ages_out_of_the_window(self) -> None:
+        service, clock, _ = self.busy()
+        for _ in range(24):
+            service.step(Event("tool", "Read"))
+        self.assertEqual(service.status()["tempo"], 1.0)
+        clock.advance(buddy_chatter._ACTIVITY_WINDOW + 1.0)
+        self.assertEqual(service.status()["tempo"], 0.0)
+
+    def test_the_devices_own_idle_event_is_not_activity(self) -> None:
+        service, clock, _ = self.busy()
+        clock.advance(200.0)
+        service.step(None)
+        self.assertEqual(service.spoken, 1, "silence alone spoke")
+        self.assertEqual(service.status()["tempo"], 0.0, "talking to itself is not a busy session")
+
+    def test_a_single_valued_range_stays_where_it_was_configured(self) -> None:
+        service, _, _ = self.busy(gap_min=30.0, gap_max=30.0)
+        for _ in range(24):
+            service.step(Event("tool", "Read"))
+        self.assertEqual(service.status()["next_gap_s"], 30.0)
+
+    def test_a_zero_saturation_rate_does_not_divide_by_zero(self) -> None:
+        service, _, _ = self.busy(busy_rate=0.0)
+        service.step(Event("tool", "Read"))
+        self.assertEqual(service.status()["tempo"], 1.0, "any event at all counts as busy")
 
 
 class DeviceTests(unittest.TestCase):

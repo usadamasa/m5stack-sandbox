@@ -11,7 +11,7 @@ description: 作業中に Cardputer-Adv が独り言を言う機能 (host/mcp/sr
 ```
 hooks ─datagram─> tmp/buddy-chatter.sock ─> MCP server
   .agents/hooks/                              ├ receiver thread : recvfrom → キュー
-  buddy_chatter_notify.py                     └ worker thread   : ゆらぎ付き間隔で 1 行
+  buddy_chatter_notify.py                     └ worker thread   : 流量で動く間隔で 1 行
   (Claude Code / Codex 共用)                     ├ RoutingLineSource
                                                  │   ├ claude-code → VertexLineSource
                                                  │   └ codex       → CodexLineSource
@@ -104,12 +104,28 @@ required`)。trust するまでは発火しない。
 
 ## 間隔
 
-固定間隔はメトロノームに聞こえて数分で気に障る。発話のたびに `uniform(gap_min, gap_max)` と
-`uniform(idle_min, idle_max)` を引き直す。既定は 40〜150 秒と 60〜180 秒。
+固定間隔はメトロノームに聞こえて数分で気に障る。発話のたびにゆらぎを引き直す。沈黙の閾値は
+`uniform(idle_min, idle_max)` そのままで、既定は 60〜180 秒。
 
-うるさいときの下げ方は 2 つ。`BUDDY_CHATTER_VOICE_EVERY` を上げると声は N 回に 1 回で残りは
-画面だけになる。`buddy_chatter_start(gap_min=..., gap_max=...)` はサーバを再起動せずに
-その場で引き直す。完全に黙らせるなら `buddy_chatter_stop`、恒久的には `BUDDY_CHATTER=0`。
+発話間隔のほうは、`gap_min`〜`gap_max` (既定 40〜150 秒) のどこから引くかが**セッションの
+忙しさで動く**。忙しいときは短いほうの端から、静かなときは長いほうの端から引く。
+
+- **tempo** は直近 `_ACTIVITY_WINDOW` (120 秒) に届いた hook イベントの流量を 0〜1 に
+  正規化した値。`BUDDY_CHATTER_BUSY_RATE` (既定 12 件/分) で 1.0 に飽和する。ツール呼び出し
+  1 回は Pre と Post の両方で数えるので、12 件/分はおよそ 6 回/分
+- 抽選の窓は範囲の `_TEMPO_WIDTH` (0.5) 幅を保ったままスライドする。幅を保つのは、忙しい側で
+  ゆらぎが潰れてメトロノームに戻らないようにするため
+- tempo は**引いた時点ではなく比較する時点で**読む。長い間隔を引いた直後にイベントが集中
+  したら、進行中の待ちがその場で縮む。固定されるのは窓の中のゆらぎだけ
+- chatter 自身の `idle` イベントは流量に数えない。数えると独り言が独り言を呼ぶ
+
+今の値は `buddy_chatter_status` の `tempo` / `next_gap_s` / `busy_rate`。`next_gap_s` は
+確定値ではなく「今この瞬間の閾値」なので、イベントが来るたびに動く。
+
+うるさいときの下げ方は 3 つ。`BUDDY_CHATTER_VOICE_EVERY` を上げると声は N 回に 1 回で残りは
+画面だけになる。`buddy_chatter_start(gap_min=..., gap_max=..., busy_rate=...)` はサーバを
+再起動せずにその場で引き直す (`busy_rate` を上げると忙しさに反応しにくくなる)。完全に
+黙らせるなら `buddy_chatter_stop`、恒久的には `BUDDY_CHATTER=0`。
 
 ## 環境変数
 
@@ -124,6 +140,7 @@ MCP server の環境から読む (`.mcp.json` の `env`、Codex なら
 | `BUDDY_CHATTER_SOCKET` | `<repo>/tmp/buddy-chatter.sock` | hook 側と一致していること |
 | `BUDDY_CHATTER_GAP_MIN` / `_MAX` | `40` / `150` | 発話間隔のゆらぎ幅 (秒) |
 | `BUDDY_CHATTER_IDLE_MIN` / `_MAX` | `60` / `180` | 独り言までの沈黙のゆらぎ幅 (秒) |
+| `BUDDY_CHATTER_BUSY_RATE` | `12` | tempo が 1.0 に飽和する hook イベント数 (件/分) |
 | `BUDDY_CHATTER_VOICE_EVERY` | `1` | N 回に 1 回だけ声を出す。残りは画面のみ |
 | `BUDDY_CHATTER_PROMPT` | `host/mcp/src/chatter_prompt.md` | 口調と性格 |
 | `BUDDY_CHATTER_BATCH` | `6` | 1 回の生成で作る台詞の数 |

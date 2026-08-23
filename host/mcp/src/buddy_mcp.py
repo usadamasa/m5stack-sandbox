@@ -489,6 +489,7 @@ def buddy_chatter_start(
     gap_min: float = -1.0,
     gap_max: float = -1.0,
     voice_every: int = -1,
+    busy_rate: float = -1.0,
 ) -> dict[str, Any]:
     """Start the idle chatter, optionally retuning how often it talks.
 
@@ -498,8 +499,12 @@ def buddy_chatter_start(
 
     Each interval is drawn fresh from `gap_min`..`gap_max` seconds rather
     than being fixed, because a metronome is what makes this annoying.
-    `voice_every` speaks aloud on every Nth utterance and shows the rest
-    on the panel only — raise it when the room has other people in it.
+    Where in that range it is drawn follows how busy the session is:
+    `busy_rate` is the hook events per minute that count as fully busy
+    and put the gap at the short end of the range. Raise it to make the
+    device harder to excite. `voice_every` speaks aloud on every Nth utterance and shows
+    the rest on the panel only — raise it when the room has other people
+    in it.
 
     Any argument left at -1 keeps its current value. Passing one while
     the chatter is already running restarts it with the new setting.
@@ -512,6 +517,7 @@ def buddy_chatter_start(
             ("gap_min", gap_min),
             ("gap_max", gap_max),
             ("voice_every", voice_every),
+            ("busy_rate", busy_rate),
         )
         if value >= 0
     }
