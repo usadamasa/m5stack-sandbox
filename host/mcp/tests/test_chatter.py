@@ -238,7 +238,7 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(cfg.enabled)
         self.assertEqual(cfg.gap_min, 40.0)
         self.assertEqual(cfg.voice_every, 1)
-        self.assertTrue(str(cfg.socket_path).endswith("tmp/buddy-chatter.sock"))
+        self.assertTrue(str(cfg.socket_path).endswith("buddy/chatter.sock"))
 
     def test_disabled(self) -> None:
         self.assertFalse(ChatterConfig.from_env({"BUDDY_CHATTER": "0"}).enabled)

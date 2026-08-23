@@ -30,11 +30,32 @@ import socket
 import sys
 from pathlib import Path
 
-# .agents/hooks/buddy_chatter_notify.py -> repo root. Must agree with
-# DEFAULT_SOCKET in host/mcp/src/buddy_chatter.py.
-SOCKET = os.environ.get("BUDDY_CHATTER_SOCKET") or str(
-    Path(__file__).resolve().parents[2] / "tmp" / "buddy-chatter.sock"
-)
+
+def socket_path(env: dict) -> str:
+    """Where the daemon is listening. Must agree with `buddy_paths`.
+
+    Duplicated rather than imported: this runs on the system `python3`
+    on every tool call, with no repository on its path and no time to
+    spend. The contract test in host/mcp/tests holds the two answers
+    together.
+
+    A relative `XDG_STATE_HOME` is invalid per the spec and the default
+    applies — the same rule the other side follows, which matters
+    because the two have different working directories.
+    """
+    override = env.get("BUDDY_CHATTER_SOCKET")
+    if override:
+        return override
+    raw = env.get("XDG_STATE_HOME", "")
+    base = (
+        Path(raw)
+        if raw and os.path.isabs(raw)
+        else Path(env.get("HOME", "~")).expanduser() / ".local/state"
+    )
+    return str(base / "buddy" / "chatter.sock")
+
+
+SOCKET = socket_path(dict(os.environ))
 
 # Keys in `tool_input` that say what a call is about, most specific
 # first. Falling through all of them leaves just the tool's name, which

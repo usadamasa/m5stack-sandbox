@@ -4,6 +4,10 @@ The hook lives in the shared `.agents/hooks/` rather than in this package.
 It is loaded here by path anyway:
 what it puts on the wire and what `parse_event` takes off it are two
 halves of one format, and nothing else checks that they still agree.
+
+The socket path is the same kind of pair: the hook computes it with the
+standard library alone and `buddy_paths` computes it for the daemon, and
+a disagreement means a device that has simply gone quiet.
 """
 
 import importlib.util
@@ -14,15 +18,19 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, cast
 
+import buddy_paths
 from buddy_chatter import Event, parse_event
 
 HOOK_PATH = Path(__file__).resolve().parents[3] / ".agents" / "hooks" / "buddy_chatter_notify.py"
 
 
-def _load_hook() -> Callable[[Mapping[str, Any]], tuple[str, str] | None]:
-    """Import the hook by path and pull out the function tested.
+def _load_hook() -> tuple[
+    Callable[[Mapping[str, Any]], tuple[str, str] | None],
+    Callable[[dict[str, str]], str],
+]:
+    """Import the hook by path and pull out the functions tested.
 
-    Returned as a typed callable rather than as a module: attributes off
+    Returned as typed callables rather than as a module: attributes off
     a `ModuleType` are untyped, and the point of this file is that the
     two sides of the format agree — which needs the checker awake.
     """
@@ -31,10 +39,13 @@ def _load_hook() -> Callable[[Mapping[str, Any]], tuple[str, str] | None]:
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-    return cast("Callable[[Mapping[str, Any]], tuple[str, str] | None]", module.classify)
+    return (
+        cast("Callable[[Mapping[str, Any]], tuple[str, str] | None]", module.classify),
+        cast("Callable[[dict[str, str]], str]", module.socket_path),
+    )
 
 
-classify = _load_hook()
+classify, hook_socket_path = _load_hook()
 
 
 class HookExistsTests(unittest.TestCase):
@@ -42,6 +53,27 @@ class HookExistsTests(unittest.TestCase):
         # `.claude/settings.json` names this path; a rename that misses
         # it is silent.
         self.assertTrue(HOOK_PATH.is_file(), HOOK_PATH)
+
+
+class SocketPathTests(unittest.TestCase):
+    """The hook and the daemon have to name the same file.
+
+    They cannot share code — the hook runs on the system `python3` with
+    nothing of this repository importable — so the agreement is checked
+    here instead, environment by environment.
+    """
+
+    ENVS = (
+        {"HOME": "/home/u"},
+        {"HOME": "/home/u", "XDG_STATE_HOME": "/x/state"},
+        {"HOME": "/home/u", "XDG_STATE_HOME": "not/absolute"},
+        {"HOME": "/home/u", "BUDDY_CHATTER_SOCKET": "/tmp/explicit.sock"},
+    )
+
+    def test_both_sides_agree(self) -> None:
+        for env in self.ENVS:
+            with self.subTest(env=env):
+                self.assertEqual(hook_socket_path(dict(env)), str(buddy_paths.socket_path(env)))
 
 
 class ClassifyTests(unittest.TestCase):

@@ -80,14 +80,14 @@ from pathlib import Path
 from queue import Empty, Full, Queue
 from typing import Any, Protocol, cast
 
+import buddy_paths
 from buddy_verbs import DEFAULT_RATE, ZUNDAMON, say, speak, voicevox_url
 from buddy_wire import Message
 
-# host/mcp/src/buddy_chatter.py -> repo root. The MCP server is launched
-# from an arbitrary cwd, so the socket path cannot be relative and the
-# hook has to be able to derive the same answer from its own location.
-REPO = Path(__file__).resolve().parents[3]
-DEFAULT_SOCKET = REPO / "tmp" / "buddy-chatter.sock"
+# The daemon is started from an arbitrary directory and the hook fires
+# from an arbitrary project, so both compute this from the environment
+# rather than from where their own file happens to sit. See buddy_paths.
+DEFAULT_SOCKET = buddy_paths.socket_path()
 
 # How often the worker wakes when no event arrives. Only bounds how
 # promptly an idle line lands, so a second is plenty.
@@ -292,11 +292,14 @@ class ChatterConfig:
         `batch`, the pacing) are also arguments to
         `buddy_chatter_start`.
         """
-        env = os.environ if env is None else env
-        raw_socket = env.get("BUDDY_CHATTER_SOCKET", "")
+        # `environment()` rather than `os.environ`: an explicit env is a
+        # caller (or a test) saying exactly what to read, and no env at
+        # all means "however this machine is set up", which includes
+        # `config.toml`.
+        env = buddy_paths.environment() if env is None else env
         raw_prompt = env.get("BUDDY_CHATTER_PROMPT", "")
         return cls(
-            socket_path=Path(raw_socket) if raw_socket else DEFAULT_SOCKET,
+            socket_path=buddy_paths.socket_path(env),
             prompt_path=Path(raw_prompt) if raw_prompt else DEFAULT_PROMPT_PATH,
             enabled=env.get("BUDDY_CHATTER", "1") not in ("0", "false", "no"),
             gap_min=_float_env(env, "BUDDY_CHATTER_GAP_MIN", 40.0),
