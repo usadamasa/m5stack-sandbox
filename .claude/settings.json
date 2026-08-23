@@ -2,6 +2,10 @@
   "enabledPlugins": {
     "cwc-makers@claude-plugins-official": true
   },
+  "env": {
+    "CLAUDE_ALLOW_GH_PR_WRITES": "1",
+    "CLAUDE_ALLOW_GH_ISSUE_WRITES": "1"
+  },
   "permissions": {
     "allow": [
       "Bash(uv *)"
