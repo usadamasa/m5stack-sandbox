@@ -22,14 +22,14 @@ from unittest import mock
 
 from mcp.server.context import ServerRequestContext
 
-import buddy_bridge
 import buddy_mcp
+import buddy_verbs
 from buddy_agent import CLAUDE_CODE, CODEX, UNKNOWN, AgentIdentity
-from buddy_bridge import Message
+from buddy_wire import Message
 
 
 def _recording_speak(store: list[str]) -> Callable[..., Message]:
-    """A stand-in for `buddy_bridge.speak` that records the text and acks.
+    """A stand-in for `buddy_verbs.speak` that records the text and acks.
 
     A plain lambda cannot carry parameter annotations, so `mock.patch.object`
     would otherwise see `side_effect` as an untyped callable.
@@ -43,7 +43,7 @@ def _recording_speak(store: list[str]) -> Callable[..., Message]:
 
 
 def _silent_speak(store: list[str]) -> Callable[..., None]:
-    """A stand-in for `buddy_bridge.speak` that records nothing was said."""
+    """A stand-in for `buddy_verbs.speak` that records nothing was said."""
 
     def fake(*_args: object, **_kwargs: object) -> None:
         store.append("")
@@ -222,30 +222,30 @@ class DebugToolTest(_McpTestCase):
         # The device sets `entered` on the frame that imported its debug
         # module. Only it knows which one that was.
         spoken: list[str] = []
-        with mock.patch.object(buddy_bridge, "speak", side_effect=_recording_speak(spoken)):
+        with mock.patch.object(buddy_verbs, "speak", side_effect=_recording_speak(spoken)):
             buddy_mcp.buddy_connect()
             StubLink.instances[0].ack_extra = {"entered": True}
             result = buddy_mcp.buddy_debug("mem", settle=0.0)
-        self.assertEqual(spoken, [buddy_bridge.DEBUG_ENTER_TEXT])
+        self.assertEqual(spoken, [buddy_verbs.DEBUG_ENTER_TEXT])
         self.assertTrue(result["announced"])
 
     def test_later_calls_say_nothing(self) -> None:
         spoken: list[str] = []
-        with mock.patch.object(buddy_bridge, "speak", side_effect=_silent_speak(spoken)):
+        with mock.patch.object(buddy_verbs, "speak", side_effect=_silent_speak(spoken)):
             result = buddy_mcp.buddy_debug("mem", settle=0.0)
         self.assertEqual(spoken, [])
         self.assertFalse(result["announced"])
 
     def test_announce_false_keeps_it_quiet(self) -> None:
         spoken: list[str] = []
-        with mock.patch.object(buddy_bridge, "speak", side_effect=_silent_speak(spoken)):
+        with mock.patch.object(buddy_verbs, "speak", side_effect=_silent_speak(spoken)):
             buddy_mcp.buddy_connect()
             StubLink.instances[0].ack_extra = {"entered": True}
             buddy_mcp.buddy_debug("mem", announce=False, settle=0.0)
         self.assertEqual(spoken, [])
 
     def test_a_silent_engine_does_not_fail_the_inspection(self) -> None:
-        with mock.patch.object(buddy_bridge, "speak", side_effect=OSError("engine unreachable")):
+        with mock.patch.object(buddy_verbs, "speak", side_effect=OSError("engine unreachable")):
             buddy_mcp.buddy_connect()
             StubLink.instances[0].ack_extra = {"entered": True}
             result = buddy_mcp.buddy_debug("mem", settle=0.0)

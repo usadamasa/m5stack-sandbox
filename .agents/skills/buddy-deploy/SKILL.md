@@ -52,7 +52,7 @@ uv run python host/tools/src/buddy_deploy.py --compile-only            # 実機�
   探さない。`--compile-only` はパーサに通すためだけにコンパイルし、結果は push 対象と別の
   ディレクトリに落とす
 - **`main.py` はブート時にアプリを起動する。** WiFi を上げてから `claude_buddy` を import
-  するところまでが `/flash/main.py` の仕事で、`buddy_bridge.LAUNCH_SOURCE` と同じ 3 手
+  するところまでが `/flash/main.py` の仕事で、`buddy_link.LAUNCH_SOURCE` と同じ 3 手
   (`sys.path` へ `/flash` と `/flash/apps`、`gc.collect()`、import) を踏む。両者が揃って
   いることは `device/tests/test_boot.py` が見る。だから REPL を要求する側は、デバイスが
   REPL に居ることを前提にしてはいけない — ハンドシェイクの Ctrl-C で取り返す

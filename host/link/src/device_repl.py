@@ -74,7 +74,7 @@ class DirEntry(Protocol):
 class Repl(Protocol):
     """The slice of `mpremote`'s SerialTransport this repository uses.
 
-    Narrow on purpose, exactly like `SerialPort` in buddy_bridge: it is
+    Narrow on purpose, exactly like `SerialPort` in buddy_wire: it is
     what lets the tests drive a fake device without a board attached,
     and it documents the contract in one place instead of leaving it
     implied across three call sites.
@@ -83,8 +83,9 @@ class Repl(Protocol):
     # The open pyserial port. mpremote's own `repl` command reaches for
     # this to hand the console to a terminal, so it is a seam the tool
     # supports rather than an internal. Typed loosely because naming it
-    # properly would mean importing buddy_bridge's SerialPort, and
-    # buddy_bridge imports this module.
+    # properly would mean depending on buddy_wire, which is the other
+    # half of the same vocabulary — and this module has no other reason
+    # to know about the protocol layer.
     serial: Any
 
     def enter_raw_repl(self, soft_reset: bool = True, timeout_overall: int = 10) -> None: ...

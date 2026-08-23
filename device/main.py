@@ -98,7 +98,7 @@ try:
 except Exception as e:
     print("main: report failed:", e)
 
-# The same three steps as `buddy_bridge.LAUNCH_SOURCE`, so that the two
+# The same three steps as `buddy_link.LAUNCH_SOURCE`, so that the two
 # ways into the app agree. `del sys.modules[...]` is the one line not
 # copied: a boot is a fresh interpreter and there is nothing cached to
 # drop. `device/tests/test_boot.py` holds the rest of the pair together.

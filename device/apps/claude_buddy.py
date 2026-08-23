@@ -483,7 +483,7 @@ def run():
 # the menu vs. the file system, depending on version). The previous
 # if/else with both arms calling run() was just dispatching to
 # itself; collapse it so the empirical behavior is the documented
-# behavior. `main.py` and `buddy_bridge.LAUNCH_SOURCE` both take the
+# behavior. `main.py` and `buddy_link.LAUNCH_SOURCE` both take the
 # import path. The trade-off is that importing this module from
 # CPython for inspection starts the app — but the imports above (M5,
 # machine) already only resolve on-device, so that path isn't a real

@@ -29,17 +29,17 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import buddy_bridge
+import buddy_verbs
 from buddy import chat as buddy_chat
 from buddy.chat import ChatPanel
-from buddy_bridge import (
+from buddy_text import (
     MAX_SAY_CHARS,
     MAX_SAY_CHARS_WIDE,
-    Message,
     normalize_for_device,
-    say,
     split_for_device,
 )
+from buddy_verbs import say
+from buddy_wire import Message
 
 # Mirrors the geometry constants in buddy.chat so the arithmetic in the
 # assertions below is visible rather than magic.
@@ -564,7 +564,7 @@ class SayTest(unittest.TestCase):
         # The panel shows its last rows only, so parts sent flat out
         # scroll past unread. One gap per seam, none before the first.
         link = _RecordingLink()
-        with mock.patch.object(buddy_bridge.time, "sleep") as nap:
+        with mock.patch.object(buddy_verbs.time, "sleep") as nap:
             say(link, "あ" * (MAX_SAY_CHARS_WIDE * 3), pace=1.5)
         self.assertEqual(nap.call_args_list, [mock.call(1.5), mock.call(1.5)])
 

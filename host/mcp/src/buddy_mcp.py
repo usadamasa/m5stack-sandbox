@@ -1,6 +1,6 @@
 """MCP server exposing the Cardputer-Adv over the Buddy serial protocol.
 
-Wraps `buddy_bridge.ResidentLink` so a coding agent can talk to the
+Wraps `buddy_link.ResidentLink` so a coding agent can talk to the
 device through tool calls instead of shelling out. The link is held open
 across calls, which is what makes device-initiated traffic visible to
 `buddy_events` rather than being lost between invocations.
@@ -64,19 +64,19 @@ from mcp.server.context import CallNext, HandlerResult, ServerRequestContext
 from mcp.server.mcpserver import MCPServer
 
 from buddy_agent import AgentIdentity
-from buddy_bridge import (
+from buddy_chatter import ChatterConfig, ChatterService
+from buddy_link import ResidentLink
+from buddy_text import DEFAULT_PACE
+from buddy_verbs import (
     DEBUG_OPS,
-    DEFAULT_PACE,
     DEFAULT_RATE,
     ZUNDAMON,
-    ResidentLink,
     announce_debug_entry,
     debug,
     say,
     speak,
     voicevox_url,
 )
-from buddy_chatter import ChatterConfig, ChatterService
 from device_repl import ReplError
 
 DEFAULT_PORT = os.environ.get("BUDDY_PORT", "/dev/cu.usbmodem101")

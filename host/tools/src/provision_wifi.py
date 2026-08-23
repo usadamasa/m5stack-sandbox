@@ -29,7 +29,7 @@ The passphrase ends up in plaintext on the device's filesystem. That is
 a real change: the alternative it replaces — handing credentials down
 the cable into the raw REPL on every boot — never persisted anything.
 It buys a device that is on the network before the app starts, which is
-the only time it can get there (see host/buddy_bridge.py's network
+the only time it can get there (see host/link/src/buddy_verbs.py's network
 note), with no host involvement at all.
 
 ### Recovery
