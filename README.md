@@ -46,6 +46,43 @@ upstream のものが既にデバイスに入っており、本リポジトリ�
 
 member とファイルの一覧は [AGENTS.md](AGENTS.md#構成) にある。
 
+## overlay とは
+
+**本リポジトリはファームウェアイメージを配布しない。** デバイスの `/flash` には既に
+2 つの層が載っている — UIFlow 2.0 のユーザーファイルシステムと、その上に
+[moremas/build-with-claude](https://github.com/moremas/build-with-claude) の Claude Buddy。
+ここが送り込むのはその一部の上書き・追加・削除で、それを overlay と呼んでいる。
+
+デプロイ後の `/flash` は次のようになる。`buddy_deploy.py` が最後に出す `report_flash` が
+現物で、下表はその各項目の持ち主。
+
+| flash の項目 | 持ち主 | 本リポジトリの扱い |
+| --- | --- | --- |
+| `.frozen` / `/lib` / `/system` (`sys.path` 上、`/flash` 外) | ファームウェア | 触らない |
+| `README.md` / `libs/` / `res/` / `certificate/` | UIFlow のユーザー FS の雛形 | 触らない |
+| `boot.py` | UIFlow | 触らない (`uiflow/boot_option` が 2 なので `main.py` へ素通しする) |
+| `buddy_protocol.mpy` / `buddy_ui_cp.mpy` / `buddy_state.mpy` / `buddy_chars.mpy` | upstream | **読んで `.mpy` にして書き戻す。** 中身は変えない |
+| `buddy/` (`chat` / `debug` / `serial` / `speak` / `tts`) | 本リポジトリ | 追加 |
+| `apps/claude_buddy.mpy` | upstream 派生 | 置き換え (transport とチャット・発話の横取り) |
+| `main.py` | 本リポジトリ | **置き換え。** upstream のランチャーは捨てた |
+| `buddy_ble` / `burst_frames.py` / `apps/snake.py` / `apps/hello_cardputer.py` | upstream | **消す。** NimBLE が確保する ESP-IDF heap が発話のソケットに要る |
+| `buddy-ja.vlw` | 生成物 | 別経路 (`make_vlw.py`)。930KB あるのでデプロイでは触らない |
+| `wifi_event.py` | UIFlow | 別経路 (`provision_wifi.py`) で認証情報だけ書き換える |
+
+境界の引き方には理由がある。
+
+- **upstream のファイルは書き換えない。** 再配布しないと NOTICE で宣言しており、
+  `vendor/device/` の退避が `.py` を消した後の唯一の控えになる。だから
+  `buddy_protocol` を拡張する代わりに、`claude_buddy.py` の `on_line` で独自 verb
+  (`chat.*` / `speak.*` / `dbg.*`) を先に横取りしている。**upstream を触らずに protocol を
+  伸ばせる唯一の場所がここ**
+- **自前のモジュールは `/flash/buddy/` にまとめる。** flash の階層がそのまま境界になり、
+  ディレクトリ一覧を見れば誰のものか分かる
+- **消すものにも理由が要る。** 消せば upstream の控えは `vendor/` にしか無くなる。
+  だから `buddy_deploy.py` は消す前に必ず退避する
+
+転送で守ることは [buddy-deploy skill](.agents/skills/buddy-deploy/SKILL.md) にある。
+
 ## セットアップ
 
 ### Python

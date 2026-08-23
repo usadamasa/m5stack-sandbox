@@ -16,6 +16,10 @@ uv run python host/tools/src/buddy_deploy.py --compile-only            # 実機�
 
 `.py` を push する経路はリポジトリに無い。増やしてもいけない。
 
+**何を上書きし、何を残し、何を消すのか**は README の
+[overlay とは](../../../README.md#overlay-とは) に表がある。以下はその境界を保つための
+運用のきまり。
+
 ## 転送で守ること
 
 - **自前のモジュールは `/flash/buddy/` に置く。** flash 直下は firmware と upstream のもの

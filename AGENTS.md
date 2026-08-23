@@ -67,6 +67,7 @@ Seatbelt はこれを拒否する。Claude Code 側は `.claude/settings.json` �
 uv workspace の 4 member: `device/` (デバイスの上で動く overlay)、`host/link` (REPL transport
 とクライアント)、`host/mcp` (MCP server)、`host/tools` (デプロイ・provisioning・実測・
 チャットパネル用フォントの生成)。
+overlay が何に何を重ねているかは [README の「overlay とは」](README.md#overlay-とは)。
 ルートの `pyproject.toml` はパッケージではなく、member の列挙とツール設定だけを持つ。
 
 - **lockfile も `.venv` も 1 つ。** 分かれるのは依存宣言とツール設定であって環境ではない。
@@ -78,7 +79,7 @@ uv workspace の 4 member: `device/` (デバイスの上で動く overlay)、`ho
 - `device/buddy/` は本リポジトリがデバイスへ載せるモジュールの package。flash では
   `/flash/buddy/` に落ちる。`buddy_protocol.py` / `buddy_ui_cp.py` / `buddy_state.py` /
   `buddy_chars.py` は upstream のものがデバイスの `/flash/` 直下にあり、本リポジトリには
-  置かない。flash の階層がその境界になっている
+  置かない。flash の階層がその境界になっている (地図は README の「overlay とは」)
 - テストは全て実機不要。`device` の dev グループに host-link が入っているのは、
   `device/tests/test_chat.py` と `test_speak.py` が両側の定数を突き合わせる契約テストだから
 - 依存を足したら `poe license` が弾くことがある。copyleft や分類不能のライセンスが来たら、
