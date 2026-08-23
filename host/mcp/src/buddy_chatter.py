@@ -111,6 +111,37 @@ _QUEUE_DEPTH = 64
 # What the model is told about, and what a line is generated from.
 _HISTORY_DEPTH = 12
 
+# The device's own past utterances, fed back so the generator has
+# something to differ from. Deliberately not one of `KINDS`: the socket
+# is open to anything on the machine, and a sender that could forge a
+# `said` would be writing the device's memory of itself.
+SAID = "said"
+
+# How many past lines come back. Long enough to cover more than one
+# batch — a repeat inside a batch is the model's to avoid, a repeat
+# across batches is what it cannot see without this.
+_SAID_DEPTH = 10
+
+# Drawn two at a time and pasted into the prompt. The event log is the
+# same shape all session — `tool: Bash` over and over — so without this
+# every batch is generated from near-identical input and comes back
+# near-identical. These are not topics to cover; they are a nudge off
+# whatever the previous batch settled into.
+_ANGLES: tuple[str, ...] = (
+    "目の前の画面で起きていること",
+    "自分の体調や気分",
+    "ずんだ餅や食べものの話",
+    "外の天気や季節の想像",
+    "むかしのことの思い出",
+    "ふと浮かんだどうでもいい疑問",
+    "退屈のまぎらわしかた",
+    "プログラマの手つきの観察",
+    "眠気やうとうとした感じ",
+    "机の上やケーブルのようす",
+    "自分が住んでいる小さい機械のこと",
+    "数えたり、くらべたりしてみること",
+)
+
 # How far back the worker looks when judging how busy the session is.
 # Long enough that one slow tool call does not read as silence, short
 # enough that the device notices a burst starting.
@@ -397,8 +428,31 @@ class BatchedLineSource:
             self._prompt = self._cfg.prompt_path.read_text(encoding="utf-8")
         return self._prompt
 
+    def _angle(self) -> str:
+        """Two hints from `_ANGLES`, drawn fresh for every batch.
+
+        Two rather than one because a single hint reads as an
+        instruction to talk about it, and this is muttering: a pair the
+        model can lean on either side of leaves it room to ignore both.
+        """
+        first, second = self._rng.sample(_ANGLES, 2)
+        return f"{first}と{second}"
+
     def _user_prompt(self, context: Sequence[Event]) -> str:
-        return f"直近の出来事:\n{describe(context)}\n\n独り言を {self._cfg.batch} 個。"
+        """What happened, what was already said, and where to look next.
+
+        The two halves are kept apart rather than rendered as one event
+        log: they are read differently. The events are what to talk
+        about, the past lines are what not to say again.
+        """
+        spoken = [ev.detail for ev in context if ev.kind == SAID and ev.detail]
+        happened = [ev for ev in context if ev.kind != SAID]
+        parts = [f"直近の出来事:\n{describe(happened)}"]
+        if spoken:
+            said = "\n".join(f"- {line}" for line in spoken)
+            parts.append(f"すでに言ったこと。話題も言い回しも繰り返さない:\n{said}")
+        parts.append(f"今回は{self._angle()}のあたりから。独り言を {self._cfg.batch} 個。")
+        return "\n\n".join(parts)
 
     def next_line(self, context: Sequence[Event]) -> str | None:
         if not self._cache:
@@ -415,11 +469,18 @@ class BatchedLineSource:
             self.last_error = f"{type(exc).__name__}: {exc}"
             return
 
+        # The prompt asks for something new; this is what happens when
+        # the answer only partly obliges. Exact matches only — deciding
+        # that two different sentences are "too similar" needs a
+        # threshold, and a wrong threshold silently eats good lines.
+        seen = {ev.detail for ev in context if ev.kind == SAID}
         for raw in lines:
             cleaned = _clean(raw, self._cfg.max_chars)
-            if cleaned:
-                self._cache.append(cleaned)
-                self.generated += 1
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            self._cache.append(cleaned)
+            self.generated += 1
 
     def _generate(self, context: Sequence[Event]) -> Sequence[object]:
         """One batch of raw lines. Free to raise; `_fill` counts it."""
@@ -694,6 +755,11 @@ class ChatterService:
 
         self._queue: Queue[Event] = Queue(maxsize=_QUEUE_DEPTH)
         self._history: deque[Event] = deque(maxlen=_HISTORY_DEPTH)
+        # Kept apart from `_history` rather than appended to it: a run
+        # of utterances would otherwise push the events that prompted
+        # them out of the window, and the generator would be left
+        # talking about nothing but itself.
+        self._said: deque[str] = deque(maxlen=_SAID_DEPTH)
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._sock: socket.socket | None = None
@@ -818,6 +884,10 @@ class ChatterService:
         self._history.append(idle)
         return idle
 
+    def _context(self) -> list[Event]:
+        """What the generator is shown: what happened, then what was said."""
+        return [*self._history, *(Event(SAID, line) for line in self._said)]
+
     # ----- speaking
 
     def _transmit(self, link: ChatLink, line: str) -> bool:
@@ -867,7 +937,7 @@ class ChatterService:
             # Deliberately outside the lock: generation is a network
             # round trip, and holding the device across it would make a
             # real tool call wait on the chatter's API latency.
-            self._pending = self._source.next_line(list(self._history))
+            self._pending = self._source.next_line(self._context())
         if not self._pending:
             self._pending = None
             self._rearm(self._clock())
@@ -885,6 +955,10 @@ class ChatterService:
 
         if ok:
             self.last_line = self._pending
+            # Only what the device actually took. A line lost to a dead
+            # link was never said, and remembering it would spend one of
+            # the few slots the generator has to differ from.
+            self._said.append(self._pending)
             self.spoken += 1
         self._pending = None
         self._rearm(self._clock())

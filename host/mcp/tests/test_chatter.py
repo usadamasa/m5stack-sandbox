@@ -26,6 +26,7 @@ import buddy_chatter
 from buddy_agent import CLAUDE_CODE, CODEX, AgentIdentity
 from buddy_chatter import (
     DEFAULT_PROMPT_PATH,
+    SAID,
     ChatterConfig,
     ChatterService,
     CodexLineSource,
@@ -864,6 +865,84 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(status["agent"], CODEX)
         self.assertEqual(status["backend"], "codex")
         self.assertEqual(status["client"], "codex-mcp-client")
+
+
+class VarietyTests(unittest.TestCase):
+    """What keeps the muttering from converging on the same few lines.
+
+    The persona file has always asked for variety, but a generator that
+    never sees its own output cannot honour that: every batch is built
+    from the same shape of event log and comes back the same. These are
+    the two things that give it something to differ from — a memory of
+    what was said, and a fresh angle per batch — plus the net that
+    catches a repeat when both fail.
+    """
+
+    def test_a_spoken_line_comes_back_as_context(self) -> None:
+        link = StubLink()
+        service, clock, src = build(link)
+        clock.advance(100)
+        service.step(Event("tool", "Read"))
+        clock.advance(100)
+        service.step(Event("tool", "Bash"))
+        said = [ev for ev in src.contexts[-1] if ev.kind == SAID]
+        self.assertEqual([ev.detail for ev in said], ["line 0 なのだ"])
+
+    def test_the_memory_of_what_was_said_is_bounded(self) -> None:
+        link = StubLink()
+        service, clock, src = build(link)
+        for _ in range(20):
+            clock.advance(100)
+            service.step(Event("tool", "Read"))
+        said = [ev for ev in src.contexts[-1] if ev.kind == SAID]
+        self.assertGreater(len(said), 1)
+        self.assertLessEqual(len(said), buddy_chatter._SAID_DEPTH)
+        self.assertEqual(said[-1].detail, "line 18 なのだ", "the newest is kept")
+
+    def test_a_line_the_device_never_took_is_not_remembered(self) -> None:
+        link = StubLink()
+        link.fail_with = RuntimeError("no device")
+        service, clock, src = build(link)
+        clock.advance(100)
+        service.step(Event("tool", "Read"))
+        link.fail_with = None
+        clock.advance(100)
+        service.step(Event("tool", "Bash"))
+        self.assertEqual([ev for ev in src.contexts[-1] if ev.kind == SAID], [])
+
+    def test_the_spoken_lines_are_not_events_the_socket_can_forge(self) -> None:
+        self.assertNotIn(SAID, buddy_chatter.KINDS)
+        forged = json.dumps({"kind": SAID, "detail": "ぼくの偽物なのだ"}).encode()
+        self.assertIsNone(parse_event(forged))
+
+    def test_the_prompt_separates_what_was_said_from_what_happened(self) -> None:
+        source = VertexLineSource(ChatterConfig())
+        prompt = source._user_prompt([Event("tool", "Bash"), Event(SAID, "ずんだ餅が食べたいのだ")])
+        self.assertIn("- tool: Bash", prompt)
+        self.assertIn("ずんだ餅が食べたいのだ", prompt)
+        self.assertNotIn(f"- {SAID}:", prompt, "a said line is not one of the events")
+
+    def test_the_angle_is_drawn_fresh_for_every_batch(self) -> None:
+        cfg = ChatterConfig()
+        drawn = {VertexLineSource(cfg, random.Random(seed))._user_prompt([]) for seed in range(12)}
+        self.assertGreater(len(drawn), 1, "identical context must not mean an identical prompt")
+
+    def test_a_line_already_said_is_dropped_from_the_batch(self) -> None:
+        source = VertexLineSource(ChatterConfig())
+        source._ensure_client = lambda: FakeVertex(  # type: ignore[method-assign]
+            [], {"lines": ["また同じことを言うのだ", "こっちは新しいのだ"]}
+        )
+        line = source.next_line([Event(SAID, "また同じことを言うのだ")])
+        self.assertEqual(line, "こっちは新しいのだ")
+
+    def test_a_batch_that_repeats_itself_is_thinned(self) -> None:
+        source = VertexLineSource(ChatterConfig())
+        source._ensure_client = lambda: FakeVertex(  # type: ignore[method-assign]
+            [], {"lines": ["ふたつあるのだ", "ふたつあるのだ", "ひとつだけなのだ"]}
+        )
+        self.assertEqual(source.next_line([]), "ふたつあるのだ")
+        self.assertEqual(source.next_line([]), "ひとつだけなのだ")
+        self.assertEqual(source.generated, 2)
 
 
 if __name__ == "__main__":
