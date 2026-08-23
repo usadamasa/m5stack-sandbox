@@ -69,7 +69,8 @@ from queue import Empty, Full, Queue
 from typing import Any, Protocol, cast
 
 from buddy_agent import CLAUDE_CODE, CODEX, AgentIdentity
-from buddy_bridge import DEFAULT_RATE, ZUNDAMON, Message, say, speak, voicevox_url
+from buddy_verbs import DEFAULT_RATE, ZUNDAMON, say, speak, voicevox_url
+from buddy_wire import Message
 
 # host/mcp/src/buddy_chatter.py -> repo root. The MCP server is launched
 # from an arbitrary cwd, so the socket path cannot be relative and the
@@ -930,7 +931,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run the chatter against a device this process owns."""
     import argparse
 
-    from buddy_bridge import ResidentLink
+    from buddy_link import ResidentLink
 
     parser = argparse.ArgumentParser(description="Run the Buddy idle chatter standalone.")
     parser.add_argument("--port", default=os.environ.get("BUDDY_PORT", "/dev/cu.usbmodem101"))

@@ -28,7 +28,7 @@ import unittest
 from typing import Any
 from unittest import mock
 
-import buddy_bridge
+import buddy_verbs
 from buddy import speak as buddy_speak
 from buddy.speak import _BLOCK, SpeechPlayer, _StreamSource
 
@@ -481,7 +481,7 @@ class _FakeLink:
 class SpeakSenderTest(unittest.TestCase):
     def test_asks_the_device_to_fetch_and_then_waits_for_the_end(self) -> None:
         link = _FakeLink()
-        end = buddy_bridge.speak(link, "ずんだもんなのだ", url="http://h:50021")
+        end = buddy_verbs.speak(link, "ずんだもんなのだ", url="http://h:50021")
         sent, expect, _timeout = link.requests[0]
         self.assertEqual(sent["cmd"], "speak.say")
         self.assertEqual(sent["text"], "ずんだもんなのだ")
@@ -492,8 +492,8 @@ class SpeakSenderTest(unittest.TestCase):
 
     def test_defaults_to_zundamon(self) -> None:
         link = _FakeLink()
-        buddy_bridge.speak(link, "あ", url="http://h:50021")
-        self.assertEqual(link.requests[0][0]["speaker"], buddy_bridge.ZUNDAMON)
+        buddy_verbs.speak(link, "あ", url="http://h:50021")
+        self.assertEqual(link.requests[0][0]["speaker"], buddy_verbs.ZUNDAMON)
 
     def test_allows_time_for_synthesis_before_the_first_ack(self) -> None:
         # The device does not answer speak.say until the engine has
@@ -501,14 +501,14 @@ class SpeakSenderTest(unittest.TestCase):
         # while synthesis was still running and leave the link out of
         # step with a device that is about to start playing.
         link = _FakeLink()
-        buddy_bridge.speak(link, "あ", url="http://h:50021")
+        buddy_verbs.speak(link, "あ", url="http://h:50021")
         self.assertGreaterEqual(link.requests[0][2], 30.0)
 
     def test_waits_out_the_playback_before_giving_up_on_the_end_ack(self) -> None:
         # speak.end arrives when the last block has been played, which
         # is 5.12 s after the start for this payload.
         link = _FakeLink(ack={"ok": True, "bytes": 163840, "rate": 16000})
-        buddy_bridge.speak(link, "あ", url="http://h:50021", timeout=10.0)
+        buddy_verbs.speak(link, "あ", url="http://h:50021", timeout=10.0)
         self.assertGreaterEqual(link.waited[0][1], 5.12 + 10.0)
 
     def test_a_refusal_is_raised_not_returned(self) -> None:
@@ -516,35 +516,33 @@ class SpeakSenderTest(unittest.TestCase):
         # timeout for an utterance that never started.
         link = _FakeLink(ack={"ok": False, "err": "no engine url"})
         with self.assertRaises(RuntimeError) as caught:
-            buddy_bridge.speak(link, "あ", url="http://h:50021")
+            buddy_verbs.speak(link, "あ", url="http://h:50021")
         self.assertIn("no engine url", str(caught.exception))
         self.assertEqual(link.waited, [])
 
     def test_empty_text_never_reaches_the_device(self) -> None:
         link = _FakeLink()
         with self.assertRaises(ValueError):
-            buddy_bridge.speak(link, "   ", url="http://h:50021")
+            buddy_verbs.speak(link, "   ", url="http://h:50021")
         self.assertEqual(link.requests, [])
 
 
 class VoicevoxUrlTest(unittest.TestCase):
     def test_an_explicit_url_wins(self) -> None:
-        self.assertEqual(
-            buddy_bridge.voicevox_url("http://10.0.0.5:50021"), "http://10.0.0.5:50021"
-        )
+        self.assertEqual(buddy_verbs.voicevox_url("http://10.0.0.5:50021"), "http://10.0.0.5:50021")
 
     def test_falls_back_to_the_environment(self) -> None:
         with mock.patch.dict(os.environ, {"VOICEVOX_URL": "http://env:50021"}):
-            self.assertEqual(buddy_bridge.voicevox_url(), "http://env:50021")
+            self.assertEqual(buddy_verbs.voicevox_url(), "http://env:50021")
 
     def test_a_bare_address_is_given_a_scheme_and_a_port(self) -> None:
         # The device does no URL parsing; it concatenates paths onto
         # whatever it is handed. A bare host would produce
         # "192.168.0.156/audio_query" and fail at the socket.
-        self.assertEqual(buddy_bridge.voicevox_url("192.168.0.156"), "http://192.168.0.156:50021")
+        self.assertEqual(buddy_verbs.voicevox_url("192.168.0.156"), "http://192.168.0.156:50021")
 
     def test_a_trailing_slash_is_dropped(self) -> None:
-        self.assertEqual(buddy_bridge.voicevox_url("http://h:50021/"), "http://h:50021")
+        self.assertEqual(buddy_verbs.voicevox_url("http://h:50021/"), "http://h:50021")
 
     def test_localhost_is_refused(self) -> None:
         # The engine runs on this Mac, but the device is not on this
@@ -553,7 +551,7 @@ class VoicevoxUrlTest(unittest.TestCase):
         # seconds later and nowhere near the cause.
         for bad in ("http://127.0.0.1:50021", "http://localhost:50021"):
             with self.assertRaises(ValueError, msg=bad):
-                buddy_bridge.voicevox_url(bad)
+                buddy_verbs.voicevox_url(bad)
 
 
 if __name__ == "__main__":

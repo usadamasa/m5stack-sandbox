@@ -24,7 +24,6 @@ from unittest import mock
 
 import buddy_chatter
 from buddy_agent import CLAUDE_CODE, CODEX, AgentIdentity
-from buddy_bridge import Message
 from buddy_chatter import (
     DEFAULT_PROMPT_PATH,
     ChatterConfig,
@@ -37,6 +36,7 @@ from buddy_chatter import (
     line_source_for,
     parse_event,
 )
+from buddy_wire import Message
 
 
 class StubLink:

@@ -5,7 +5,7 @@
 file's shape but the three properties the rest of the system leans on:
 
 * the app is launched at all (issue #28: power-on has to be enough);
-* it is launched the same way `buddy_bridge.LAUNCH_SOURCE` launches it,
+* it is launched the same way `buddy_link.LAUNCH_SOURCE` launches it,
   because the two are the only ways into the app and a search path that
   works from the host but not at boot is a bug that only shows up on a
   board nobody has a cable in;
@@ -18,7 +18,7 @@ import ast
 import unittest
 from pathlib import Path
 
-import buddy_bridge
+import buddy_link
 
 MAIN_PY = Path(__file__).resolve().parents[1] / "main.py"
 
@@ -96,7 +96,7 @@ def _app_import_line(tree: ast.AST) -> int:
 class BootTest(unittest.TestCase):
     def setUp(self) -> None:
         self.main = ast.parse(MAIN_PY.read_text(encoding="utf-8"), filename=str(MAIN_PY))
-        self.launch = ast.parse(buddy_bridge.LAUNCH_SOURCE, filename="LAUNCH_SOURCE")
+        self.launch = ast.parse(buddy_link.LAUNCH_SOURCE, filename="LAUNCH_SOURCE")
 
     def test_boot_launches_the_app(self) -> None:
         self.assertIn(APP_MODULE, _imported_modules(self.main))

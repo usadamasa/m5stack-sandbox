@@ -75,15 +75,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from buddy_bridge import (
-    DEFAULT_READ_TIMEOUT,
-    LAUNCH_SOURCE,
-    BuddyLink,
-    Message,
-    say,
-    speak,
-    voicevox_url,
-)
+from buddy_link import DEFAULT_READ_TIMEOUT, LAUNCH_SOURCE, BuddyLink
+from buddy_verbs import say, speak, voicevox_url
+from buddy_wire import Message
 from device_repl import (
     Repl,
     ReplError,
@@ -210,7 +204,7 @@ VERIFY_TEXT = "デプロイ完了なのだ"
 LAUNCH_SETTLE_S = 4.0
 
 # Per-request patience once the app is up. Synthesis has its own, much
-# longer budget inside `buddy_bridge.speak`.
+# longer budget inside `buddy_verbs.speak`.
 VERIFY_TIMEOUT_S = 10.0
 
 

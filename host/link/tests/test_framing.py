@@ -8,7 +8,7 @@ arbitrary chunk boundaries, so that is what these cover.
 
 import unittest
 
-from buddy_bridge import SENTINEL, LineDemux, encode
+from buddy_wire import SENTINEL, LineDemux, encode
 
 
 class TestEncode(unittest.TestCase):

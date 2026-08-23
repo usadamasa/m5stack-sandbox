@@ -18,7 +18,11 @@ import unittest
 from unittest import mock
 
 import buddy_bridge
-from buddy_bridge import DEBUG_OPS, SENTINEL, BuddyLink, Message, debug, encode
+import buddy_link
+import buddy_verbs
+from buddy_link import BuddyLink
+from buddy_verbs import DEBUG_OPS, debug
+from buddy_wire import SENTINEL, Message, encode
 
 
 class FakeIO:
@@ -129,7 +133,7 @@ class InterruptTest(unittest.TestCase):
     def test_module_exports_the_helpers(self) -> None:
         # They are part of the surface buddy_mcp and buddy_deploy import.
         for name in ("debug", "DEBUG_OPS"):
-            self.assertTrue(hasattr(buddy_bridge, name), name)
+            self.assertTrue(hasattr(buddy_verbs, name), name)
 
 
 class AnnounceTest(unittest.TestCase):
@@ -147,27 +151,27 @@ class AnnounceTest(unittest.TestCase):
             self.spoken.append(text)
             return {"ok": True}
 
-        patch = mock.patch.object(buddy_bridge, "speak", side_effect=fake_speak)
+        patch = mock.patch.object(buddy_verbs, "speak", side_effect=fake_speak)
         patch.start()
         self.addCleanup(patch.stop)
 
     def test_announces_when_the_device_says_it_entered(self) -> None:
         link = FakeRequester({"ok": True, "entered": True})
-        buddy_bridge.announce_debug_entry(link, debug(link, "mem"))
-        self.assertEqual(self.spoken, [buddy_bridge.DEBUG_ENTER_TEXT])
+        buddy_verbs.announce_debug_entry(link, debug(link, "mem"))
+        self.assertEqual(self.spoken, [buddy_verbs.DEBUG_ENTER_TEXT])
 
     def test_stays_quiet_on_every_later_call(self) -> None:
         link = FakeRequester({"ok": True})
-        buddy_bridge.announce_debug_entry(link, debug(link, "mem"))
+        buddy_verbs.announce_debug_entry(link, debug(link, "mem"))
         self.assertEqual(self.spoken, [])
 
     def test_a_silent_engine_does_not_fail_the_inspection(self) -> None:
         # VOICEVOX down, WiFi off, speaker unplugged — none of that is a
         # reason for `dbg.mem` to raise. The point of the call is the
         # numbers, and the announcement is a courtesy on top.
-        with mock.patch.object(buddy_bridge, "speak", side_effect=OSError("engine unreachable")):
+        with mock.patch.object(buddy_verbs, "speak", side_effect=OSError("engine unreachable")):
             link = FakeRequester({"ok": True, "entered": True})
-            spoke = buddy_bridge.announce_debug_entry(link, debug(link, "mem"))
+            spoke = buddy_verbs.announce_debug_entry(link, debug(link, "mem"))
         self.assertFalse(spoke)
 
 
@@ -186,7 +190,7 @@ class CliOutputTest(unittest.TestCase):
         with (
             mock.patch.object(buddy_bridge.sys, "argv", ["buddy_bridge", *argv]),
             mock.patch.object(buddy_bridge, "launch_app", return_value=io_port),
-            mock.patch.object(buddy_bridge.serial, "Serial", return_value=io_port),
+            mock.patch.object(buddy_link.serial, "Serial", return_value=io_port),
             contextlib.redirect_stdout(out),
         ):
             self.assertEqual(buddy_bridge.main(), 0)
@@ -234,7 +238,7 @@ class CliOutputTest(unittest.TestCase):
             mock.patch.object(
                 buddy_bridge.sys, "argv", ["buddy_bridge", "--port", "/dev/fake", "--interrupt"]
             ),
-            mock.patch.object(buddy_bridge.serial, "Serial", return_value=io_port),
+            mock.patch.object(buddy_link.serial, "Serial", return_value=io_port),
             contextlib.redirect_stdout(out),
         ):
             self.assertEqual(buddy_bridge.main(), 0)

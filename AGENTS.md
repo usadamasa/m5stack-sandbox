@@ -73,6 +73,10 @@ uv workspace の 4 member: `device/` (デバイスの上で動く overlay)、`ho
   member 単体で足りることは CI の `isolation` ジョブが見る
 - host の 3 つは `package = true`。member 間の import を workspace の依存として宣言するには
   installable である必要がある。`device` だけ `package = false`
+- `host/link` は責務ごとの flat module。`buddy_wire` (framing と encode/decode)、
+  `buddy_text` (パネルに載る形へ潰す。I/O を持たない)、`buddy_verbs` (chat / speech / debug の
+  verb)、`buddy_link` (`BuddyLink` / `ResidentLink` / `launch_app`)、`device_repl`
+  (raw REPL)。`buddy_bridge` はこれらを束ねる CLI だけ
 - `vendor/device/` はデバイスから吸い出した upstream ソース。git 管理外だが、`tmp/` とは違って
   **消してはいけない** (再配布しないので他に控えが無い)
 - `device/buddy/` は本リポジトリがデバイスへ載せるモジュールの package。flash では
@@ -97,7 +101,7 @@ uv workspace の 4 member: `device/` (デバイスの上で動く overlay)、`ho
   初回の `dbg.*` でデバイスが喋る。詳細は `buddy-debug` skill
 - **大きい出力は ack ではなく log に出る。** `dbg.frag` のヒープマップも traceback も
   `print()` 経由。ack の `ok: true` だけ見て終わらせない
-- **MCP server はセッション開始時に host のコードを import 済み。** `buddy_bridge.py` を
+- **MCP server はセッション開始時に host のコードを import 済み。** `host/` の下を
   直しても走っているサーバには反映されない。実機検証は `uv run` の別プロセスで行うか、
   セッションを再起動する
 - **WiFi は provisioning 済みなら何もしなくてよい。** 繋がらないときは

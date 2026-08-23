@@ -65,9 +65,9 @@ source = ["src"]
 [tool.coverage.report]
 show_missing = true
 skip_covered = false
-# 目標ではなく回帰バー。実測 46%。ここが 4 member でいちばん低いのは、
-# シリアルポートが実際に刺さっていないと通らない経路を最も多く持つため。
-fail_under = 43
+# 目標ではなく回帰バー。実測 66%。シリアルポートが実際に刺さっていないと通らない
+# 経路を最も多く持つ member なので、ここが 100% に近づくことはない。
+fail_under = 63
 exclude_also = [
     "if __name__ == .__main__.:",
     "if TYPE_CHECKING:",

@@ -51,7 +51,7 @@ uv run python host/tools/src/buddy_deploy.py --compile-only   # MicroPython の�
   VLW を入れるまでの繋ぎと割り切ること。VLW 側は生成時が最終サイズなので 1:1
 - 書体は中身で切り替える。日本語なら VLW、ASCII だけなら `DejaVu12` @0.75 で 9 行 × 24 文字。
   ASCII は VLW より DejaVu のほうが詰まる
-- ホスト側の分割上限 (`buddy_bridge.MAX_SAY_CHARS_WIDE` / `MAX_SAY_CHARS`) はこの実測値から
+- ホスト側の分割上限 (`buddy_text.MAX_SAY_CHARS_WIDE` / `MAX_SAY_CHARS`) はこの実測値から
   来ている。**片方を変えたらもう片方も見る。** `device/tests/test_chat.py` が両側の定数を
   import して食い違いを検出する契約テストになっている
 - `setFont` も `setTextSize` も、読み込んだ VLW も sticky。計測も描画も `_push_font` /

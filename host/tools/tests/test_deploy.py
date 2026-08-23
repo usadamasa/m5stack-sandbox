@@ -27,13 +27,6 @@ import unittest.mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from buddy_bridge import (
-    DEFAULT_READ_TIMEOUT,
-    LAUNCH_SOURCE,
-    SENTINEL,
-    Message,
-    encode,
-)
 from buddy_deploy import (
     DEST_ROOT,
     LAUNCHER,
@@ -66,6 +59,8 @@ from buddy_deploy import (
     stage_upstream,
     verify_by_speech,
 )
+from buddy_link import DEFAULT_READ_TIMEOUT, LAUNCH_SOURCE
+from buddy_wire import SENTINEL, Message, encode
 from device_repl import ReplError
 from fake_repl import FakePort, FakeRepl
 
