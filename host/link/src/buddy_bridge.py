@@ -36,7 +36,72 @@ def _dump(msgs: list[Message], logs: list[bytes]) -> None:
         print("  <-- ", json.dumps(msg, ensure_ascii=False))
 
 
-def main() -> int:
+def _nudge_repl() -> None:
+    print("waiting for the REPL — press BtnRST on the device...")
+
+
+def _request(link: BuddyLink, label: str, payload: Message, timeout: float) -> None:
+    ack = link.request(payload, label, timeout=timeout)
+    print(f"{label}:", json.dumps(ack, ensure_ascii=False))
+
+
+def _run_debug(link: BuddyLink, args: argparse.Namespace) -> None:
+    for op in args.dbg:
+        ack = debug(link, op, src=args.dbg_src, timeout=args.timeout)
+        print(f"dbg.{op}:", json.dumps(ack, ensure_ascii=False))
+        if not args.dbg_silent and announce_debug_entry(link, ack, url=args.engine):
+            print(f"  (said {DEBUG_ENTER_TEXT!r})")
+        # frag's heap map and a failed eval's traceback come back as log
+        # lines, not in the ack. Give them a moment to arrive so they
+        # print next to the ack they belong to.
+        _dump(*link.pump(0.3))
+
+
+def _run_requests(link: BuddyLink, args: argparse.Namespace) -> None:
+    """One-shot verbs that take nothing but a flag."""
+    if args.status:
+        _request(link, "status", {"cmd": "status"}, args.timeout)
+    if args.name is not None:
+        _request(link, "name", {"cmd": "name", "name": args.name}, args.timeout)
+    if args.owner is not None:
+        _request(link, "owner", {"cmd": "owner", "owner": args.owner}, args.timeout)
+    if args.chat_info:
+        _request(link, "chat.info", {"cmd": "chat.info"}, args.timeout)
+    if args.chat_clear:
+        _request(link, "chat.clear", {"cmd": "chat.clear"}, args.timeout)
+
+
+def _run_speech(link: BuddyLink, args: argparse.Namespace) -> None:
+    for text in args.say:
+        for ack in say(link, text, role=args.role, timeout=args.timeout, pace=args.pace):
+            print("chat.say:", json.dumps(ack, ensure_ascii=False))
+
+    engine: str | None = None
+    if args.speak:
+        # Resolved once, and before the first request, so a bad engine
+        # address is reported here rather than after the device has
+        # already been told to say something.
+        engine = voicevox_url(args.engine)
+        print(f"engine: {engine}")
+
+    for text in args.speak:
+        if not args.no_show:
+            # Sent first so the words are on screen while the engine
+            # synthesises, not after playback has ended.
+            for ack in say(link, text, timeout=args.timeout, pace=0):
+                print("chat.say:", json.dumps(ack, ensure_ascii=False))
+        ack = speak(
+            link,
+            text,
+            url=engine,
+            speaker=args.speaker,
+            rate=args.rate,
+            timeout=args.timeout,
+        )
+        print("speak.end:", json.dumps(ack, ensure_ascii=False))
+
+
+def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
     ap.add_argument("--port", required=True)
     ap.add_argument("--start", action="store_true", help="Launch the app over the REPL first.")
@@ -116,10 +181,11 @@ def main() -> int:
     ap.add_argument("--watch", type=float, default=0.0, help="Read traffic for N seconds and exit.")
     ap.add_argument("--timeout", type=float, default=5.0)
     ap.add_argument("--settle", type=float, default=4.0, help="Seconds to wait after --start.")
-    args = ap.parse_args()
+    return ap
 
-    def nudge_repl() -> None:
-        print("waiting for the REPL — press BtnRST on the device...")
+
+def main() -> int:
+    args = _parser().parse_args()
 
     link = BuddyLink(args.port, baud=args.baud)
     if args.start:
@@ -127,7 +193,7 @@ def main() -> int:
         try:
             link.open(
                 adopt=launch_app(
-                    args.port, args.baud, link.read_timeout, wait=args.wait, on_wait=nudge_repl
+                    args.port, args.baud, link.read_timeout, wait=args.wait, on_wait=_nudge_repl
                 )
             )
         except ReplError as e:
@@ -154,65 +220,9 @@ def main() -> int:
                 link.interrupt()
                 _dump(*link.pump(1.0))
 
-            for op in args.dbg:
-                ack = debug(link, op, src=args.dbg_src, timeout=args.timeout)
-                print(f"dbg.{op}:", json.dumps(ack, ensure_ascii=False))
-                if not args.dbg_silent and announce_debug_entry(link, ack, url=args.engine):
-                    print(f"  (said {DEBUG_ENTER_TEXT!r})")
-                # frag's heap map and a failed eval's traceback come back
-                # as log lines, not in the ack. Give them a moment to
-                # arrive so they print next to the ack they belong to.
-                _dump(*link.pump(0.3))
-
-            if args.status:
-                ack = link.request({"cmd": "status"}, "status", timeout=args.timeout)
-                print("status:", json.dumps(ack, ensure_ascii=False))
-
-            if args.name is not None:
-                ack = link.request({"cmd": "name", "name": args.name}, "name", timeout=args.timeout)
-                print("name:", json.dumps(ack, ensure_ascii=False))
-
-            if args.owner is not None:
-                ack = link.request(
-                    {"cmd": "owner", "owner": args.owner}, "owner", timeout=args.timeout
-                )
-                print("owner:", json.dumps(ack, ensure_ascii=False))
-
-            if args.chat_info:
-                ack = link.request({"cmd": "chat.info"}, "chat.info", timeout=args.timeout)
-                print("chat.info:", json.dumps(ack, ensure_ascii=False))
-
-            if args.chat_clear:
-                ack = link.request({"cmd": "chat.clear"}, "chat.clear", timeout=args.timeout)
-                print("chat.clear:", json.dumps(ack, ensure_ascii=False))
-
-            for text in args.say:
-                for ack in say(link, text, role=args.role, timeout=args.timeout, pace=args.pace):
-                    print("chat.say:", json.dumps(ack, ensure_ascii=False))
-
-            engine: str | None = None
-            if args.speak:
-                # Resolved once, and before the first request, so a bad
-                # engine address is reported here rather than after the
-                # device has already been told to say something.
-                engine = voicevox_url(args.engine)
-                print(f"engine: {engine}")
-
-            for text in args.speak:
-                if not args.no_show:
-                    # Sent first so the words are on screen while the
-                    # engine synthesises, not after playback has ended.
-                    for ack in say(link, text, timeout=args.timeout, pace=0):
-                        print("chat.say:", json.dumps(ack, ensure_ascii=False))
-                ack = speak(
-                    link,
-                    text,
-                    url=engine,
-                    speaker=args.speaker,
-                    rate=args.rate,
-                    timeout=args.timeout,
-                )
-                print("speak.end:", json.dumps(ack, ensure_ascii=False))
+            _run_debug(link, args)
+            _run_requests(link, args)
+            _run_speech(link, args)
 
             if args.watch:
                 print(f"watching for {args.watch:.1f}s...")
