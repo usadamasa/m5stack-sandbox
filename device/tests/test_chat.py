@@ -1,7 +1,7 @@
 # pyright: reportPrivateUsage=false
 """Chat panel: wrapping, layout and command dispatch, plus host framing.
 
-`device/buddy_chat.py` runs on MicroPython, but everything interesting
+`device/buddy/chat.py` runs on MicroPython, but everything interesting
 about it — where a line breaks, which rows survive the clip, which font
 it picked — is plain Python over an injected LCD. That is the whole
 reason the LCD is injectable: a wrapping bug otherwise only shows up as
@@ -12,7 +12,7 @@ The fake panel below uses a deliberately crude metric — 6 px per Latin
 character, 12 px per wide one, before scaling — so the expected row
 contents can be worked out by hand instead of by running the code and
 blessing whatever came out. It is *not* the real hardware's metric; the
-real numbers are in `device/buddy_chat.py`, measured by
+real numbers are in `device/buddy/chat.py`, measured by
 `host/tools/src/probe_device.py`.
 
 The fake does honour `setTextSize` and `loadFont`, because those are
@@ -30,7 +30,8 @@ from pathlib import Path
 from unittest import mock
 
 import buddy_bridge
-import buddy_chat
+from buddy import chat as buddy_chat
+from buddy.chat import ChatPanel
 from buddy_bridge import (
     MAX_SAY_CHARS,
     MAX_SAY_CHARS_WIDE,
@@ -39,9 +40,8 @@ from buddy_bridge import (
     say,
     split_for_device,
 )
-from buddy_chat import ChatPanel
 
-# Mirrors the geometry constants in buddy_chat so the arithmetic in the
+# Mirrors the geometry constants in buddy.chat so the arithmetic in the
 # assertions below is visible rather than magic.
 #
 # The `_RAW` heights are what the fake reports at 1:1; the panel scales

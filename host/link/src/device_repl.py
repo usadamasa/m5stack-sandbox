@@ -30,7 +30,7 @@ That used to be the normal state — the Buddy app called
 `micropython.kbd_intr(-1)`, so the Ctrl-C `enter_raw_repl` leads with
 did nothing and only a physical BtnRST press got us back. The app now
 leaves the interrupt enabled and catches it (see the "Ctrl-C" section of
-`device/buddy_serial.py`), so the ordinary handshake reaches the prompt
+`device/buddy/serial.py`), so the ordinary handshake reaches the prompt
 on its own. Teardown takes a moment, which is the other reason this
 polls rather than trying once.
 

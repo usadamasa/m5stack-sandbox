@@ -88,7 +88,7 @@ _UNRESERVED = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_
 # transient buffer.
 _HEAD_BYTES = 512
 
-# Longest utterance we will start. Matches `buddy_speak._MAX_BYTES`:
+# Longest utterance we will start. Matches `buddy.speak._MAX_BYTES`:
 # 30 s at 16 kHz 16-bit, far more than a notification and far less than
 # enough to hold the speaker and the link for a noticeable time. Kept as
 # its own constant rather than imported so neither module has to load
@@ -247,7 +247,7 @@ class _PrefixedStream:
     def settimeout(self, seconds: float) -> None:
         """Forwarded so the player can stop the socket blocking on it.
 
-        `buddy_speak._StreamSource` sets this on whatever stream it is
+        `buddy.speak._StreamSource` sets this on whatever stream it is
         handed. Without the forward it would land here and do nothing,
         and the first read past the buffered prefix would block the UI.
         """
@@ -257,7 +257,7 @@ class _PrefixedStream:
         try:
             self._rest.close()  # pyright: ignore[reportUnknownMemberType]
         except Exception as e:
-            print("buddy_tts: stream close failed:", e)
+            print("buddy.tts: stream close failed:", e)
 
 
 def _default_requests():

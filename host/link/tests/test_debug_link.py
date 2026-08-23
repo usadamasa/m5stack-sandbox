@@ -75,7 +75,7 @@ class DebugHelperTest(unittest.TestCase):
         self.link = FakeRequester()
 
     def test_verb_is_prefixed_and_acked_under_the_same_name(self) -> None:
-        # device/buddy_debug.py sets ack == cmd, which is what keeps this
+        # device/buddy/debug.py sets ack == cmd, which is what keeps this
         # from needing a per-verb table.
         ack = debug(self.link, "mem")
         self.assertEqual(self.link.sent, [({"cmd": "dbg.mem"}, "dbg.mem")])
@@ -136,7 +136,7 @@ class AnnounceTest(unittest.TestCase):
     """Saying "debug mode" out loud when the device enters it.
 
     The device is the only side that knows: it reports `entered` on the
-    frame that pulled `buddy_debug` in, because a fresh CLI process
+    frame that pulled `buddy.debug` in, because a fresh CLI process
     cannot tell whether an earlier one already loaded it.
     """
 

@@ -10,11 +10,11 @@ Claude Buddy の BLE transport を USB シリアルに差し替えて、エー�
 
 ```
 Claude Code / Codex ──MCP / CLI──> host/link ──USB CDC──> Cardputer-Adv
-                                                            └ claude_buddy.py + buddy_serial.py
+                                                            └ apps/claude_buddy.py + buddy/serial.py
 ```
 
 - `status` / `name` / `owner` のラウンドトリップと、デバイス発の `hello` の受信
-- **画面に出す** — `device/buddy_chat.py` が LCD 上に折り返し付きの会話ログを描く
+- **画面に出す** — `device/buddy/chat.py` が LCD 上に折り返し付きの会話ログを描く
 - **喋らせる** — デバイス自身が LAN 越しに VOICEVOX ENGINE を叩き、返ってきた WAV を
   ストリーミングで `M5.Speaker` へ流す。声はずんだもん
 
@@ -164,7 +164,7 @@ REPL を要求するもの (`buddy_deploy.py`、`provision_wifi.py`、`buddy_bri
 ### 動作確認とデバッグ
 
 アプリが上がっている間もデバイス側に REPL は無い。代わりに `dbg.*` verb が既存の
-シリアル経路に乗る。デバイス側の `buddy_debug` は **使うまで import されない**ので、
+シリアル経路に乗る。デバイス側の `buddy.debug` は **使うまで import されない**ので、
 覗いていない間の heap コストは実測 64 バイト。初回の `dbg.*` でデバイスが
 「デバッグモードに入ったのだ」と喋る (`--dbg-silent` で黙る)。
 

@@ -1,7 +1,7 @@
 # pyright: reportPrivateUsage=false
 """Verb dispatch for the on-device debug module.
 
-`device/buddy_debug.py` is the thing you reach for when the device is
+`device/buddy/debug.py` is the thing you reach for when the device is
 misbehaving, which is the worst possible moment to discover that the
 module itself is broken. Everything here runs on CPython: the dispatch,
 the source-length cap, the repr clipping and the unload handshake are
@@ -17,12 +17,14 @@ basedpyright's private-member check is switched off for this file rather
 than silenced at each use.
 """
 
+import ast
 import json
 import unittest
+from pathlib import Path
 from typing import cast
 
-import buddy_debug
-from buddy_debug import _MAX_REPR, _MAX_SOURCE
+from buddy import debug as buddy_debug
+from buddy.debug import _MAX_REPR, _MAX_SOURCE
 
 
 class _FakeGc:
@@ -245,7 +247,7 @@ class DebugModuleTest(unittest.TestCase):
     # ----- unload
 
     def test_off_asks_the_caller_to_unload(self) -> None:
-        # buddy_debug cannot delete itself from sys.modules — the caller
+        # buddy.debug cannot delete itself from sys.modules — the caller
         # holds the other reference. The flag is the handshake.
         ack = buddy_debug.handle({"cmd": "dbg.off"})
         assert ack is not None
@@ -257,6 +259,46 @@ class DebugModuleTest(unittest.TestCase):
                 ack = buddy_debug.handle({"cmd": cmd})
                 assert ack is not None
                 self.assertNotIn("unload", ack)
+
+
+class CallerUnloadTest(unittest.TestCase):
+    """What the caller has to do once `unload` comes back.
+
+    `on_dbg` lives inside `claude_buddy.run()` and imports M5, so it
+    cannot be called here. What it must not lose is checked against the
+    source instead, because dropping either half is invisible: the ack
+    still says ok, and only the `free` number it carries is wrong.
+
+    Both halves are needed since `buddy.debug` became a submodule.
+    MicroPython stores a submodule as an attribute of its package as
+    well as in `sys.modules`, and the attribute outlives the entry —
+    measured on the device, not inferred.
+    """
+
+    def setUp(self) -> None:
+        app = Path(__file__).resolve().parents[1] / "apps" / "claude_buddy.py"
+        self.source = app.read_text(encoding="utf-8")
+        self.tree = ast.parse(self.source, filename=str(app))
+
+    def test_the_sys_modules_entry_goes(self) -> None:
+        self.assertIn('del sys.modules["buddy.debug"]', self.source)
+
+    def test_the_package_attribute_goes_too(self) -> None:
+        calls = [
+            node
+            for node in ast.walk(self.tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "delattr"
+        ]
+        self.assertTrue(calls, "nothing removes the submodule from its package")
+        names = [
+            arg.value
+            for call in calls
+            for arg in call.args
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+        ]
+        self.assertIn("debug", names)
 
 
 if __name__ == "__main__":

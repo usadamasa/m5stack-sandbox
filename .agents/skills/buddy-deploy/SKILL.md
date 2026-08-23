@@ -18,6 +18,18 @@ uv run python host/tools/src/buddy_deploy.py --compile-only            # 実機�
 
 ## 転送で守ること
 
+- **自前のモジュールは `/flash/buddy/` に置く。** flash 直下は firmware と upstream のもの
+  (`buddy_protocol` / `buddy_ui_cp` / `buddy_state` / `buddy_chars`) で、階層がその境界に
+  なっている。`buddy/__init__.mpy` は中身が無くても必ず push する — MicroPython に
+  namespace package は無く、無ければ `/flash/buddy` はただのディレクトリで
+  `from buddy import ...` が全部 ImportError になる
+- **MicroPython は submodule を親 package の属性にも入れる。** `sys.modules` から消すだけでは
+  そちらに参照が残り、モジュールは heap に居座る。`delattr(sys.modules["buddy"], "debug")`
+  まで要る (実測。module オブジェクトへの `delattr` は効き、次の `from buddy import debug` は
+  flash を読み直す)。`device/tests/test_debug.py` の `CallerUnloadTest` が両方を固定している
+- **レイアウトを変えたら flash の置き土産を消す。** import されないバイトコードが残るし、
+  古い `sys.path` から解決されうる。`buddy_deploy.STALE` がその一覧で、`REMOVE` と違って
+  `vendor/` へは退避しない (自前のモジュールなので git に控えがある)
 - **`.py` を置かない。** import 機構は各 `sys.path` エントリで `foo.py` を `foo.mpy` より
   先に探すので、ソースを置くとバイトコードが読まれなくなる。デバイスは import のたびに
   構文木とバイトコードの両方を GC heap に作り、`gc.mem_free()` が 55280 あっても

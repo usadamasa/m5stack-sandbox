@@ -52,15 +52,14 @@ select = [
 
 [tool.ruff.lint.isort]
 known-first-party = [
+    # device/buddy/ の package。中の chat / serial / speak / tts / debug も
+    # ここに掛かる。
+    "buddy",
     "buddy_agent",
     "buddy_bridge",
-    "buddy_chat",
     "buddy_chatter",
     "buddy_deploy",
     "buddy_mcp",
-    "buddy_serial",
-    "buddy_speak",
-    "buddy_tts",
     "device_repl",
     "fake_repl",
     "probe_device",

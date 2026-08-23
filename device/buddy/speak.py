@@ -4,7 +4,7 @@ There is no synthesis here and there could not be: the ESP32-S3 has
 neither the flash for a Japanese voice nor the cycles to run one. What
 changed is where the audio comes from. It used to arrive over the USB
 cable as PCM the Mac had already synthesised; it now comes off WiFi from
-a VOICEVOX engine the device calls itself (`buddy_tts.py`). This module
+a VOICEVOX engine the device calls itself (`buddy/tts.py`). This module
 is the part that turns that stream into sound.
 
 ### Protocol
@@ -56,7 +56,7 @@ import time
 
 # Refuse anything longer than this in one utterance. At 16 kHz 16-bit
 # it is 30 seconds, which is far more than a notification and far less
-# than enough to wedge the device for a noticeable time. `buddy_tts`
+# than enough to wedge the device for a noticeable time. `buddy.tts`
 # carries the same number for the same reason.
 _MAX_BYTES = 960000
 
@@ -144,7 +144,7 @@ def _boost_volume(spk):
     try:
         before = spk.getVolume()  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
     except Exception as e:
-        print("buddy_speak: getVolume failed:", e)
+        print("buddy.speak: getVolume failed:", e)
         return None
     after = before * _VOLUME_GAIN  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
     if after > _MAX_VOLUME:
@@ -152,15 +152,15 @@ def _boost_volume(spk):
     try:
         spk.setVolume(after)  # pyright: ignore[reportUnknownMemberType]
     except Exception as e:
-        print("buddy_speak: setVolume failed:", e)
+        print("buddy.speak: setVolume failed:", e)
         return before  # pyright: ignore[reportUnknownVariableType]
-    print("buddy_speak: volume", before, "->", after)  # pyright: ignore[reportUnknownArgumentType]
+    print("buddy.speak: volume", before, "->", after)  # pyright: ignore[reportUnknownArgumentType]
     return after  # pyright: ignore[reportUnknownVariableType]
 
 
 def _default_fetch():
     """The real fetch. Lazy for the same reason as the speaker."""
-    import buddy_tts
+    from buddy import tts as buddy_tts
 
     return buddy_tts.fetch_speech
 
@@ -198,7 +198,7 @@ class _StreamSource:
             try:
                 setter(_READ_TIMEOUT_S)
             except Exception as e:
-                print("buddy_speak: settimeout failed:", e)
+                print("buddy.speak: settimeout failed:", e)
 
     def read_block(self, size):
         # type: (int) -> bytes | None
@@ -275,10 +275,10 @@ class _StreamSource:
             return block  # pyright: ignore[reportUnknownVariableType]
 
         if ended:
-            print("buddy_speak: stream ended", self.left, "bytes short")
+            print("buddy.speak: stream ended", self.left, "bytes short")
             self.dead = True
         elif time.ticks_diff(time.ticks_ms(), self._last_progress) > _STALL_MS:
-            print("buddy_speak: stream stalled with", self.left, "bytes left")
+            print("buddy.speak: stream stalled with", self.left, "bytes left")
             self.dead = True
         return None
 
@@ -292,7 +292,7 @@ class _StreamSource:
             try:
                 obj.close()  # pyright: ignore[reportUnknownMemberType]
             except Exception as e:
-                print("buddy_speak: close failed:", e)
+                print("buddy.speak: close failed:", e)
         self._stream = None
         self._response = None
 
@@ -421,7 +421,7 @@ class SpeechPlayer:
         try:
             self._spk.stop()  # pyright: ignore[reportUnknownMemberType]
         except Exception as e:
-            print("buddy_speak: stop failed:", e)
+            print("buddy.speak: stop failed:", e)
 
     # ----- main-loop pump
 
@@ -474,7 +474,7 @@ class SpeechPlayer:
         try:
             return bool(self._spk.playRaw(block, self._rate, _MONO, _ONCE, _ANY_CHANNEL, False))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
         except Exception as e:
-            print("buddy_speak: playRaw failed:", e)
+            print("buddy.speak: playRaw failed:", e)
             return True  # drop it rather than wedge the queue
 
     def _finish(self, ok: bool) -> None:

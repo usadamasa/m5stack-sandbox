@@ -1,7 +1,7 @@
 # pyright: reportPrivateUsage=false
 """Inbound framing tests for the device-side transport.
 
-`device/buddy_serial.py` runs on MicroPython, but its line classifier is
+`device/buddy/serial.py` runs on MicroPython, but its line classifier is
 plain Python and is the piece most likely to be wrong in a way that only
 shows up as "the device ignored me". Exercising it here means a framing
 regression fails in CI instead of on the bench.
@@ -17,8 +17,8 @@ than silenced at each of the many call sites.
 
 import unittest
 
-import buddy_serial
-from buddy_serial import _SENTINEL, BuddySerial
+from buddy import serial as buddy_serial
+from buddy.serial import _SENTINEL, BuddySerial
 
 
 class _FakeTime:

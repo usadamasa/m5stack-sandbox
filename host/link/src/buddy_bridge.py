@@ -10,7 +10,7 @@ Buddy owns the BLE side and is not available here.
 The device multiplexes protocol traffic and `print()` logging onto one
 channel, so protocol lines carry a sentinel prefix and everything else
 is passed through as log output. `SENTINEL` must stay byte-identical to
-`_SENTINEL` in `device/buddy_serial.py`.
+`_SENTINEL` in `device/buddy/serial.py`.
 
 ### CLI
 
@@ -42,7 +42,7 @@ import serial
 
 from device_repl import ReplError, connect_repl, run_and_release
 
-# Keep in sync with _SENTINEL in device/buddy_serial.py.
+# Keep in sync with _SENTINEL in device/buddy/serial.py.
 SENTINEL = b"\x1eBUDDY1 "
 
 # Matches buddy_protocol._send, which uses the same separators. Keeping
@@ -118,7 +118,7 @@ class Requester(Protocol):
 # the device renders the *tail* of its transcript, so a message longer
 # than the screen loses its opening before anyone can read it.
 #
-# Both numbers come from the metrics measured in device/buddy_chat.py
+# Both numbers come from the metrics measured in device/buddy/chat.py
 # and have to move with them. The panel picks its font from the content,
 # and so does `_limit_for` below:
 #
@@ -136,7 +136,7 @@ class Requester(Protocol):
 MAX_SAY_CHARS_WIDE = 68
 MAX_SAY_CHARS = 184
 
-# Keep in step with `_WIDE_FROM` in device/buddy_chat.py: the host has to
+# Keep in step with `_WIDE_FROM` in device/buddy/chat.py: the host has to
 # predict which font the panel will choose, and it chooses on this.
 _WIDE_FROM = 0x1100
 
@@ -253,7 +253,7 @@ def _split_paragraph(para: str, limit: int) -> list[str]:
 def _limit_for(text: str) -> int:
     """How much of `text` fits on one panel.
 
-    Mirrors the font choice in `device/buddy_chat.py`: one wide glyph
+    Mirrors the font choice in `device/buddy/chat.py`: one wide glyph
     anywhere in the transcript pulls the whole panel onto the Japanese
     face, so a single Japanese character in an otherwise ASCII message
     costs three rows and eleven characters per row.
@@ -514,7 +514,7 @@ class LineDemux:
 
 # ----- debug
 #
-# Verbs `device/buddy_debug.py` answers. Bare here, `dbg.`-prefixed on
+# Verbs `device/buddy/debug.py` answers. Bare here, `dbg.`-prefixed on
 # the wire, and the device sets the ack name equal to the command name —
 # which is what lets one helper cover all of them without a table.
 #
@@ -557,7 +557,7 @@ def announce_debug_entry(link: SpeechLink, ack: Message, url: str | None = None)
     """Say "debug mode" out loud, if this ack is the one that entered it.
 
     Only the device knows which call that was — it sets `entered` on the
-    frame that imported `buddy_debug`, because a fresh host process
+    frame that imported `buddy.debug`, because a fresh host process
     cannot tell whether an earlier one already loaded it.
 
     Returns whether anything was actually said. Failure is swallowed on

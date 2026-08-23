@@ -74,7 +74,7 @@ This used to matter, because audio came down the same wire and needed
 32 KB/s sustained. There was a bulk mode for it: the host declared a
 length, line parsing suspended, and the blocking read became safe
 because the size was known. It measured 182 KiB/s and it is gone — the
-device now fetches its own audio over WiFi (``buddy_tts.py``) and this
+device now fetches its own audio over WiFi (``buddy/tts.py``) and this
 channel carries nothing but JSON commands, which one byte at a time
 handles with room to spare.
 """
@@ -172,7 +172,7 @@ class BuddySerial:
         if micropython is not None:
             micropython.kbd_intr(3)
 
-        print("buddy_serial: up as", self._name)
+        print("buddy.serial: up as", self._name)
 
     # ----- transport surface
 
@@ -210,7 +210,7 @@ class BuddySerial:
         try:
             self._write(_SENTINEL + payload + b"\n")
         except OSError as e:
-            print("buddy_serial: write failed:", e)
+            print("buddy.serial: write failed:", e)
             return False
         return True
 
@@ -239,7 +239,7 @@ class BuddySerial:
             micropython.kbd_intr(3)
         self._on_line = _noop_line  # pyright: ignore[reportUnknownMemberType]
         self._on_state = _noop_state  # pyright: ignore[reportUnknownMemberType]
-        print("buddy_serial: down")
+        print("buddy.serial: down")
 
     # ----- inbound pump
 
@@ -276,7 +276,7 @@ class BuddySerial:
             self._handle_line(line)
 
         if len(self._rx_buf) > _MAX_LINE:
-            print("buddy_serial: rx overflow, resyncing")
+            print("buddy.serial: rx overflow, resyncing")
             self._rx_buf = bytearray()
 
     # ----- internals
@@ -306,7 +306,7 @@ class BuddySerial:
         try:
             self._on_state(state)  # pyright: ignore[reportUnknownMemberType]
         except Exception as e:
-            print("buddy_serial: on_state error:", e)
+            print("buddy.serial: on_state error:", e)
 
     def _write(self, raw: bytes) -> None:
         try:

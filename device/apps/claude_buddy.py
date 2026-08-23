@@ -11,7 +11,7 @@ Derived from moremas/build-with-claude (Apache-2.0), `buddy/device/apps/
 claude_buddy.py`. Two things differ. The transport is the USB CDC
 console rather than a BLE peripheral, which is what lets Claude Code
 drive the device instead of Claude Desktop's Hardware Buddy (see
-`buddy_serial.py`). And the paths upstream drove from hardware buttons
+`buddy/serial.py`). And the paths upstream drove from hardware buttons
 — permission responses, unpair confirmation, quit-to-launcher — are
 gone, along with the BLE branches that were kept beside them only so a
 diff against upstream stayed readable.
@@ -80,10 +80,12 @@ import buddy_ui_cp as buddy_ui
 import M5
 import machine
 
-# Ours, under device/.
-import buddy_chat
-import buddy_serial
-import buddy_speak
+# Ours, under device/buddy/. Aliased to the flat names the rest of this
+# file already used — what moved is where they live on flash, not what
+# they are.
+from buddy import chat as buddy_chat
+from buddy import serial as buddy_serial
+from buddy import speak as buddy_speak
 
 # ---- chat routing
 #
@@ -91,11 +93,11 @@ import buddy_speak
 # logs any verb it doesn't know as "unknown cmd". So the chat verbs are
 # peeled off in on_line() below, before the protocol layer sees them.
 # This substring test is a cheap pre-filter so ordinary traffic doesn't
-# pay for a second JSON parse — see buddy_chat.py for the commands.
+# pay for a second JSON parse — see buddy/chat.py for the commands.
 _CHAT_TAG = b'"chat.'
 _SPEAK_TAG = b'"speak.'
 # Same trick again for the debug verbs, and here the pre-filter is the
-# entire resident cost of the feature: `buddy_debug` is not imported
+# entire resident cost of the feature: `buddy.debug` is not imported
 # until one of these arrives, and is dropped again on `dbg.off`. See
 # that module's docstring for why it is kept off the heap.
 _DBG_TAG = b'"dbg.'
@@ -161,7 +163,7 @@ def run():
     # plain write with no LCD involvement, so that goes out immediately.
     chat_dirty = [False]  # type: list[bool]
 
-    # One slot holding buddy_debug once something has asked for it. A
+    # One slot holding buddy.debug once something has asked for it. A
     # list rather than a `global` so the closure can rebind it, same
     # pattern as proto_holder above.
     dbg_holder = {"m": None}  # type: dict[str, object]
@@ -169,7 +171,7 @@ def run():
     def on_dbg(raw):
         # type: (bytes | bytearray | str) -> dict[str, object] | None
         # `dbg_holder["m"]` is declared `object` so it can hold either
-        # None or the buddy_debug module — the mailbox pattern above
+        # None or the buddy.debug module — the mailbox pattern above
         # loses the concrete module type across calls, so reading it back
         # here is ignored per-line rather than left to cascade.
         mod = dbg_holder["m"]
@@ -181,12 +183,12 @@ def run():
         entered = mod is None
         if mod is None:
             try:
-                import buddy_debug
+                from buddy import debug as buddy_debug
             except ImportError as e:
-                # A bundle deployed before buddy_debug existed. Say so in
+                # A bundle deployed before buddy.debug existed. Say so in
                 # an ack rather than letting the ImportError escape into
                 # the transport callback and take the loop down.
-                return {"ack": "dbg", "ok": False, "err": "buddy_debug not on flash: " + str(e)}
+                return {"ack": "dbg", "ok": False, "err": "buddy.debug not on flash: " + str(e)}
             mod = dbg_holder["m"] = buddy_debug
             # The live objects an expression should be able to name.
             # `speech` and `proto` are read through the enclosing scope,
@@ -215,15 +217,28 @@ def run():
             # returns.
             mod = None
             dbg_holder["m"] = None
-            if "buddy_debug" in sys.modules:
-                del sys.modules["buddy_debug"]
+            if "buddy.debug" in sys.modules:
+                del sys.modules["buddy.debug"]
+            # sys.modules is not the only reference. MicroPython also
+            # stores a submodule as an attribute of its package, and
+            # that one outlives the entry above — measured on the
+            # device, where `delattr` on a module object works and a
+            # later `from buddy import debug` reads flash again. Without
+            # it the module stays on the heap and the ack's `free`
+            # counts it as still in use.
+            pkg = sys.modules.get("buddy")
+            if pkg is not None:
+                try:
+                    delattr(pkg, "debug")
+                except AttributeError:
+                    pass
             gc.collect()
             ack["free"] = gc.mem_free()
         return ack  # pyright: ignore[reportUnknownVariableType]
 
     def on_line(raw):
         # type: (bytes) -> None
-        # Always bytes here: buddy_serial._handle_line() decodes nothing
+        # Always bytes here: buddy.serial._handle_line() decodes nothing
         # before calling on_line, unlike the wider bytes|bytearray|str
         # accepted by chat/speech/dbg's own handle_raw() below.
         if _CHAT_TAG in raw and ble is not None:
@@ -404,7 +419,7 @@ def run():
             # so a tick this long stays ahead of playback.
             time.sleep_ms(40)
     except KeyboardInterrupt:
-        # Reachable again. `buddy_serial` used to disable Ctrl-C because
+        # Reachable again. `buddy.serial` used to disable Ctrl-C because
         # a JSON payload could carry a 0x03; the host escapes control
         # bytes and the binary bulk mode that needed the raw channel is
         # gone, so the interrupt is back and this is where it lands.

@@ -15,7 +15,7 @@ description: 走っている Buddy アプリの中を覗く、アプリを止め
 
 ## 出力は 2 つの経路に分かれる
 
-`buddy_serial` の framing は sentinel の付かない行を全て log として host に流す。
+`buddy.serial` の framing は sentinel の付かない行を全て log として host に流す。
 つまり **デバイス側の `print()` はそのまま host に届く**。
 
 - **ack** — 小さい構造化データ。`free` / `alloc` / `repr` など
@@ -61,9 +61,14 @@ free 69712  alloc 63856  idf_free 40200  idf_largest 27648
 
 ## メモリを食わない仕組み
 
-`buddy_debug.mpy` は flash に常駐するが **import されない**。`dbg.*` frame が来た瞬間に
-`apps/claude_buddy.py` の `on_dbg` が import し、`dbg.off` で `del sys.modules` + `gc.collect()`
-する。使っていない間のコストは `_DBG_TAG in raw` の substring 判定だけ。
+`buddy/debug.mpy` は flash に常駐するが **import されない**。`dbg.*` frame が来た瞬間に
+`apps/claude_buddy.py` の `on_dbg` が import し、`dbg.off` で `del sys.modules` +
+`delattr(sys.modules["buddy"], "debug")` + `gc.collect()` する。使っていない間のコストは
+`_DBG_TAG in raw` の substring 判定だけ。
+
+**`del sys.modules` だけでは足りない。** MicroPython は submodule を親 package の属性にも
+入れるので、そちらの参照が残るとモジュールは heap に居座る
+([buddy-deploy](../buddy-deploy/SKILL.md))。
 
 実測 (`dbg.gc` の after と `dbg.off` の free の差):
 
