@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import os
+import signal
 import sys
 import termios
 import threading
@@ -659,6 +660,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # On a thread: opening the port is a reader plus a handshake,
         # and the agent's `initialize` should not wait behind it.
         threading.Thread(target=_connect_on_start, name="buddy-connect", daemon=True).start()
+    install_shutdown_handlers()
     try:
         server.run(transport, **options)
     finally:
@@ -667,11 +669,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _shutdown() -> None:
-    """Let go of the socket and the port. Never raises.
+    """Let go of the socket and the port. Never raises, safe to repeat.
 
-    Reached when uvicorn returns, which it does on SIGTERM and on the
-    SIGINT that forces it past a connection it is waiting on. Without
-    this a clean stop still left the datagram socket behind, which made
+    Without this a stop left the datagram socket behind, which made
     `buddy-mcpd stop` indistinguishable from a daemon that was killed.
 
     The port matters more than the socket: the next thing to want it is
@@ -683,6 +683,38 @@ def _shutdown() -> None:
             _chatter.stop()
     with contextlib.suppress(Exception):
         buddy_disconnect()
+
+
+def shutdown_on_signal(signum: int, _frame: object = None) -> None:
+    """Clean up, then die the way the sender asked.
+
+    Restoring the default and re-raising rather than exiting: the exit
+    status a supervisor sees should say "terminated by SIGTERM", not
+    "returned 0". `_shutdown` is safe to run twice, which matters
+    because `main`'s `finally` may also reach it.
+    """
+    _shutdown()
+    signal.signal(signum, signal.SIG_DFL)
+    signal.raise_signal(signum)
+
+
+def install_shutdown_handlers() -> None:
+    """Own SIGTERM and SIGINT before uvicorn borrows them.
+
+    uvicorn captures both for the length of `serve()`, and on the way
+    out restores whatever was installed beforehand and re-raises what it
+    caught — so that the process exits the way the sender asked. The
+    default action for SIGTERM is to die on the spot, which is why
+    `main`'s `finally` never ran and a cleanly stopped daemon still left
+    its socket behind. Installing these first means the handler uvicorn
+    restores is this one.
+
+    The lifespan shutdown is not a substitute: uvicorn skips it entirely
+    when `force_exit` is set, which is exactly the case
+    `buddy-mcpd stop` reaches when a session is still attached.
+    """
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, shutdown_on_signal)
 
 
 if __name__ == "__main__":

@@ -60,6 +60,17 @@ SDK を直接叩くと認証の解決を再実装して追随し続けること�
    plugin は sandbox 設定を配れないので、これは plugin を入れる側の仕事になる。
    sandbox 設定はセッションを再起動するまで反映されない。
 
+   **`hooks/hooks.json` の書式も疑う。** `command` は**文字列**で、argv は別フィールドの
+   `args` に置く (exec form)。`command` に配列を書くと exec form でも shell form でも
+   ないので、**その hook 定義ごと黙って捨てられる**。発火しない hook は「喋らない
+   デバイス」と見分けが付かないので、これも無音の失敗になる。形式は `test_hook.py` の
+   契約テストで縛ってある。
+
+   ```json
+   { "type": "command", "command": "python3",
+     "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/buddy_chatter_notify.py"], "timeout": 5 }
+   ```
+
    **errno で切り分けられる。** sandbox に塞がれているなら EPERM (errno 1)。
    通過していれば、相手が居なければ ENOENT (2)、居れば ECONNREFUSED (61) など
    別の errno になる。EPERM だけが sandbox の返事:

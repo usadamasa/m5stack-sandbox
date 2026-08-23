@@ -123,7 +123,8 @@ class StopTests(_StateTestCase):
             self.env,
             kill=lambda p, s: sent.append((p, s)),
             running=lambda _: next(alive, False),
-            grace=0.0,
+            term_grace=0.0,
+            int_grace=0.0,
         )
         self.assertEqual([s for _, s in sent], [signal.SIGTERM, signal.SIGINT])
         self.assertFalse(result["forced"], "the interrupt is the normal path, not force")
@@ -135,7 +136,8 @@ class StopTests(_StateTestCase):
             self.env,
             kill=lambda p, s: sent.append((p, s)),
             running=lambda _: True,
-            grace=0.0,
+            term_grace=0.0,
+            int_grace=0.0,
         )
         self.assertEqual([s for _, s in sent], [signal.SIGTERM, signal.SIGINT, signal.SIGKILL])
         self.assertTrue(result["stopped"])

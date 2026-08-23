@@ -6,7 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": ["python3", "${CLAUDE_PLUGIN_ROOT}/scripts/buddy_chatter_notify.py"],
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/buddy_chatter_notify.py"],
             "timeout": 5
           }
         ]
@@ -17,7 +18,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": ["python3", "${CLAUDE_PLUGIN_ROOT}/scripts/buddy_chatter_notify.py"],
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/buddy_chatter_notify.py"],
             "timeout": 5
           }
         ]
@@ -28,7 +30,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": ["python3", "${CLAUDE_PLUGIN_ROOT}/scripts/buddy_chatter_notify.py"],
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/buddy_chatter_notify.py"],
             "timeout": 5
           }
         ]
@@ -39,7 +42,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": ["python3", "${CLAUDE_PLUGIN_ROOT}/scripts/buddy_chatter_notify.py"],
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/buddy_chatter_notify.py"],
             "timeout": 5
           }
         ]
@@ -50,7 +54,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": ["python3", "${CLAUDE_PLUGIN_ROOT}/scripts/buddy_chatter_notify.py"],
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/buddy_chatter_notify.py"],
             "timeout": 5
           }
         ]
@@ -61,7 +66,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": ["python3", "${CLAUDE_PLUGIN_ROOT}/scripts/buddy_chatter_notify.py"],
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/buddy_chatter_notify.py"],
             "timeout": 5
           }
         ]
@@ -72,7 +78,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": ["python3", "${CLAUDE_PLUGIN_ROOT}/scripts/buddy_chatter_notify.py"],
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/buddy_chatter_notify.py"],
             "timeout": 5
           }
         ]

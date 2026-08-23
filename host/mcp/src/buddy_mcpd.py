@@ -48,9 +48,16 @@ from typing import Any
 import buddy_paths
 from buddy_mcp import FALLBACK_PORT, HTTP_HOST, http_port
 
-# How long a daemon gets to exit on SIGTERM before it is killed. It has
-# a serial port and a socket to let go of, and neither takes long.
-GRACE = 5.0
+# How long each stage of a stop waits. Split unevenly on purpose.
+#
+# A daemon nobody is attached to answers the first SIGTERM in well under
+# a second, so waiting longer there only makes the common case slow. The
+# second stage is the one that needs room: it is reached only when a
+# session is holding an HTTP connection open, and after the interrupt
+# uvicorn still has to tear that down while the daemon lets go of the
+# serial port and the socket. Measured at ~1s for the cleanup alone.
+TERM_GRACE = 2.0
+INT_GRACE = 10.0
 
 Spawn = Callable[[list[str], Path], int]
 Kill = Callable[[int, int], None]
@@ -146,7 +153,8 @@ def stop(
     env: Mapping[str, str] | None = None,
     kill: Kill = os.kill,
     running: Alive = is_running,
-    grace: float = GRACE,
+    term_grace: float = TERM_GRACE,
+    int_grace: float = INT_GRACE,
 ) -> dict[str, Any]:
     """Stop the daemon and release the port. Idempotent."""
     pid = read_pid(env)
@@ -155,7 +163,7 @@ def stop(
         return {"stopped": False, "note": "was not running"}
     kill(pid, signal.SIGTERM)
     forced = False
-    if not _gone_within(pid, running, grace / 2):
+    if not _gone_within(pid, running, term_grace):
         # uvicorn reads the first signal as "finish serving what you
         # have" and then waits for open HTTP connections to close — and
         # a session that is still attached never closes one.
@@ -166,7 +174,7 @@ def stop(
         # "(CTRL+C to force quit)" line is saying. Without this every
         # stop ends in SIGKILL and `forced` stops meaning anything.
         kill(pid, signal.SIGINT)
-        if not _gone_within(pid, running, grace / 2):
+        if not _gone_within(pid, running, int_grace):
             # It had its chance. A daemon that will not let go of the
             # serial port is worse than one killed with the port still
             # open — the kernel closes the fd either way.

@@ -50,6 +50,19 @@ def _load_hook() -> tuple[
 classify, hook_socket_path = _load_hook()
 
 
+def _registered_hooks() -> list[dict[str, Any]]:
+    """Every command hook the plugin registers, across all events."""
+    registered = json.loads(
+        (HOOK_PATH.parents[1] / "hooks" / "hooks.json").read_text(encoding="utf-8")
+    )
+    return [
+        hook
+        for entries in cast("dict[str, Any]", registered["hooks"]).values()
+        for entry in cast("list[dict[str, Any]]", entries)
+        for hook in cast("list[dict[str, Any]]", entry["hooks"])
+    ]
+
+
 class HookExistsTests(unittest.TestCase):
     def test_the_registered_path_is_the_one_tested(self) -> None:
         # `hooks/hooks.json` names this path under ${CLAUDE_PLUGIN_ROOT};
@@ -57,17 +70,25 @@ class HookExistsTests(unittest.TestCase):
         self.assertTrue(HOOK_PATH.is_file(), HOOK_PATH)
 
     def test_the_plugin_registers_the_path_that_exists(self) -> None:
-        registered = json.loads(
-            (HOOK_PATH.parents[1] / "hooks" / "hooks.json").read_text(encoding="utf-8")
-        )
-        commands = {
-            part
-            for entries in registered["hooks"].values()
-            for entry in entries
-            for hook in entry["hooks"]
-            for part in hook["command"]
-        }
-        self.assertIn("${CLAUDE_PLUGIN_ROOT}/scripts/buddy_chatter_notify.py", commands)
+        for hook in _registered_hooks():
+            with self.subTest(command=hook["command"]):
+                self.assertEqual(
+                    hook["args"], ["${CLAUDE_PLUGIN_ROOT}/scripts/buddy_chatter_notify.py"]
+                )
+
+    def test_every_registration_is_in_exec_form(self) -> None:
+        # `command` is a string and the argv goes in `args`. A list in
+        # `command` is neither exec form nor shell form: the whole hook
+        # definition is dropped, and since a hook that never fires looks
+        # exactly like a device that has nothing to say, nothing else
+        # would notice.
+        for hook in _registered_hooks():
+            with self.subTest(command=hook["command"]):
+                self.assertIsInstance(hook["command"], str)
+                self.assertIsInstance(hook["args"], list)
+                # The executable, not the script: with `args` present,
+                # `command` is spawned directly with no shell.
+                self.assertEqual(hook["command"], "python3")
 
 
 class SocketPathTests(unittest.TestCase):

@@ -11,6 +11,7 @@ chatter's link provider never opens a port of its own.
 """
 
 import os
+import signal
 import unittest
 from collections.abc import Callable
 from pathlib import Path
@@ -497,6 +498,45 @@ class ShutdownTest(_McpTestCase):
         buddy_mcp.buddy_connect()
         self._run_main()
         self.assertFalse(StubLink.instances[0].connected)
+
+    def test_the_signal_handlers_are_installed_before_the_server_runs(self) -> None:
+        # uvicorn borrows both signals for the length of `serve()` and
+        # restores whatever was there beforehand on the way out — so
+        # these have to be in place before it starts, not after.
+        installed: list[tuple[int, object]] = []
+
+        def record(sig: int, handler: object) -> None:
+            installed.append((sig, handler))
+
+        with (
+            mock.patch.object(buddy_mcp.server, "run"),
+            mock.patch.object(buddy_mcp, "_connect_on_start_wanted", return_value=False),
+            mock.patch.object(buddy_mcp.signal, "signal", side_effect=record),
+        ):
+            buddy_mcp.main([])
+        self.assertEqual(
+            [s for s, _ in installed], [signal.SIGTERM, signal.SIGINT], "both, and only these two"
+        )
+        self.assertEqual({h for _, h in installed}, {buddy_mcp.shutdown_on_signal})
+
+    def test_the_handler_cleans_up_then_dies_the_way_it_was_asked(self) -> None:
+        # Not `sys.exit(0)`: a supervisor reading the exit status should
+        # see "terminated by SIGTERM", not a clean return.
+        calls: list[str] = []
+
+        def note(name: str) -> Callable[..., None]:
+            def record(*_args: object) -> None:
+                calls.append(name)
+
+            return record
+
+        with (
+            mock.patch.object(buddy_mcp, "_shutdown", side_effect=note("clean")),
+            mock.patch.object(buddy_mcp.signal, "signal", side_effect=note("default")),
+            mock.patch.object(buddy_mcp.signal, "raise_signal", side_effect=note("raise")),
+        ):
+            buddy_mcp.shutdown_on_signal(signal.SIGTERM)
+        self.assertEqual(calls, ["clean", "default", "raise"])
 
     def test_shutdown_still_runs_when_the_server_raises(self) -> None:
         with (
