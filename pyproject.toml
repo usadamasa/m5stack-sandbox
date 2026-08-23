@@ -165,3 +165,13 @@ cmd = "aqua exec -- trivy rootfs .venv --scanners license --quiet --table-mode d
 [tool.poe.tasks.lines]
 help = "しきい値を超えたファイルの行数が増えていないかを見る"
 cmd = "python host/tools/src/check_file_length.py"
+
+# アーキテクチャのメトリクス。関数ごとの循環的複雑度、モジュールの凝集度、
+# コンポーネント間の結合度 (Ca/Ce/instability)、依存の循環を出す。
+#
+# 落ちるのは循環依存があるときだけで、残りは数字を並べるだけ。凝集度にも
+# instability にも「正しい値」は無く、しきい値を置くと守るための細工が
+# 始まるため。判定を持っているのは ruff (C901) と行数のラチェット。
+[tool.poe.tasks.metrics]
+help = "アーキテクチャのメトリクスを測る (複雑度・凝集度・結合度・循環依存)"
+cmd = "python host/tools/src/arch_metrics.py"

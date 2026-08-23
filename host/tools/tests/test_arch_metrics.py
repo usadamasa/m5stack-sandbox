@@ -13,8 +13,9 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import ClassVar
 
-from arch_metrics import (
+from arch_analysis import (
     ComponentMetric,
     ModuleMetric,
     analyze_module,
@@ -22,10 +23,10 @@ from arch_metrics import (
     components,
     find_cycles,
     is_test,
-    main,
     module_name,
     resolve_import,
 )
+from arch_metrics import main
 
 
 def _complexity(source: str) -> int:
@@ -46,7 +47,14 @@ class CyclomaticComplexityTest(unittest.TestCase):
         self.assertEqual(_complexity(source), 2)
 
     def test_an_elif_adds_one(self) -> None:
-        source = "def f(x):\n    if x:\n        return 1\n    elif x > 2:\n        return 2\n    return 3\n"
+        source = (
+            "def f(x):\n"
+            "    if x:\n"
+            "        return 1\n"
+            "    elif x > 2:\n"
+            "        return 2\n"
+            "    return 3\n"
+        )
         self.assertEqual(_complexity(source), 3)
 
     def test_a_loop_adds_one(self) -> None:
@@ -75,14 +83,23 @@ class CyclomaticComplexityTest(unittest.TestCase):
 
     def test_a_nested_function_is_measured_on_its_own(self) -> None:
         # 内側を外側に足し込むと、外側が実際より複雑に見える。
-        source = "def outer(x):\n    def inner(y):\n        if y:\n            return 1\n        return 2\n    return inner\n"
+        source = (
+            "def outer(x):\n"
+            "    def inner(y):\n"
+            "        if y:\n"
+            "            return 1\n"
+            "        return 2\n"
+            "    return inner\n"
+        )
         module = analyze_module("x.py", source)
-        self.assertEqual({f.name: f.complexity for f in module.offenders}, {"outer": 1, "inner": 2})
+        self.assertEqual(
+            {f.name: f.complexity for f in module.function_metrics}, {"outer": 1, "inner": 2}
+        )
 
     def test_a_method_is_named_with_its_class(self) -> None:
         source = "class C:\n    def m(self):\n        return 1\n"
         module = analyze_module("x.py", source)
-        self.assertEqual([f.name for f in module.offenders], ["C.m"])
+        self.assertEqual([f.name for f in module.function_metrics], ["C.m"])
 
     def test_a_module_without_functions_has_complexity_zero(self) -> None:
         self.assertEqual(_complexity("X = 1\n"), 0)
@@ -154,7 +171,10 @@ class IsTestTest(unittest.TestCase):
 
 
 class ResolveImportTest(unittest.TestCase):
-    KNOWN = {"buddy_link": "host/link/src/buddy_link.py", "buddy.chat": "device/buddy/chat.py"}
+    KNOWN: ClassVar[dict[str, str]] = {
+        "buddy_link": "host/link/src/buddy_link.py",
+        "buddy.chat": "device/buddy/chat.py",
+    }
 
     def test_an_exact_name_resolves(self) -> None:
         self.assertEqual(resolve_import("buddy_link", self.KNOWN), "buddy_link")
@@ -176,7 +196,7 @@ def _module(path: str, name: str, imports: set[str]) -> ModuleMetric:
         max_complexity=0,
         cohesion=0,
         raw_imports=frozenset(imports),
-        offenders=(),
+        function_metrics=(),
     )
 
 
