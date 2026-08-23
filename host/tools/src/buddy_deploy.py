@@ -23,10 +23,10 @@ Three consequences, and this module is all three:
     anything this module removes from flash is archived under `vendor/`
     first: the copy being deleted must never be the only one.
   - The launcher is replaced by `device/main.py`, which brings WiFi up
-    and stops. Upstream's starts NimBLE, and the ESP-IDF heap that
-    reserves is the heap the speech socket then cannot get. `main.py`
-    stays source — MicroPython runs `/flash/main.py` and never looks
-    for `main.mpy`.
+    and then launches the app, so power-on alone is enough. Upstream's
+    starts NimBLE, and the ESP-IDF heap that reserves is the heap the
+    speech socket then cannot get. `main.py` stays source — MicroPython
+    runs `/flash/main.py` and never looks for `main.mpy`.
 
 ### Why it ends by talking
 
@@ -58,9 +58,10 @@ on rather than being killed from outside with no idea where it was.
     uv run python host/buddy_deploy.py --compile-only    # no board
 
 Whoever holds the port holds it exclusively — disconnect the MCP server
-(`buddy_disconnect`) first. The device must be at the REPL; a running
-Buddy app is interrupted out of the way by the handshake, and the wait
-below covers the case where that does not take.
+(`buddy_disconnect`) first. The device must be at the REPL, and since
+boot launches the app it usually is not; the handshake interrupts a
+running app out of the way, and the wait below covers the case where
+that does not take.
 """
 
 from __future__ import annotations
