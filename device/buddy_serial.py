@@ -124,11 +124,6 @@ def _noop_line(_line):
     return None
 
 
-def _noop_passkey(_pk):
-    # type: (int) -> None
-    return None
-
-
 def _noop_state(_st):
     # type: (str) -> None
     return None
@@ -137,26 +132,27 @@ def _noop_state(_st):
 class BuddySerial:
     """Nordic-UART-shaped protocol over the USB CDC console."""
 
-    # No BLE pairing layer exists here at all. Reporting False makes
-    # apps/claude_buddy.py remap the "connected" state event to
-    # "encrypted", which is the path that drives send_hello() — the
-    # same branch the stripped UIFlow 2.0 BLE build takes.
+    # No pairing layer exists here at all. Nothing in this repository
+    # reads the flag any more — apps/claude_buddy.py remaps "connected"
+    # to "encrypted" unconditionally — but `buddy_protocol` is upstream
+    # and lives only on flash, so the attribute stays.
     pairing_supported = False
 
     def __init__(
         self,
         name_prefix="Claude",  # type: str
-        # on_line/on_passkey/on_state are duck-typed callbacks. MicroPython has
-        # no `typing`, so there is no builtin name that spells a callable's
-        # signature (see tests/test_device_constraints.py) — these three stay
+        # on_line/on_state are duck-typed callbacks. MicroPython has no
+        # `typing`, so there is no builtin name that spells a callable's
+        # signature (see tests/test_device_constraints.py) — both stay
         # Unknown to basedpyright, and so does everything assigned from them
         # below. Ignored per-line rather than left to cascade silently.
+        #
+        # Upstream's BuddyBLE also took an `on_passkey`. There is no
+        # pairing step on this transport, so nothing would ever call it.
         on_line=None,  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType]
-        on_passkey=None,  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType]
         on_state=None,  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType]
     ) -> None:
         self._on_line = on_line or _noop_line  # pyright: ignore[reportUnknownMemberType]
-        self._on_passkey = on_passkey or _noop_passkey  # pyright: ignore[reportUnknownMemberType]
         self._on_state = on_state or _noop_state  # pyright: ignore[reportUnknownMemberType]
 
         self._name = name_prefix + "_serial"
