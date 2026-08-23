@@ -108,7 +108,25 @@ class StopTests(_StateTestCase):
         self.assertEqual(sent[0], (4321, signal.SIGTERM))
         self.assertFalse(self.pid_file.exists())
 
-    def test_a_process_that_ignores_term_is_killed(self) -> None:
+    def test_a_second_term_is_sent_before_reaching_for_kill(self) -> None:
+        # uvicorn takes the first SIGTERM as "finish serving what you
+        # have" and waits for open HTTP connections — which a live
+        # session always has. The second one tells it to stop waiting.
+        # Without this every stop reports `forced`, and a real hang
+        # stops being distinguishable from the normal case.
+        self.write_pid(4321)
+        sent: list[tuple[int, int]] = []
+        alive = iter([True, True, False])
+        result = buddy_mcpd.stop(
+            self.env,
+            kill=lambda p, s: sent.append((p, s)),
+            running=lambda _: next(alive, False),
+            grace=0.0,
+        )
+        self.assertEqual([s for _, s in sent], [signal.SIGTERM, signal.SIGTERM])
+        self.assertFalse(result["forced"], "a second TERM is the normal path, not force")
+
+    def test_a_process_that_ignores_both_terms_is_killed(self) -> None:
         self.write_pid(4321)
         sent: list[tuple[int, int]] = []
         result = buddy_mcpd.stop(
@@ -117,8 +135,9 @@ class StopTests(_StateTestCase):
             running=lambda _: True,
             grace=0.0,
         )
-        self.assertEqual([s for _, s in sent], [signal.SIGTERM, signal.SIGKILL])
+        self.assertEqual([s for _, s in sent], [signal.SIGTERM, signal.SIGTERM, signal.SIGKILL])
         self.assertTrue(result["stopped"])
+        self.assertTrue(result["forced"])
 
     def test_a_stale_file_is_cleared_rather_than_signalled(self) -> None:
         self.write_pid(4321)

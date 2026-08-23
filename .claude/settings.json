@@ -23,7 +23,8 @@
       "allowWrite": [
         "/dev/cu.usbmodem*",
         "/dev/tty.usbmodem*",
-        "~/.cache/m5-onboard"
+        "~/.cache/m5-onboard",
+        "~/.local/state/buddy"
       ]
     },
     "network": {

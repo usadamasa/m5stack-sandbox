@@ -154,18 +154,31 @@ def stop(
         _clear_pid(env)
         return {"stopped": False, "note": "was not running"}
     kill(pid, signal.SIGTERM)
-    deadline = time.monotonic() + grace
-    while running(pid) and time.monotonic() < deadline:
-        time.sleep(0.1)
     forced = False
-    if running(pid):
-        # It had its chance. A daemon that will not let go of the serial
-        # port is worse than one killed with the port still open — the
-        # kernel closes the fd either way.
-        kill(pid, signal.SIGKILL)
-        forced = True
+    if not _gone_within(pid, running, grace / 2):
+        # uvicorn reads the first SIGTERM as "finish serving what you
+        # have" and then waits for open HTTP connections to close — and
+        # a session that is still attached never closes one. The second
+        # is what tells it to stop waiting. Without it every single stop
+        # ends in SIGKILL, and `forced` stops meaning anything.
+        kill(pid, signal.SIGTERM)
+        if not _gone_within(pid, running, grace / 2):
+            # It had its chance. A daemon that will not let go of the
+            # serial port is worse than one killed with the port still
+            # open — the kernel closes the fd either way.
+            kill(pid, signal.SIGKILL)
+            forced = True
     _clear_pid(env)
     return {"stopped": True, "pid": pid, "forced": forced}
+
+
+def _gone_within(pid: int, running: Alive, seconds: float) -> bool:
+    deadline = time.monotonic() + seconds
+    while running(pid):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
+    return True
 
 
 def status(env: Mapping[str, str] | None = None, running: Alive = is_running) -> dict[str, Any]:

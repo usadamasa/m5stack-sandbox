@@ -299,7 +299,18 @@ marketplace 経由で入れた plugin はキャッシュへコピーされるた
 daemon の実体は plugin には入っていない。plugin が持つのは skill と hook と HTTP 登録
 だけで、デバイスに繋ぐのは checkout 側で `uv tool install` した `buddy-mcpd`。
 
+**chatter を動かすには sandbox の許可が要る。** hook が書く socket は
+`~/.local/state/buddy/chatter.sock` にあり、許可が無いと `sendto` が EPERM で落ちる。
+hook は失敗しても黙って exit 0 するので、**気づけるのは「独り言を言わない」ことだけ**。
+plugin は sandbox 設定を配れないため、入れる側の `.claude/settings.json`
+(または `~/.claude/settings.json`) に足す。
+
+```json
+{ "sandbox": { "filesystem": { "allowWrite": ["~/.local/state/buddy"] } } }
+```
+
 `/mcp` に `buddy` が 1 つだけ出れば繋がっている。skill は `/skills` から確認できる。
+plugin 経由なので tool 名は `mcp__plugin_buddy_buddy__*` になる。
 
 ### 作業中に喋らせる (chatter)
 

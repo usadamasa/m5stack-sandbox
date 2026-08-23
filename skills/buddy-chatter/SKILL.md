@@ -38,7 +38,24 @@ SDK を直接叩くと認証の解決を再実装して追随し続けること�
 3. **hook が届いているか。** `queued` と各カウンタが全部 0 のままなら socket に何も
    来ていない。手で叩ける:
    `echo '{"hook_event_name":"Stop"}' | python3 scripts/buddy_chatter_notify.py`
-   届かないときはまず socket のパスを疑う。`buddy_chatter_status` の `socket` と
+
+   **一番ありがちなのは sandbox。** socket は `~/.local/state/buddy/chatter.sock` に
+   あり、`sandbox.filesystem.allowWrite` に入っていないと `sendto` が EPERM で落ちる。
+   hook は例外を握り潰して exit 0 するので、**失敗は完全に無音**。使うプロジェクトの
+   `.claude/settings.json` (または `~/.claude/settings.json`) に足す:
+
+   ```json
+   { "sandbox": { "filesystem": { "allowWrite": ["~/.local/state/buddy"] } } }
+   ```
+
+   plugin は sandbox 設定を配れないので、これは plugin を入れる側の仕事になる。
+   sandbox 設定はセッションを再起動するまで反映されない。
+
+   届いたかどうかは `tempo` で測れる。`_tempo()` は
+   `len(_activity) / (窓 120 秒 / 60) / busy_rate` なので、5 発投げれば
+   `5 / 2 / 12 = 0.21` になる。0 のままなら 1 件も届いていない。
+
+   パスの食い違いを疑うなら `buddy_chatter_status` の `socket` と
    `buddy-mcpd status` の `socket` を見比べる
 4. **台詞が作れているか。** `generation_failures` が立っていたら `generation_error` を読む。
    - `claude -p wrote no answer (rc N): ...` → CLI 側。末尾に stderr が付く。

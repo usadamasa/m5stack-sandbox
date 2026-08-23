@@ -118,6 +118,11 @@ socket のパスだけは `config.toml` に置かない。hook が system の `p
 毎回のツール呼び出しに乗るため、そこで TOML を読ませない。環境変数
 (`BUDDY_CHATTER_SOCKET`) と XDG 既定値だけで解決する。
 
+**socket を書くには sandbox の許可が要る。** `sandbox.filesystem.allowWrite` に
+`~/.local/state/buddy` が無いと hook の `sendto` が EPERM で落ちる。hook は失敗を
+握り潰して exit 0 するので、症状は「独り言を言わない」だけになる。plugin は sandbox
+設定を配れないため、入れる側の `.claude/settings.json` に足す仕事になる。
+
 ## 構成
 
 uv workspace の 4 member: `device/` (デバイスの上で動く overlay)、`host/link` (REPL transport
