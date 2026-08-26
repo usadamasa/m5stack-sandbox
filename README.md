@@ -9,7 +9,7 @@ Claude Buddy の BLE transport を USB シリアルに差し替えて、エー�
 
 ```
 Claude Code ──HTTP──> buddy-mcpd (常駐) ──> host/link ──USB CDC──> Cardputer-Adv
-  (複数セッション)                                                      └ apps/claude_buddy.py + buddy/serial.py
+  (複数セッション)                                                      └ buddy/app.py + buddy/serial.py
 ```
 
 - `status` / `name` / `owner` のラウンドトリップと、デバイス発の `hello` の受信
@@ -25,7 +25,7 @@ Claude Code ──USB CDC──> Cardputer-Adv ──WiFi──> VOICEVOX ENGINE
 USB を渡るのはテキストだけで、合成はデバイスが行う。WiFi の link はブート時に出来上がって
 いて、アプリはそれを継承する (認証情報は一度だけ焼く)。
 
-`chat.*` / `speak.*` はどちらも独自 verb で、`claude_buddy.py` の `on_line` で横取りしている。
+`chat.*` / `speak.*` はどちらも独自 verb で、`buddy/router.py` の `on_line` で横取りしている。
 upstream のファイルには手を入れていない。
 
 ### まだ無いもの
@@ -61,8 +61,8 @@ member とファイルの一覧は [CLAUDE.md](CLAUDE.md#構成) にある。
 | `README.md` / `libs/` / `res/` / `certificate/` | UIFlow のユーザー FS の雛形 | 触らない |
 | `boot.py` | UIFlow | 触らない (`uiflow/boot_option` が 2 なので `main.py` へ素通しする) |
 | `buddy_protocol.mpy` / `buddy_ui_cp.mpy` / `buddy_state.mpy` / `buddy_chars.mpy` | upstream | **読んで `.mpy` にして書き戻す。** 中身は変えない |
-| `buddy/` (`chat` / `debug` / `serial` / `speak` / `tts`) | 本リポジトリ | 追加 |
-| `apps/claude_buddy.mpy` | upstream 派生 | 置き換え (transport とチャット・発話の横取り) |
+| `buddy/` (`app` / `router` / `chat` / `debug` / `serial` / `speak` / `tts`) | 本リポジトリ | 追加 |
+| `apps/claude_buddy.mpy` | upstream 派生 | 置き換え (中身は `buddy/app.py` へ移し、ここは `run()` を渡す起動口だけ) |
 | `main.py` | 本リポジトリ | **置き換え。** upstream のランチャーは捨てた |
 | `buddy_ble` / `burst_frames.py` / `apps/snake.py` / `apps/hello_cardputer.py` | upstream | **消す。** NimBLE が確保する ESP-IDF heap が発話のソケットに要る |
 | `buddy-ja.vlw` | 生成物 | 別経路 (`make_vlw.py`)。930KB あるのでデプロイでは触らない |
@@ -72,7 +72,7 @@ member とファイルの一覧は [CLAUDE.md](CLAUDE.md#構成) にある。
 
 - **upstream のファイルは書き換えない。** 再配布しないと NOTICE で宣言しており、
   `vendor/device/` の退避が `.py` を消した後の唯一の控えになる。だから
-  `buddy_protocol` を拡張する代わりに、`claude_buddy.py` の `on_line` で独自 verb
+  `buddy_protocol` を拡張する代わりに、`buddy/router.py` の `on_line` で独自 verb
   (`chat.*` / `speak.*` / `dbg.*`) を先に横取りしている。**upstream を触らずに protocol を
   伸ばせる唯一の場所がここ**
 - **自前のモジュールは `/flash/buddy/` にまとめる。** flash の階層がそのまま境界になり、
@@ -188,7 +188,7 @@ uv run python host/link/src/buddy_bridge.py --port $PORT --interrupt
 ```
 
 電源を入れるだけでアプリは立ち上がる。`/flash/main.py` が WiFi を上げてから
-`claude_buddy` を import する。`--start` や `buddy_start_app` が要るのは、Ctrl-C で
+`claude_buddy` を import して `run()` を呼ぶ (import だけでは起動しない)。`--start` や `buddy_start_app` が要るのは、Ctrl-C で
 REPL に落とした後に立ち上げ直すときだけ。
 
 REPL を要求するもの (`buddy_deploy.py`、`provision_wifi.py`、`buddy_bridge.py --start`、

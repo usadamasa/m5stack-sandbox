@@ -13,8 +13,10 @@ CPython ではなく MicroPython 1.27 (ESP32-S3) で動く。言語・標準ラ�
 弾いている。**制約を足すときはそのテストに足す。** どれも CPython でも ruff でも型検査でも
 通ってしまい、実機で初めて落ちる類なので、レビューでは捕まらない。
 
-`device/apps/claude_buddy.py` は upstream 派生なので `ruff format` の対象外にしてある。
-差分を読める状態に保つのが目的で、import 順や E402 も同じ理由で無視している。
+`device/apps/claude_buddy.py` は `sys.path` を整えて `device/buddy/app.py` へ渡すだけの
+起動口。import しても起動せず、起動するのは `claude_buddy.run()` を呼んだとき。import が
+冒頭に来ないので E402 を無視してある。アプリ本体は `buddy/app.py` (組み立てと main loop)
+と `buddy/router.py` (届いた 1 行の振り分け)。
 
 実機なしで検証できる:
 
@@ -26,7 +28,7 @@ uv run python host/tools/src/buddy_deploy.py --compile-only   # MicroPython の�
 # チャットパネル (`buddy/chat.py`)
 
 `chat.say` / `chat.clear` / `chat.info` は upstream の `buddy_protocol.py` が知らない verb。
-知らない `cmd` は "unknown cmd" と印字して捨てられるので、`claude_buddy.py` の `on_line` で
+知らない `cmd` は "unknown cmd" と印字して捨てられるので、`buddy/router.py` の `on_line` で
 先に横取りしてから proto へ流す。**ここが upstream ファイルを触らずに protocol を拡張できる
 唯一の場所。**
 

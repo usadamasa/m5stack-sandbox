@@ -108,12 +108,13 @@ except Exception as e:
 # fragmentation this bundle is built around (see buddy_deploy.py) is
 # worst right here.
 #
-# `__import__` rather than `import claude_buddy`: the app runs from its
-# module body, so the name it would bind is never read, and spelling it
-# as a call says that the import *is* the call.
+# import は起動ではない。`/flash/apps/claude_buddy.py` は sys.path を整えて
+# 本体 (`/flash/buddy/app.py`) へ橋を渡すだけなので、起動するのは `run()` を
+# 呼んだとき。`import claude_buddy` ではなく `__import__` なのは、ここが
+# ファイルの末尾で、モジュールの import 文を先頭以外に置けないため。
 for _p in ("/flash", "/flash/apps"):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
 gc.collect()
-__import__("claude_buddy")
+__import__("claude_buddy").run()

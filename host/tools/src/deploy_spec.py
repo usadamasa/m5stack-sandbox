@@ -39,6 +39,11 @@ OVERLAY: tuple[str, ...] = (
     # without it `/flash/buddy/` is a directory rather than a package and
     # every import below fails.
     "buddy/__init__.py",
+    # アプリ本体。`apps/claude_buddy.py` は sys.path を整えてここへ橋を渡す
+    # だけの起動口で、組み立てと main loop はこちら、届いた 1 行の振り分けは
+    # router にある。
+    "buddy/app.py",
+    "buddy/router.py",
     "buddy/serial.py",
     "buddy/chat.py",
     # Shipped but never imported: the app pulls it in only when a `dbg.*`

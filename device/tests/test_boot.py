@@ -2,9 +2,12 @@
 
 `main.py` never runs here — it imports M5 and the firmware's WiFi helper
 — so this reads it as an AST instead. What is worth pinning is not the
-file's shape but the three properties the rest of the system leans on:
+file's shape but the properties the rest of the system leans on:
 
 * the app is launched at all (issue #28: power-on has to be enough);
+* 起動は `run()` の呼び出しであること。import は起動ではない —
+  `/flash/apps/claude_buddy.py` は sys.path を整えて `/flash/buddy/app.py`
+  へ橋を渡すだけの起動口で、呼ばなければ何も動かない;
 * it is launched the same way `buddy_link.LAUNCH_SOURCE` launches it,
   because the two are the only ways into the app and a search path that
   works from the host but not at boot is a bug that only shows up on a
@@ -28,9 +31,9 @@ APP_MODULE = "claude_buddy"
 def _imported_modules(tree: ast.AST) -> set[str]:
     """Every module name the source imports, however it spells it.
 
-    `__import__(...)` counts. At the bottom of `main.py` a plain `import`
-    would be an unused binding, and the module body is what runs either
-    way, so the call form is the one in use there.
+    `__import__(...)` counts。`main.py` がその形を使うのは、呼ぶのが
+    ファイルの末尾で、モジュールの import 文を先頭以外に置けないため。
+    返り値はそのまま `run()` を呼ぶのに使う。
     """
     names: set[str] = set()
     for node in ast.walk(tree):
@@ -100,6 +103,14 @@ class BootTest(unittest.TestCase):
 
     def test_boot_launches_the_app(self) -> None:
         self.assertIn(APP_MODULE, _imported_modules(self.main))
+
+    def test_both_ways_in_call_run(self) -> None:
+        # import しただけでは起動しない。呼ぶのを忘れた側は、静かに何も
+        # せずに終わる — 電源を入れても上がらない、あるいはホストからの
+        # launch が黙って戻る、という形でしか出てこない。
+        for name, tree in (("main.py", self.main), ("LAUNCH_SOURCE", self.launch)):
+            with self.subTest(source=name):
+                self.assertGreaterEqual(_first_line_of_call(tree, "run"), _app_import_line(tree))
 
     def test_search_path_matches_the_host_launcher(self) -> None:
         host = _flash_paths(self.launch)
