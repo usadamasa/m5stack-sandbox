@@ -1,6 +1,6 @@
 ---
 name: buddy-chatter
-description: 作業中に Cardputer-Adv が独り言を言う機能 (host/mcp/src/buddy_chatter.py と scripts/buddy_chatter_notify.py) を扱うときに使う。喋らない・喋りすぎる・台詞が変、hook が届いていない、chatter を直したのに反映されないときに参照する。ポートの所有権と、タスクをブロックしない設計の根拠もここ。
+description: 作業中に Cardputer-Adv が独り言を言う機能 (host/mcp/src/buddy_chatter.py・chatter_lines.py・chatter_core.py と scripts/buddy_chatter_notify.py) を扱うときに使う。喋らない・喋りすぎる・台詞が変、hook が届いていない、chatter を直したのに反映されないときに参照する。ポートの所有権と、タスクをブロックしない設計の根拠もここ。
 ---
 
 # 作業中の独り言 (chatter)
@@ -100,8 +100,8 @@ chatter は黙って諦める — そのための try-acquire。
 
 ## 直しても反映されないとき
 
-**daemon は起動時にホストのコードを import 済み。** `buddy_chatter.py` を直しても
-走っている daemon には届かない。
+**daemon は起動時にホストのコードを import 済み。** `buddy_chatter.py` (喋る側) や
+`chatter_lines.py` (台詞を書く側) を直しても走っている daemon には届かない。
 
 ```bash
 buddy-mcpd restart     # これだけ。セッションの再起動は要らない

@@ -58,7 +58,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mcp.server.mcpserver import MCPServer
 
 import buddy_paths
-from buddy_chatter import ChatterConfig, ChatterService
+from buddy_chatter import ChatterService
 from buddy_link import ResidentLink
 from buddy_text import DEFAULT_PACE
 from buddy_verbs import (
@@ -71,6 +71,7 @@ from buddy_verbs import (
     speak,
     voicevox_url,
 )
+from chatter_core import ChatterConfig
 from device_repl import ReplError
 
 # The device node a Cardputer-Adv comes up as on macOS. Named as a
