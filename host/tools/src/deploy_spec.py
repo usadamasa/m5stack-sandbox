@@ -57,6 +57,10 @@ OVERLAY: tuple[str, ...] = (
     # that cannot be inspected is the one already misbehaving.
     "buddy/debug.py",
     "buddy/speak.py",
+    # `buddy/speak.py` から切り出した、socket から 2 KiB のブロックを
+    # 貯めて渡すところ。speak が import するので、載せ忘れると実機では
+    # ImportError になる。
+    "buddy/speak_stream.py",
     "buddy/tts.py",
     "apps/claude_buddy.py",
 )
