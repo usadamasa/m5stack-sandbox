@@ -81,7 +81,7 @@ class ManifestResumeTest(unittest.TestCase):
             self.requests.append(url)
             return queue.pop(0)
 
-        firmware_manifest.open_https = fake_open  # pyright: ignore[reportAttributeAccessIssue]
+        firmware_manifest.open_https = fake_open
 
     def _range_headers(self) -> list[str | None]:
         return [
@@ -183,7 +183,7 @@ class DownloadTest(unittest.TestCase):
             self.requests.append(url)
             return queue.pop(0)
 
-        fetch_firmware.open_https = fake_open  # pyright: ignore[reportAttributeAccessIssue]
+        fetch_firmware.open_https = fake_open
 
     def test_writes_the_binary_and_its_sidecar(self) -> None:
         self._install([FakeResponse(self.body, headers={"Content-MD5": self.md5})])

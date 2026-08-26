@@ -54,7 +54,15 @@ exclude = ["**/__pycache__"]
 # editable install が入っていれば venv 経由でも引けるが、hatchling の
 # editable は import hook なので静的解析からは見えないことがある。
 extraPaths = ["src"]
+# mpremote は py.typed を持たず stub パッケージも無いので、触る面だけを写した
+# 手書きのスタブを置いてある。既定値と同じ名前だが、device/ と揃えて明示する。
+stubPath = "typings"
 typeCheckingMode = "strict"
+# ignore は書いた時点の診断にしか対応していない。スタブが増えたり型が付いたり
+# して診断が消えても ignore は残るので、腐ったものを検査側から言わせる。
+# これを入れると「ignore を消すために型を付ける」が「型を付けたら ignore が
+# 消える」に変わり、残った ignore はどれも現役だと読めるようになる。
+reportUnnecessaryTypeIgnoreComment = "error"
 
 # -------------------------------------------------------------- coverage
 

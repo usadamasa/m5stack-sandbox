@@ -83,9 +83,15 @@ _NOTDEF_PROBE = "\ue000"
 class _Mask(Protocol):
     """`getmask2` が返すラスタ。
 
-    Pillow の stub はここを Unknown のままにしているので、依存している
-    面だけを名前で押さえる。`mode="L"` で頼んだ結果なので中身は
-    1 ピクセル 1 バイト、行優先で幅 * 高さ ぶん並んでいる — VLW の
+    Pillow は自分で型を配っているのに、ここだけ Unknown で返ってくる。
+    上流の注釈は `tuple[Image.core.ImagingCore, tuple[int, int]]` だが、
+    その `Image.core` は `_imaging` の import が失敗したときに
+    `DeferredError.new()` (戻り値 `Any`) を代入する try/except で定義されて
+    いる。注釈の解決に使われるのは宣言型の方なので、`Any.ImagingCore` に
+    なって型が落ちる。Pillow 側の問題で、こちらからは直せない。
+
+    そこで依存している面だけを名前で押さえる。`mode="L"` で頼んだ結果なので
+    中身は 1 ピクセル 1 バイト、行優先で幅 * 高さ ぶん並んでいる — VLW の
     ビットマップ領域がそのまま要求する形。
     """
 
@@ -93,6 +99,17 @@ class _Mask(Protocol):
     def size(self) -> tuple[int, int]: ...
 
     def __buffer__(self, flags: int, /) -> memoryview: ...
+
+
+class _RasterFont(Protocol):
+    """`getmask2` を上流の署名のまま、ラスタ側だけ `_Mask` にして持つ。
+
+    `FreeTypeFont` をこれへ cast して呼ぶ。受けた後で `_Mask` へ寄せるのでも
+    同じ型に着くが、それだと Unknown を受ける行が残り、そこに ignore が要る。
+    呼ぶ前に面を絞れば ignore が要らず、型の出どころもここ 1 箇所になる。
+    """
+
+    def getmask2(self, text: str, mode: str = ...) -> tuple[_Mask, tuple[int, int]]: ...
 
 
 class Glyph(NamedTuple):
@@ -156,10 +173,9 @@ def _render(font: ImageFont.FreeTypeFont, ch: str, ascent: int) -> Glyph:
     ここでは収録の有無を判定しない。それは呼び出し側が `_NOTDEF_PROBE`
     との一致で決める。
     """
-    # Pillow の stub がラスタ側を Unknown で返すので、受けた直後に
-    # `_Mask` へ寄せる。無視しているのはその 1 点だけ。
-    raw, offset = font.getmask2(ch, mode="L")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
-    mask = cast("_Mask", raw)
+    # Pillow がラスタ側を Unknown で返す理由と、cast している相手は `_Mask` の
+    # docstring にある。
+    mask, offset = cast("_RasterFont", font).getmask2(ch, mode="L")
     width, height = mask.size
     bitmap = bytes(mask)
     if width * height != len(bitmap):

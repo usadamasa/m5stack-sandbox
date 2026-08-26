@@ -21,6 +21,7 @@ does not parse because the passphrase contained a quote.
 from __future__ import annotations
 
 import unittest
+from collections.abc import Callable
 
 # buddy-host-link は workspace 内の同居パッケージで py.typed が無いため
 # stub 未整備扱いになる。py.typed の追加は host/link 側の担当範囲。
@@ -149,10 +150,17 @@ class ProvisionTest(unittest.TestCase):
         repl = self._repl()
         original = repl.fs_writefile
 
-        def truncating(dest: str, data: bytes, **kw: object) -> None:
-            original(dest, data[: len(data) // 2])
+        # 差し替える相手と同じ署名で書く。`**kw` で畳むと位置引数の数が合わず、
+        # 代入そのものが型として通らなくなる。
+        def truncating(
+            dest: str,
+            data: bytes,
+            chunk_size: int = 256,
+            progress_callback: Callable[[int, int], None] | None = None,
+        ) -> None:
+            original(dest, data[: len(data) // 2], chunk_size, progress_callback)
 
-        repl.fs_writefile = truncating  # type: ignore[method-assign]
+        repl.fs_writefile = truncating
         with self.assertRaises(ProvisionError):
             provision(repl, "MyNet", "hunter2", quiet=True)
 
@@ -181,7 +189,7 @@ class ResetTest(unittest.TestCase):
 
     def test_survives_a_close_that_fails(self) -> None:
         repl = FakeRepl()
-        repl.close = self._boom  # type: ignore[method-assign]
+        repl.close = self._boom
         reset(repl)
 
     def test_asks_for_the_reset(self) -> None:

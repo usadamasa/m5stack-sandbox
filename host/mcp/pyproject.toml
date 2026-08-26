@@ -50,6 +50,9 @@ include = ["src", "tests"]
 exclude = ["**/__pycache__"]
 extraPaths = ["src", "../link/src"]
 typeCheckingMode = "strict"
+# 腐った ignore を検査側から言わせる。意図は host/link/pyproject.toml の
+# 同じ設定に書いてある。
+reportUnnecessaryTypeIgnoreComment = "error"
 # host/link (buddy_bridge, device_repl) は同じ workspace の自前パッケージだが、
 # editable install は hatchling の import hook 経由なので basedpyright からは
 # 見えない。extraPaths でソースを直接指すと import 解決先が「stub の無い外部

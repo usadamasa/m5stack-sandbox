@@ -152,11 +152,7 @@ class LoggingTest(unittest.TestCase):
         self.addCleanup(restore)
         root.handlers[:] = [logging.NullHandler()]
         buddy_mcp_serve.configure_logging()
-        formats = [
-            h.formatter._fmt  # pyright: ignore[reportPrivateUsage]
-            for h in root.handlers
-            if h.formatter is not None
-        ]
+        formats = [h.formatter._fmt for h in root.handlers if h.formatter is not None]
         self.assertIn(buddy_mcp_serve.LOG_FORMAT, formats)
 
     def test_the_run_announces_itself(self) -> None:

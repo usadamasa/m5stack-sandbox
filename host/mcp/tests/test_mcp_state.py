@@ -90,14 +90,14 @@ class ConnectOnStartTest(McpTestCase):
         # It runs on its own thread beside the first tool calls of the
         # session; taking the port from under one of them would cross
         # their acks.
-        mcp_state.ResidentLink = _LockWatchingLink  # pyright: ignore[reportAttributeAccessIssue]
+        mcp_state.ResidentLink = _LockWatchingLink
         mcp_state.connect_on_start()
         self.assertEqual(StubLink.instances[0].lock_held, [True])
 
     def test_a_port_that_will_not_open_is_recorded_rather_than_raised(self) -> None:
         # Nobody is waiting on this thread, and a server that dies
         # because the board is unplugged is worse than a silent one.
-        mcp_state.ResidentLink = _RefusingLink  # pyright: ignore[reportAttributeAccessIssue]
+        mcp_state.ResidentLink = _RefusingLink
         result = mcp_state.connect_on_start()
         self.assertFalse(result["ok"])
         self.assertIn("no such port", result["error"])
