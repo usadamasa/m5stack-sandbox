@@ -487,7 +487,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run the chatter against a device this process owns."""
     import argparse
 
-    from buddy_link import ResidentLink
+    from resident_link import ResidentLink
 
     parser = argparse.ArgumentParser(description="Run the Buddy idle chatter standalone.")
     parser.add_argument("--port", default=os.environ.get("BUDDY_PORT", "/dev/cu.usbmodem101"))

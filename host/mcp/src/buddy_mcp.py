@@ -1,6 +1,6 @@
 """MCP server exposing the Cardputer-Adv over the Buddy serial protocol.
 
-Wraps `buddy_link.ResidentLink` so a coding agent can talk to the
+Wraps `resident_link.ResidentLink` so a coding agent can talk to the
 device through tool calls instead of shelling out. The link is held open
 across calls, which is what makes device-initiated traffic visible to
 `buddy_events` rather than being lost between invocations.

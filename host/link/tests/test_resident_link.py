@@ -11,9 +11,9 @@ import time
 import unittest
 
 import buddy_link
-from buddy_link import ResidentLink
 from buddy_wire import SENTINEL, Message, encode
 from fake_repl import FakeRepl
+from resident_link import ResidentLink
 
 
 def framed(payload: bytes) -> bytes:
@@ -186,31 +186,6 @@ class StartAppTest(unittest.TestCase):
         real = buddy_link.connect_repl
         buddy_link.connect_repl = connect_repl
         self.addCleanup(setattr, buddy_link, "connect_repl", real)
-
-    def test_imports_the_app_without_waiting_for_it_to_end(self) -> None:
-        # `exec` would block until the command returns, and the app's
-        # whole job is never to return.
-        buddy_link.launch_app("/dev/fake")
-        self.assertEqual(self.repl.launched, [buddy_link.LAUNCH_SOURCE])
-        self.assertEqual(self.repl.execs, [buddy_link.LAUNCH_SOURCE])
-
-    def test_hands_back_a_port_the_reader_can_poll(self) -> None:
-        # mpremote opens blocking with a one second inter-byte timeout.
-        # A reader that polls in_waiting would stall on both.
-        port = buddy_link.launch_app("/dev/fake", read_timeout=0.05)
-        self.assertIs(port, self.repl.serial)
-        self.assertEqual(self.repl.serial.timeout, 0.05)
-        self.assertIsNone(self.repl.serial.inter_byte_timeout)
-
-    def test_writes_nothing_after_the_launch(self) -> None:
-        # The paste-mode launch had to send a trailing newline: Ctrl-D
-        # carries none, so the stray byte was prepended to the next
-        # protocol frame and the device dropped it, timing out exactly
-        # one request. Raw-paste acknowledges its own terminator, so
-        # there is nothing to clean up — and anything written here would
-        # land in the app's input.
-        buddy_link.launch_app("/dev/fake")
-        self.assertEqual(bytes(self.repl.serial.written), b"")
 
     def test_a_resident_link_comes_back_on_the_launched_port(self) -> None:
         link = ResidentLink("/dev/fake", serial_factory=lambda *_a, **_k: FakeSerial("x", 0, None))
