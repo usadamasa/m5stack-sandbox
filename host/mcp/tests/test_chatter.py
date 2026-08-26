@@ -12,6 +12,7 @@ variable, and the line source is a list.
 """
 
 import json
+import logging
 import random
 import socket
 import threading
@@ -78,6 +79,39 @@ class DeviceTests(unittest.TestCase):
         service.step(Event("tool", "Read"))
         self.assertEqual(service.spoken, 0)
         self.assertIn("TimeoutError", service.last_error)
+
+    def test_what_was_said_is_written_to_the_log(self) -> None:
+        # daemon の log にはこれが出ない時期があり、喋ったかどうかを知るには
+        # `buddy_chatter_status` を HTTP で叩くしかなかった。log に残って
+        # いれば、後から「いつ何を言ったか」を追える。
+        link = StubLink()
+        service, clock, _ = build(link)
+        clock.advance(31.0)
+        with self.assertLogs("buddy.chatter", level=logging.INFO) as caught:
+            service.step(Event("tool", "Read"))
+        self.assertIn('said "line 0 なのだ"', caught.output[0])
+        self.assertIn("voice=yes", caught.output[0])
+        self.assertIn("next 30s", caught.output[0])
+
+    def test_a_line_shown_but_not_voiced_says_so(self) -> None:
+        link = StubLink()
+        service, clock, _ = build(link, voice_every=3)
+        clock.advance(31.0)
+        service.step(Event("tool", "Read"))
+        clock.advance(31.0)
+        with self.assertLogs("buddy.chatter", level=logging.INFO) as caught:
+            service.step(Event("tool", "Read"))
+        self.assertIn("voice=no", caught.output[0])
+
+    def test_a_device_that_would_not_take_the_line_says_why(self) -> None:
+        link = StubLink()
+        link.fail_with = TimeoutError("no chat.say ack within 5.0s")
+        service, clock, _ = build(link)
+        clock.advance(31.0)
+        with self.assertLogs("buddy.chatter", level=logging.WARNING) as caught:
+            service.step(Event("tool", "Read"))
+        self.assertIn("not said", caught.output[0])
+        self.assertIn("TimeoutError", caught.output[0])
 
     def test_an_exhausted_source_does_not_wedge_the_worker(self) -> None:
         service, clock, _ = build(StubLink(), source=ListSource([]))
