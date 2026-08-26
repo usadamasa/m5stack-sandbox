@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 from unittest import mock
 
 import buddy_paths
-from buddy_chatter import ChatterConfig
+from chatter_core import ChatterConfig
 
 
 class XdgTests(unittest.TestCase):

@@ -18,22 +18,14 @@ import unittest
 from collections.abc import Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from types import SimpleNamespace
 from typing import Any
-from unittest import mock
 
 import buddy_chatter
-from buddy_chatter import (
-    DEFAULT_PROMPT_PATH,
-    SAID,
-    ChatterConfig,
-    ChatterService,
-    ClaudeCliLineSource,
-    Event,
-    describe,
-    parse_event,
-)
+import chatter_core
+from buddy_chatter import ChatterService
 from buddy_wire import Message
+from chatter_core import SAID, ChatterConfig, Event, parse_event
+from chatter_lines import ClaudeCliLineSource
 
 
 class StubLink:
@@ -78,53 +70,6 @@ class ListSource:
         self.calls += 1
         self.contexts.append(list(context))
         return self.lines.pop(0) if self.lines else None
-
-
-class FakeClaude:
-    """Stands in for `subprocess.run` launching the Claude CLI.
-
-    Answers on stdout in the shape the CLI actually produced when this
-    was written: a list of stream events whose last `result` entry
-    carries `structured_output`. The parsing of that shape is the part
-    worth pinning, so it is reproduced here rather than mocked away.
-    """
-
-    def __init__(
-        self,
-        payload: dict[str, Any] | None,
-        returncode: int = 0,
-        stdout: str | None = None,
-    ) -> None:
-        self.payload = payload
-        self.returncode = returncode
-        self._stdout = stdout
-        self.argv: list[str] = []
-        self.stdin = ""
-        self.kwargs: dict[str, Any] = {}
-
-    def __call__(self, argv: list[str], **kwargs: Any) -> Any:  # noqa: ANN401 — subprocess's own
-        self.argv = argv
-        self.stdin = str(kwargs.get("input", ""))
-        self.kwargs = kwargs
-        if self._stdout is not None:
-            out = self._stdout
-        elif self.payload is None:
-            out = ""
-        else:
-            out = json.dumps(
-                [
-                    {"type": "system", "subtype": "init"},
-                    {
-                        "type": "result",
-                        "subtype": "success",
-                        "is_error": False,
-                        "result": json.dumps(self.payload, ensure_ascii=False),
-                        "structured_output": self.payload,
-                    },
-                ],
-                ensure_ascii=False,
-            )
-        return SimpleNamespace(returncode=self.returncode, stdout=out, stderr="not logged in")
 
 
 def claude_source(cfg: ChatterConfig, payload: dict[str, Any]) -> ClaudeCliLineSource:
@@ -196,89 +141,6 @@ def build(
         clock=time.monotonic if real_clock else clock,
     )
     return service, clock, src
-
-
-class ParseEventTests(unittest.TestCase):
-    def test_accepts_a_known_kind(self) -> None:
-        ev = parse_event(b'{"kind": "tool", "detail": "Bash: uv run pytest"}')
-        self.assertEqual(ev, Event("tool", "Bash: uv run pytest"))
-
-    def test_detail_is_optional(self) -> None:
-        self.assertEqual(parse_event(b'{"kind": "stop"}'), Event("stop", ""))
-
-    def test_rejects_an_unknown_kind(self) -> None:
-        self.assertIsNone(parse_event(b'{"kind": "shutdown"}'))
-
-    def test_rejects_malformed_json(self) -> None:
-        self.assertIsNone(parse_event(b"{not json"))
-        self.assertIsNone(parse_event(b"\xff\xfe"))
-
-    def test_rejects_a_non_object(self) -> None:
-        self.assertIsNone(parse_event(b'["tool"]'))
-
-    def test_detail_is_clamped_and_flattened(self) -> None:
-        ev = parse_event(json.dumps({"kind": "tool", "detail": "a\n  b " + "x" * 500}).encode())
-        assert ev is not None
-        self.assertLessEqual(len(ev.detail), 120)
-        self.assertTrue(ev.detail.startswith("a b "))
-
-    def test_a_non_string_detail_is_dropped_not_fatal(self) -> None:
-        ev = parse_event(b'{"kind": "tool", "detail": 42}')
-        self.assertEqual(ev, Event("tool", ""))
-
-    def test_a_field_this_version_does_not_know_is_ignored(self) -> None:
-        # An older hook still sending `agent` must not be a parse error:
-        # the socket outlives any one deployment of the script.
-        self.assertEqual(parse_event(b'{"kind": "stop", "agent": "codex"}'), Event("stop", ""))
-
-
-class ConfigTests(unittest.TestCase):
-    def test_defaults(self) -> None:
-        cfg = ChatterConfig.from_env({})
-        self.assertTrue(cfg.enabled)
-        self.assertEqual(cfg.gap_min, 40.0)
-        self.assertEqual(cfg.voice_every, 1)
-        self.assertTrue(str(cfg.socket_path).endswith("buddy/chatter.sock"))
-
-    def test_disabled(self) -> None:
-        self.assertFalse(ChatterConfig.from_env({"BUDDY_CHATTER": "0"}).enabled)
-        self.assertFalse(ChatterConfig.from_env({"BUDDY_CHATTER": "false"}).enabled)
-
-    def test_unparseable_values_fall_back(self) -> None:
-        cfg = ChatterConfig.from_env({"BUDDY_CHATTER_GAP_MIN": "soon", "BUDDY_CHATTER_BATCH": ""})
-        self.assertEqual(cfg.gap_min, 40.0)
-        self.assertEqual(cfg.batch, 6)
-
-    def test_the_saturation_rate_is_tunable(self) -> None:
-        self.assertEqual(ChatterConfig.from_env({}).busy_rate, 12.0)
-        self.assertEqual(ChatterConfig.from_env({"BUDDY_CHATTER_BUSY_RATE": "30"}).busy_rate, 30.0)
-
-    def test_voice_every_cannot_be_zero(self) -> None:
-        # A zero would make the modulo in _transmit raise on every line.
-        self.assertEqual(ChatterConfig.from_env({"BUDDY_CHATTER_VOICE_EVERY": "0"}).voice_every, 1)
-
-    def test_the_model_defaults_to_sonnet(self) -> None:
-        # Writing a one-line mutter is not work that needs the biggest
-        # model, and this runs several times an hour all session.
-        self.assertEqual(ChatterConfig.from_env({}).model, "sonnet")
-
-    def test_claude_cli_settings(self) -> None:
-        cfg = ChatterConfig.from_env({})
-        self.assertEqual(cfg.claude_bin, "claude")
-        self.assertEqual(cfg.effort, "low")
-        self.assertEqual(cfg.claude_timeout, 120.0)
-        cfg = ChatterConfig.from_env(
-            {
-                "BUDDY_CHATTER_CLAUDE_BIN": "/opt/homebrew/bin/claude",
-                "BUDDY_CHATTER_MODEL": "claude-haiku-4-5-20251001",
-                "BUDDY_CHATTER_EFFORT": "medium",
-                "BUDDY_CHATTER_CLAUDE_TIMEOUT": "45",
-            }
-        )
-        self.assertEqual(cfg.claude_bin, "/opt/homebrew/bin/claude")
-        self.assertEqual(cfg.model, "claude-haiku-4-5-20251001")
-        self.assertEqual(cfg.effort, "medium")
-        self.assertEqual(cfg.claude_timeout, 45.0)
 
 
 class PacingTests(unittest.TestCase):
@@ -575,168 +437,6 @@ class SocketTests(unittest.TestCase):
             self.assertFalse(path.exists())
 
 
-class PromptFileTests(unittest.TestCase):
-    """The persona is prose in a file, so editing it must not need Python."""
-
-    def test_the_prompt_is_read_from_the_configured_path(self) -> None:
-        with TemporaryDirectory() as tmp:
-            path = Path(tmp) / "persona.md"
-            path.write_text("きみは猫である。\n", encoding="utf-8")
-            seen: list[str] = []
-
-            def run(system: str, _prompt: str) -> str:
-                seen.append(system)
-                return json.dumps({"structured_output": {"lines": ["にゃあ"]}})
-
-            source = ClaudeCliLineSource(ChatterConfig(prompt_path=path), run=run)
-            source.next_line([])
-            self.assertEqual(seen[0], "きみは猫である。\n")
-
-    def test_the_shipped_prompt_exists(self) -> None:
-        # The default is package data; a rename that misses it would only
-        # show up as every session falling back to canned lines.
-        self.assertTrue(DEFAULT_PROMPT_PATH.is_file(), DEFAULT_PROMPT_PATH)
-        self.assertTrue(DEFAULT_PROMPT_PATH.read_text(encoding="utf-8").strip())
-
-    def test_a_missing_prompt_is_a_counted_failure_not_a_crash(self) -> None:
-        source = claude_source(
-            ChatterConfig(prompt_path=Path("/nope/persona.md")), {"lines": ["x"]}
-        )
-        line = source.next_line([])
-        assert line is not None
-        self.assertTrue(line, "it should still say something")
-        self.assertEqual(source.failures, 1)
-        self.assertIn("persona.md", source.last_error)
-
-
-class LineSourceTests(unittest.TestCase):
-    def test_a_generation_failure_falls_back_rather_than_going_silent(self) -> None:
-        source = ClaudeCliLineSource(ChatterConfig(claude_bin="/nope/claude"))
-        line = source.next_line([Event("tool", "Read")])
-        assert line is not None
-        self.assertTrue(line)
-        self.assertEqual(source.failures, 1)
-        self.assertTrue(source.last_error)
-
-    def test_a_batch_is_parsed_and_handed_out_one_line_at_a_time(self) -> None:
-        calls: list[str] = []
-
-        def run(_system: str, prompt: str) -> str:
-            calls.append(prompt)
-            return json.dumps({"structured_output": {"lines": ["いち なのだ", "に なのだ"]}})
-
-        source = ClaudeCliLineSource(ChatterConfig(), run=run)
-        self.assertEqual(source.next_line([Event("tool", "Read")]), "いち なのだ")
-        self.assertEqual(source.next_line([]), "に なのだ")
-        self.assertEqual(len(calls), 1, "the second line should come from the same batch")
-        self.assertEqual(source.generated, 2)
-
-    def test_overlong_and_multiline_output_is_cut_to_one_panel(self) -> None:
-        cfg = ChatterConfig(max_chars=10)
-        source = claude_source(cfg, {"lines": ["あ" * 40, "改行\nを\n含む", "", 12345]})
-        self.assertEqual(source.next_line([]), "あ" * 10)
-        self.assertEqual(source.next_line([]), "改行 を 含む")
-        self.assertEqual(source.next_line([]), "12345", "a non-string must not raise")
-
-    def test_describe_renders_events_for_the_prompt(self) -> None:
-        self.assertEqual(describe([]), "まだ何も起きていない。")
-        rendered = describe([Event("tool", "Bash"), Event("idle")])
-        self.assertEqual(rendered, "- tool: Bash\n- idle")
-
-
-class ClaudeCliLineSourceTests(unittest.TestCase):
-    """Claude Code's backend. Never actually runs the CLI."""
-
-    def test_the_cli_is_invoked_without_a_session_or_a_workspace(self) -> None:
-        fake = FakeClaude({"lines": ["うむ なのだ"]})
-        cfg = ChatterConfig(claude_bin="claude-x", model="haiku", effort="medium")
-        source = ClaudeCliLineSource(cfg)
-        with mock.patch.object(buddy_chatter.subprocess, "run", fake):
-            self.assertEqual(source.next_line([Event("stop")]), "うむ なのだ")
-        self.assertEqual(fake.argv[0], "claude-x")
-        self.assertIn("-p", fake.argv)
-        self.assertEqual(fake.argv[fake.argv.index("--model") + 1], "haiku")
-        self.assertEqual(fake.argv[fake.argv.index("--effort") + 1], "medium")
-        # A turn that could load this repo's own hooks would datagram
-        # the chatter it is generating for; one that kept a session
-        # would leave a transcript per mutter.
-        self.assertIn("--safe-mode", fake.argv)
-        self.assertIn("--no-session-persistence", fake.argv)
-        self.assertEqual(fake.argv[fake.argv.index("--tools") + 1], "")
-        self.assertEqual(fake.argv[fake.argv.index("--output-format") + 1], "json")
-        schema = json.loads(fake.argv[fake.argv.index("--json-schema") + 1])
-        self.assertEqual(schema, buddy_chatter.LINES_SCHEMA)
-        self.assertEqual(fake.kwargs["timeout"], 120.0)
-
-    def test_the_persona_is_the_system_prompt_and_the_events_are_stdin(self) -> None:
-        with TemporaryDirectory() as tmp:
-            path = Path(tmp) / "persona.md"
-            path.write_text("きみは猫である。\n", encoding="utf-8")
-            fake = FakeClaude({"lines": ["にゃあ"]})
-            with mock.patch.object(buddy_chatter.subprocess, "run", fake):
-                ClaudeCliLineSource(ChatterConfig(prompt_path=path)).next_line(
-                    [Event("tool", "Bash")]
-                )
-        self.assertEqual(fake.argv[fake.argv.index("--system-prompt") + 1], "きみは猫である。\n")
-        # stdin, not the argument list: the events and the past lines
-        # grow with the session and argv does not.
-        self.assertIn("- tool: Bash", fake.stdin)
-        self.assertIn("独り言", fake.stdin)
-
-    def test_the_scratch_directory_does_not_outlive_the_turn(self) -> None:
-        fake = FakeClaude({"lines": ["ほい"]})
-        with mock.patch.object(buddy_chatter.subprocess, "run", fake):
-            ClaudeCliLineSource(ChatterConfig()).next_line([])
-        self.assertFalse(Path(fake.kwargs["cwd"]).exists())
-
-    def test_a_single_result_object_parses_too(self) -> None:
-        # `--output-format json` is documented as one object and was
-        # observed emitting the whole stream as a list. Both are read.
-        payload = {"type": "result", "structured_output": {"lines": ["ひとつ なのだ"]}}
-        fake = FakeClaude(None, stdout=json.dumps(payload, ensure_ascii=False))
-        with mock.patch.object(buddy_chatter.subprocess, "run", fake):
-            self.assertEqual(ClaudeCliLineSource(ChatterConfig()).next_line([]), "ひとつ なのだ")
-
-    def test_the_result_text_is_read_when_no_structured_output_came_back(self) -> None:
-        payload = {"type": "result", "result": json.dumps({"lines": ["もじれつ なのだ"]})}
-        fake = FakeClaude(None, stdout=json.dumps(payload, ensure_ascii=False))
-        with mock.patch.object(buddy_chatter.subprocess, "run", fake):
-            self.assertEqual(ClaudeCliLineSource(ChatterConfig()).next_line([]), "もじれつ なのだ")
-
-    def test_a_turn_that_reports_an_error_is_a_counted_failure(self) -> None:
-        payload = {"type": "result", "is_error": True, "result": "Credit balance is too low"}
-        fake = FakeClaude(None, stdout=json.dumps(payload))
-        source = ClaudeCliLineSource(ChatterConfig())
-        with mock.patch.object(buddy_chatter.subprocess, "run", fake):
-            line = source.next_line([])
-        assert line is not None
-        self.assertTrue(line, "it should still say something")
-        self.assertEqual(source.failures, 1)
-        self.assertIn("Credit balance", source.last_error)
-
-    def test_a_turn_that_writes_nothing_is_a_counted_failure(self) -> None:
-        fake = FakeClaude(None, returncode=1)
-        source = ClaudeCliLineSource(ChatterConfig())
-        with mock.patch.object(buddy_chatter.subprocess, "run", fake):
-            line = source.next_line([])
-        assert line is not None
-        self.assertTrue(line)
-        self.assertEqual(source.failures, 1)
-        # The reason has to survive into the status field, or a chatter
-        # that has quietly fallen back to canned lines looks like a
-        # chatter that is simply not saying much.
-        self.assertIn("not logged in", source.last_error)
-
-    def test_no_effort_flag_when_the_session_default_should_stand(self) -> None:
-        fake = FakeClaude({"lines": ["ほい"]})
-        with mock.patch.object(buddy_chatter.subprocess, "run", fake):
-            ClaudeCliLineSource(ChatterConfig(effort="")).next_line([])
-        self.assertNotIn("--effort", fake.argv)
-
-    def test_the_model_it_will_ask_is_reportable(self) -> None:
-        self.assertEqual(ClaudeCliLineSource(ChatterConfig(model="sonnet")).model, "sonnet")
-
-
 class StatusTests(unittest.TestCase):
     def test_status_reports_the_counters(self) -> None:
         service, clock, _ = build(StubLink())
@@ -798,7 +498,7 @@ class VarietyTests(unittest.TestCase):
         self.assertEqual([ev for ev in src.contexts[-1] if ev.kind == SAID], [])
 
     def test_the_spoken_lines_are_not_events_the_socket_can_forge(self) -> None:
-        self.assertNotIn(SAID, buddy_chatter.KINDS)
+        self.assertNotIn(SAID, chatter_core.KINDS)
         forged = json.dumps({"kind": SAID, "detail": "ぼくの偽物なのだ"}).encode()
         self.assertIsNone(parse_event(forged))
 

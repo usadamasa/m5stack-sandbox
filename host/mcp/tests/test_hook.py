@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import buddy_paths
-from buddy_chatter import Event, parse_event
+from chatter_core import Event, parse_event
 
 HOOK_PATH = Path(__file__).resolve().parents[3] / "scripts" / "buddy_chatter_notify.py"
 
