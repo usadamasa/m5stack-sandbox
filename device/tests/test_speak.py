@@ -1,5 +1,5 @@
 # pyright: reportPrivateUsage=false
-"""The speech path: block framing, playback sequencing, and giving up.
+"""The speech path: playback sequencing, volume, and the sender.
 
 The audio no longer arrives over the cable. The device fetches it from a
 VOICEVOX engine over WiFi, which changes what can go wrong: the host
@@ -7,18 +7,16 @@ used to declare a length and write padded whole blocks, and now a socket
 delivers bytes when it feels like it, ends the last block short, and can
 stop altogether.
 
-Three failures matter and only one is obvious from the far end:
+ブロックを切り出す側の失敗は `test_speak_stream.py` にある。こちらは
+`SpeechPlayer` がそれをどう鳴らし、どう speak.end へ写すか — 1 tick に
+1 ブロックであること、speaker が断ったブロックを落とさないこと、途中で
+切れたストリームを成功として報告しないこと。ホスト側から見た
+`buddy_verbs.speak` の契約も、同じ経路の両端なのでここにある。
 
-* a block handed to `playRaw` that is not exactly the block size — an
-  audible click, or a shifted stream for everything after it;
-* a source that waits forever on a socket that has died, which freezes
-  the app's 40 ms tick and takes an interrupt to get out of;
-* a stream cut short being reported as a successful utterance.
+All of it runs without a board, a speaker or an engine.
 
-All three are covered here without a board, a speaker or an engine.
-
-This is also a whitebox test of `SpeechPlayer`/`_StreamSource`'s private
-internals (`_BLOCK`, `_STALL_MS`, etc.), hence the file-level
+This is also a whitebox test of `SpeechPlayer`'s private internals
+(`_BLOCK`, `_VOLUME_GAIN`, etc.), hence the file-level
 `reportPrivateUsage=false` above.
 """
 
@@ -30,173 +28,14 @@ from unittest import mock
 
 import buddy_verbs
 from buddy import speak as buddy_speak
-from buddy.speak import _BLOCK, SpeechPlayer, _StreamSource
-
-
-class _FakeTime:
-    """MicroPython's ticks API, frozen and driven by the test."""
-
-    now = 0
-
-    @classmethod
-    def ticks_ms(cls) -> int:
-        return cls.now
-
-    @classmethod
-    def ticks_add(cls, base: int, delta: int) -> int:
-        return base + delta
-
-    @classmethod
-    def ticks_diff(cls, a: int, b: int) -> int:
-        return a - b
-
-
-class _FakeStream:
-    """A byte source that hands out only what has been fed to it.
-
-    `read` returns None rather than blocking when it is empty, which is
-    what a socket with a timeout does from this layer's point of view.
-    """
-
-    def __init__(self, data: bytes = b"") -> None:
-        self.buf = bytearray(data)
-        self.timeout: float | None = None
-        self.closed = False
-        self.ended = False
-
-    def feed(self, data: bytes) -> None:
-        self.buf.extend(data)
-
-    def end(self) -> None:
-        """Mark end of stream: further reads return b"" once drained."""
-        self.ended = True
-
-    def read(self, n: int) -> bytes | None:
-        if not self.buf:
-            return b"" if self.ended else None
-        take = bytes(self.buf[:n])
-        del self.buf[:n]
-        return take
-
-    def settimeout(self, seconds: float) -> None:
-        self.timeout = seconds
-
-    def close(self) -> None:
-        self.closed = True
-
-
-def _blk(ch: bytes) -> bytes:
-    return ch * _BLOCK
+from buddy import speak_stream
+from buddy.speak import _BLOCK, SpeechPlayer
+from speak_fakes import FakeStream, FakeTime, TimeFrozen, blk
 
 
 def _unused_fetch(*_args: object) -> dict[str, object]:
     """A `fetch` double for tests that never call it (see VolumeTest)."""
     return {}
-
-
-class TimeFrozen(unittest.TestCase):
-    """Base: every test here drives buddy.speak's clock by hand."""
-
-    def setUp(self) -> None:
-        self._real_time = buddy_speak.time
-        buddy_speak.time = _FakeTime()
-        self.addCleanup(setattr, buddy_speak, "time", self._real_time)
-        _FakeTime.now = 0
-
-
-class StreamSourceTest(TimeFrozen):
-    def test_stops_the_socket_blocking_the_ui(self) -> None:
-        # A socket left at its default waits for the bytes it was asked
-        # for, and the app's 40 ms tick waits with it.
-        stream = _FakeStream()
-        _StreamSource(stream, 4096)
-        self.assertEqual(stream.timeout, buddy_speak._READ_TIMEOUT_S)
-
-    def test_hands_back_whole_blocks_in_order(self) -> None:
-        stream = _FakeStream(_blk(b"a") + _blk(b"b"))
-        src = _StreamSource(stream, 2 * _BLOCK)
-        self.assertEqual(src.read_block(_BLOCK), _blk(b"a"))
-        self.assertEqual(src.read_block(_BLOCK), _blk(b"b"))
-        self.assertEqual(src.left, 0)
-
-    def test_a_block_split_across_calls_is_not_lost(self) -> None:
-        # WiFi delivers a block in pieces routinely. Dropping the first
-        # piece would shift every sample after it.
-        stream = _FakeStream(b"a" * 100)
-        src = _StreamSource(stream, _BLOCK)
-        self.assertIsNone(src.read_block(_BLOCK))
-        stream.feed(b"a" * (_BLOCK - 100))
-        self.assertEqual(src.read_block(_BLOCK), _blk(b"a"))
-
-    def test_pads_the_final_short_block_with_silence(self) -> None:
-        # playRaw is handed exactly one block. The last one almost never
-        # divides evenly, and this is the job the host's pad_to_blocks
-        # used to do before the audio came off a socket.
-        stream = _FakeStream(b"x" * 500)
-        src = _StreamSource(stream, 500)
-        block = src.read_block(_BLOCK)
-        assert block is not None
-        self.assertEqual(len(block), _BLOCK)
-        self.assertEqual(block[:500], b"x" * 500)
-        self.assertEqual(block[500:], b"\x00" * (_BLOCK - 500))
-
-    def test_the_pad_is_not_counted_as_audio(self) -> None:
-        # `left` is what tells the player the utterance is over. Counting
-        # the padding would end it a block early on every short tail.
-        src = _StreamSource(_FakeStream(b"x" * 500), 500)
-        src.read_block(_BLOCK)
-        self.assertEqual(src.left, 0)
-
-    def test_never_reads_past_the_declared_length(self) -> None:
-        # Whatever follows the payload on a keep-alive socket belongs to
-        # the next response, not to this utterance.
-        stream = _FakeStream(b"x" * 500 + b"NEXT")
-        src = _StreamSource(stream, 500)
-        src.read_block(_BLOCK)
-        self.assertEqual(bytes(stream.buf), b"NEXT")
-
-    def test_waiting_is_not_failing(self) -> None:
-        # An empty read is the normal case on a 40 ms tick. Treating it
-        # as an error would kill an utterance on the first jitter.
-        src = _StreamSource(_FakeStream(), _BLOCK)
-        self.assertIsNone(src.read_block(_BLOCK))
-        self.assertFalse(src.dead)
-
-    def test_gives_up_once_nothing_has_arrived_for_the_stall_window(self) -> None:
-        src = _StreamSource(_FakeStream(), _BLOCK)
-        _FakeTime.now = buddy_speak._STALL_MS + 1
-        self.assertIsNone(src.read_block(_BLOCK))
-        self.assertTrue(src.dead)
-
-    def test_progress_resets_the_stall_deadline(self) -> None:
-        # A slow stream that is still alive must not be killed by the
-        # clock. Any byte at all counts as progress.
-        stream = _FakeStream(b"a" * 100)
-        src = _StreamSource(stream, _BLOCK)
-        _FakeTime.now = buddy_speak._STALL_MS - 1
-        self.assertIsNone(src.read_block(_BLOCK))
-        _FakeTime.now = buddy_speak._STALL_MS + 1
-        self.assertIsNone(src.read_block(_BLOCK))
-        self.assertFalse(src.dead)
-
-    def test_a_stream_that_ends_short_is_a_failure_not_a_short_utterance(self) -> None:
-        # Content-Length declared the length up front, so a stream that
-        # stops early was cut off. Padding the gap and reporting success
-        # would hide it.
-        stream = _FakeStream(b"x" * 100)
-        stream.end()
-        src = _StreamSource(stream, _BLOCK)
-        self.assertIsNone(src.read_block(_BLOCK))
-        self.assertTrue(src.dead)
-
-    def test_close_releases_the_socket_and_the_response(self) -> None:
-        stream = _FakeStream()
-        response = _FakeStream()
-        src = _StreamSource(stream, _BLOCK, response)
-        src.close()
-        self.assertTrue(stream.closed)
-        self.assertTrue(response.closed)
-        src.close()  # idempotent
 
 
 class _FakeSpeaker:
@@ -251,7 +90,7 @@ class SpeechPlayerTest(TimeFrozen):
         super().setUp()
         self.t = _RecordingTransport()
         self.spk = _FakeSpeaker()
-        self.stream = _FakeStream()
+        self.stream = FakeStream()
         self.fetched: list[tuple[str, str, int, int]] = []
         self.player = SpeechPlayer(self.t, speaker=self.spk, fetch=self._fetch)
         self._rate = 16000
@@ -302,15 +141,15 @@ class SpeechPlayerTest(TimeFrozen):
         # Draining in a loop here would freeze the UI for the length of
         # the utterance, so the pump takes one bite a tick.
         self.say()
-        self.stream.feed(_blk(b"a") + _blk(b"b"))
+        self.stream.feed(blk(b"a") + blk(b"b"))
         self.player.pump()
-        self.assertEqual(self.spk.queued, [_blk(b"a")])
+        self.assertEqual(self.spk.queued, [blk(b"a")])
         self.player.pump()
-        self.assertEqual(self.spk.queued, [_blk(b"a"), _blk(b"b")])
+        self.assertEqual(self.spk.queued, [blk(b"a"), blk(b"b")])
 
     def test_finishes_and_acks_when_the_payload_runs_out(self) -> None:
         self.say()
-        self.stream.feed(_blk(b"a") + _blk(b"b"))
+        self.stream.feed(blk(b"a") + blk(b"b"))
         for _ in range(4):
             self.player.pump()
         self.assertFalse(self.player.active)
@@ -325,18 +164,18 @@ class SpeechPlayerTest(TimeFrozen):
         # full. A block dropped here is a gap in the audio.
         self.spk.depth = 1
         self.say()
-        self.stream.feed(_blk(b"a") + _blk(b"b"))
+        self.stream.feed(blk(b"a") + blk(b"b"))
         self.player.pump()
         self.player.pump()
-        self.assertEqual(self.spk.queued, [_blk(b"a")])
+        self.assertEqual(self.spk.queued, [blk(b"a")])
         self.spk.drain()
         self.player.pump()
-        self.assertEqual(self.spk.queued, [_blk(b"b")])
+        self.assertEqual(self.spk.queued, [blk(b"b")])
 
     def test_a_stalled_stream_ends_not_ok(self) -> None:
         self.say()
         self.player.pump()
-        _FakeTime.now = buddy_speak._STALL_MS + 1
+        FakeTime.now = speak_stream._STALL_MS + 1
         self.player.pump()
         self.assertFalse(self.player.active)
         sent = json.loads(self.t.sent[0])
@@ -349,7 +188,7 @@ class SpeechPlayerTest(TimeFrozen):
         self.player.pump()
         self.player.pump()
         self.assertTrue(self.player.active)
-        self.stream.feed(_blk(b"a") + _blk(b"b"))
+        self.stream.feed(blk(b"a") + blk(b"b"))
         for _ in range(4):
             self.player.pump()
         self.assertGreater(json.loads(self.t.sent[0])["stalls"], 0)

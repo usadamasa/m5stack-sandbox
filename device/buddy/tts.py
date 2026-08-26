@@ -250,7 +250,7 @@ class _PrefixedStream:
     def settimeout(self, seconds: float) -> None:
         """Forwarded so the player can stop the socket blocking on it.
 
-        `buddy.speak._StreamSource` sets this on whatever stream it is
+        `buddy.speak_stream.StreamSource` sets this on whatever stream it is
         handed. Without the forward it would land here and do nothing,
         and the first read past the buffered prefix would block the UI.
         """
