@@ -27,6 +27,7 @@ import buddy_mcp
 import buddy_paths
 import mcp_chatter_tools
 import mcp_debug_tools
+import mcp_health
 import mcp_state
 from mcp_state import DEFAULT_PORT, HTTP_HOST, HTTP_PATH, SHUTDOWN_TIMEOUT, server
 
@@ -152,12 +153,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     # import 時ではなくここで始める: このモジュールの import が socket を
     # bind したりスレッドを起こしたりしてはいけない。さもないとテスト (と、
     # 単に server を覗くだけの道具) が生きた server と競合する。
-    mcp_state.chatter_service().start()
-    if mcp_state.connect_on_start_wanted(env, default=transport == "streamable-http"):
-        # 別スレッドで: ポートを開くのは reader とハンドシェイクなので、
-        # エージェントの `initialize` をその後ろに並ばせない。
+    service = mcp_state.chatter_service()
+    service.start()
+    connect = mcp_state.connect_on_start_wanted(env, default=transport != "stdio")
+    # 別スレッドで: ポートを開くのは reader とハンドシェイクで、engine と CLI の
+    # 確認はそれぞれ往復とプロセス起動なので、エージェントの `initialize` を
+    # その後ろに並ばせない。
+    if transport == "stdio":
+        # 客として起動された server は疏通確認をしない。health を書くのは
+        # 常駐 daemon の仕事で、セッションごとの server がその写しを上書き
+        # すると `buddy-mcpd status` が別のプロセスの健康を報告することになる。
+        if connect:
+            threading.Thread(
+                target=mcp_state.connect_on_start, name="buddy-connect", daemon=True
+            ).start()
+    else:
         threading.Thread(
-            target=mcp_state.connect_on_start, name="buddy-connect", daemon=True
+            target=mcp_health.check_on_start,
+            args=(env, service),
+            kwargs={"connect": connect},
+            name="buddy-health",
+            daemon=True,
         ).start()
     install_shutdown_handlers()
     try:
