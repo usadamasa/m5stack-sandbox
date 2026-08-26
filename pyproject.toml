@@ -96,6 +96,9 @@ known-first-party = [
     "buddy_text",
     "buddy_verbs",
     "buddy_wire",
+    # tests/ 側の共有 stub。src ルートに居ないので ruff の自動判定では
+    # first-party にならず、ここに書いて初めて同じ塊へ並ぶ。
+    "chatter_stubs",
     "deploy_stubs",
     "device_repl",
     "fake_repl",

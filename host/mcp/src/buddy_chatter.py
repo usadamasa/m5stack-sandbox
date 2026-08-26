@@ -11,10 +11,8 @@ exercised when someone remembers to call `buddy_speak`.
 Two rules make that true, and both matter more than anything the chatter
 actually says:
 
-- The hook does one `sendto` on an unconnected datagram socket and
-  returns. No connect, no handshake, no reply, and no listener needed —
-  if this process is not running the send fails and the hook still
-  exits 0. A tool call never waits on it.
+- The hook does one `sendto` and returns, with nothing to wait on. See
+  `chatter_inbox`.
 - The worker takes the device lock with `blocking=False`. If a real tool
   call owns the device, the chatter keeps its line and tries again on a
   later tick rather than making anyone queue behind it.
@@ -33,32 +31,13 @@ It never opens the port itself. Speaking only happens when a link is
 already connected, which is what keeps `buddy_deploy.py` and `esptool`
 able to claim the port between sessions.
 
-### Pacing
+### 何をどこへ出したか
 
-A fixed interval reads as a metronome and grates within minutes. Every
-gap is drawn fresh from a range instead, and so is the silence that
-counts as idle, so the device is quiet for a while and then says two
-things close together — the shape an actual person in the room has.
-
-The range itself is not fixed either. The hook events already arriving
-say how hard the session is working, and a companion that talks at the
-same rate through a long compile and through a burst of edits is not
-following along. So the window a gap is drawn from slides across the
-configured range: busy sessions draw from the short end, quiet ones from
-the long end. The window keeps its width at both extremes, which is what
-stops the busy case from collapsing back into a metronome.
-
-Activity is read live rather than at draw time. A burst that starts
-after a long gap was already drawn shortens the wait under way — which
-is the case that matters, because it is the one anybody notices. The
-jitter is what is fixed per utterance; where it lands moves.
-
-### Where the lines come from
-
-`claude -p`, spawned for one turn per batch. Not an API client: the CLI
-is the one thing the machine running this is certain to have installed
-and logged in, and it inherits whatever model and credentials the user
-is already set up with. See `ClaudeCliLineSource`.
+ここに残る `ChatterService` は喋る側 — 何に向かって喋るかを決め、台詞を
+デバイスへ載せ、結果を報告する。いつ喋るかは `chatter_pace.Pacer`、hook の
+データグラムを受ける側は `chatter_inbox.Inbox`、台詞そのものを書くのは
+`chatter_lines`。依存は service → inbox / pace / lines → core の一方向で、
+逆向きは無い。
 """
 
 from __future__ import annotations
@@ -66,33 +45,19 @@ from __future__ import annotations
 import json
 import os
 import random
-import socket
 import sys
 import threading
 import time
 from collections import deque
 from collections.abc import Callable, Sequence
-from contextlib import suppress
 from dataclasses import replace
-from queue import Empty, Full, Queue
 from typing import Any
 
 from buddy_verbs import say, speak, voicevox_url
-from chatter_core import SAID, ChatLink, ChatterConfig, Event, LineSource, parse_event
+from chatter_core import SAID, ChatLink, ChatterConfig, Event, LineSource
+from chatter_inbox import Inbox
 from chatter_lines import ClaudeCliLineSource
-
-# How often the worker wakes when no event arrives. Only bounds how
-# promptly an idle line lands, so a second is plenty.
-_TICK = 1.0
-
-# One datagram is a couple of hundred bytes of JSON; this is slack, not
-# a target. Oversized sends are truncated by the kernel and then fail to
-# parse, which is the correct outcome for a malformed sender.
-_MAX_DATAGRAM = 8192
-
-# Bounded so a burst of tool calls cannot grow the queue without limit
-# while the device is busy. Old events are the ones worth losing.
-_QUEUE_DEPTH = 64
+from chatter_pace import Pacer
 
 # What the model is told about, and what a line is generated from.
 _HISTORY_DEPTH = 12
@@ -101,21 +66,6 @@ _HISTORY_DEPTH = 12
 # batch — a repeat inside a batch is the model's to avoid, a repeat
 # across batches is what it cannot see without this.
 _SAID_DEPTH = 10
-
-# How far back the worker looks when judging how busy the session is.
-# Long enough that one slow tool call does not read as silence, short
-# enough that the device notices a burst starting.
-_ACTIVITY_WINDOW = 120.0
-
-# Ceiling on remembered event times, so a runaway sender cannot grow the
-# deque between prunes. Well above what saturates the tempo anyway.
-_ACTIVITY_DEPTH = 256
-
-# How much of the gap range one draw spans. The rest of the range is
-# what the tempo slides the draw across: at half, a busy session draws
-# from the lower half and a quiet one from the upper half, and both
-# still have the same amount of jitter.
-_TEMPO_WIDTH = 0.5
 
 
 class ChatterService:
@@ -145,7 +95,7 @@ class ChatterService:
         self._rng = rng or random.Random()
         self._clock = clock
 
-        self._queue: Queue[Event] = Queue(maxsize=_QUEUE_DEPTH)
+        self._inbox = Inbox(cfg.socket_path)
         self._history: deque[Event] = deque(maxlen=_HISTORY_DEPTH)
         # Kept apart from `_history` rather than appended to it: a run
         # of utterances would otherwise push the events that prompted
@@ -153,28 +103,15 @@ class ChatterService:
         # talking about nothing but itself.
         self._said: deque[str] = deque(maxlen=_SAID_DEPTH)
         self._stop = threading.Event()
-        self._threads: list[threading.Thread] = []
-        self._sock: socket.socket | None = None
+        self._worker: threading.Thread | None = None
         # Kept across ticks so a line already paid for is not thrown
         # away when the device turns out to be busy.
         self._pending: str | None = None
-
-        now = self._clock()
-        self._last_event = now
-        self._last_utterance = now
-        # When events arrived, newest last. Read to say how busy the
-        # session is; see `_tempo`.
-        self._activity: deque[float] = deque(maxlen=_ACTIVITY_DEPTH)
-        # The gap's jitter, as a fraction of the draw window. Fixed per
-        # utterance; the window it lands in moves with the tempo, so the
-        # gap itself is only settled when it is compared against.
-        self._gap_u = self._rng.random()
-        self._idle = self._draw(cfg.idle_min, cfg.idle_max)
+        self._pace = Pacer(cfg, self._rng, clock)
 
         self.spoken = 0
         self.skipped_busy = 0
         self.skipped_offline = 0
-        self.dropped = 0
         self.last_line = ""
         self.last_error = ""
 
@@ -183,66 +120,7 @@ class ChatterService:
         """The settings in force. Frozen — retune by rebuilding the service."""
         return self._cfg
 
-    # ----- pacing
-
-    def _draw(self, low: float, high: float) -> float:
-        """One interval, jittered. Never negative, even if misconfigured."""
-        low = max(0.0, low)
-        high = max(low, high)
-        return self._rng.uniform(low, high)
-
-    def _tempo(self) -> float:
-        """How busy the session is, 0 (silent) to 1 (saturated).
-
-        Prunes on read rather than on arrival: nothing else needs the
-        deque trimmed, and doing it here means the answer is current
-        even on a tick where no event came in.
-
-        Two threads read this — the worker on every tick, and whichever
-        one is answering `buddy_chatter_status` — so two pruners can
-        race for the last element and one of them find it already gone.
-        Appends only ever happen on the right, so catching that is
-        enough; a lock here would be one more thing a tool call could
-        end up waiting behind.
-        """
-        now = self._clock()
-        while self._activity:
-            try:
-                if now - self._activity[0] <= _ACTIVITY_WINDOW:
-                    break
-                self._activity.popleft()
-            except IndexError:
-                break
-        if not self._activity:
-            return 0.0
-        rate = self._cfg.busy_rate
-        if rate <= 0.0:
-            # No rate to divide by. Taking any activity at all as full
-            # tempo is the reading that matches "saturates immediately".
-            return 1.0
-        per_minute = len(self._activity) / (_ACTIVITY_WINDOW / 60.0)
-        return min(1.0, per_minute / rate)
-
-    def _gap_now(self) -> float:
-        """The wait the current utterance is due after, as of right now.
-
-        Recomputed on every check so a burst can shorten a gap already
-        under way. Only the jitter within the draw window is fixed.
-        """
-        low = max(0.0, self._cfg.gap_min)
-        high = max(low, self._cfg.gap_max)
-        span = high - low
-        if span <= 0.0:
-            return low
-        width = span * _TEMPO_WIDTH
-        start = low + (1.0 - self._tempo()) * (span - width)
-        return start + self._gap_u * width
-
-    def _rearm(self, now: float) -> None:
-        self._last_utterance = now
-        self._last_event = now
-        self._gap_u = self._rng.random()
-        self._idle = self._draw(self._cfg.idle_min, self._cfg.idle_max)
+    # ----- deciding
 
     def _due(self, ev: Event | None) -> Event | None:
         """Fold in one event, or a quiet tick, and say what to talk about.
@@ -254,16 +132,12 @@ class ChatterService:
         now = self._clock()
         if ev is not None:
             self._history.append(ev)
-            self._last_event = now
-            # Counted before the gap check, not after: an event that
-            # lands inside the gap says nothing worth speaking to yet,
-            # but it is still what the session being busy is made of.
-            self._activity.append(now)
-        if now - self._last_utterance < self._gap_now():
+            self._pace.note_activity(now)
+        if self._pace.waiting(now):
             return None
         if ev is not None:
             return ev
-        if now - self._last_event < self._idle:
+        if not self._pace.idle_due(now):
             return None
         # Not counted as activity. The chatter talking to itself would
         # otherwise read as a busy session and talk faster for it.
@@ -312,7 +186,7 @@ class ChatterService:
             # rather than re-deciding every second for the whole time
             # the device is unplugged.
             self.skipped_offline += 1
-            self._rearm(self._clock())
+            self._pace.rearm(self._clock())
             return
 
         if self._pending is None:
@@ -322,7 +196,7 @@ class ChatterService:
             self._pending = self._source.next_line(self._context())
         if not self._pending:
             self._pending = None
-            self._rearm(self._clock())
+            self._pace.rearm(self._clock())
             return
 
         if not self._lock.acquire(blocking=False):
@@ -343,73 +217,34 @@ class ChatterService:
             self._said.append(self._pending)
             self.spoken += 1
         self._pending = None
-        self._rearm(self._clock())
+        self._pace.rearm(self._clock())
 
     # ----- threads
 
     def start(self) -> None:
         """Bind the socket and start listening. Idempotent."""
-        if not self._cfg.enabled or self._threads:
+        if not self._cfg.enabled or self._worker is not None:
             return
-        path = self._cfg.socket_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # A datagram socket left behind by a killed server keeps the
-        # path occupied; nothing is listening on it, so removing it is
-        # not destructive.
-        with suppress(FileNotFoundError):
-            path.unlink()
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-        sock.settimeout(0.5)
-        sock.bind(str(path))
-        self._sock = sock
+        self._inbox.start()
         self._stop.clear()
-        for name, target in (("buddy-chatter-rx", self._receive), ("buddy-chatter", self._work)):
-            thread = threading.Thread(target=target, name=name, daemon=True)
-            thread.start()
-            self._threads.append(thread)
+        worker = threading.Thread(target=self._work, name="buddy-chatter", daemon=True)
+        worker.start()
+        self._worker = worker
 
     def stop(self) -> None:
         self._stop.set()
-        sock, self._sock = self._sock, None
-        if sock is not None:
-            with suppress(OSError):
-                sock.close()
-        for thread in self._threads:
-            thread.join(timeout=2.0)
-        self._threads.clear()
-        with suppress(FileNotFoundError, OSError):
-            self._cfg.socket_path.unlink()
+        self._inbox.stop()
+        if self._worker is not None:
+            self._worker.join(timeout=2.0)
+            self._worker = None
 
     @property
     def running(self) -> bool:
-        return bool(self._threads)
-
-    def _receive(self) -> None:
-        sock = self._sock
-        if sock is None:
-            return
-        while not self._stop.is_set():
-            try:
-                data, _ = sock.recvfrom(_MAX_DATAGRAM)
-            except TimeoutError:
-                continue
-            except OSError:
-                # The socket was closed under us by stop().
-                return
-            ev = parse_event(data)
-            if ev is None:
-                continue
-            try:
-                self._queue.put_nowait(ev)
-            except Full:
-                self.dropped += 1
+        return self._worker is not None
 
     def _work(self) -> None:
         while not self._stop.is_set():
-            try:
-                ev: Event | None = self._queue.get(timeout=_TICK)
-            except Empty:
-                ev = None
+            ev = self._inbox.get()
             try:
                 self.step(ev)
             except Exception as exc:
@@ -432,7 +267,7 @@ class ChatterService:
         the chatter to take the device down with it.
         """
         seen: tuple[int, int, int, str] | None = None
-        while self._threads and any(t.is_alive() for t in self._threads):
+        while self._worker is not None and self._worker.is_alive():
             if on_change is not None:
                 current = (self.spoken, self.skipped_busy, self.skipped_offline, self.last_error)
                 if current != seen:
@@ -448,13 +283,13 @@ class ChatterService:
             "spoken": self.spoken,
             "skipped_busy": self.skipped_busy,
             "skipped_offline": self.skipped_offline,
-            "dropped_events": self.dropped,
-            "queued": self._queue.qsize(),
+            "dropped_events": self._inbox.dropped,
+            "queued": self._inbox.queued,
             # The wait in force right now, not a number settled earlier:
             # it moves as the session speeds up and slows down.
-            "next_gap_s": round(self._gap_now(), 1),
-            "next_idle_s": round(self._idle, 1),
-            "tempo": round(self._tempo(), 2),
+            "next_gap_s": round(self._pace.gap_now(), 1),
+            "next_idle_s": round(self._pace.idle_s, 1),
+            "tempo": round(self._pace.tempo(), 2),
             "busy_rate": self._cfg.busy_rate,
             "voice_every": self._cfg.voice_every,
             "backend": getattr(source, "backend", ""),

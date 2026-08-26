@@ -1,6 +1,6 @@
 ---
 name: buddy-chatter
-description: 作業中に Cardputer-Adv が独り言を言う機能 (host/mcp/src/buddy_chatter.py・chatter_lines.py・chatter_core.py と scripts/buddy_chatter_notify.py) を扱うときに使う。喋らない・喋りすぎる・台詞が変、hook が届いていない、chatter を直したのに反映されないときに参照する。ポートの所有権と、タスクをブロックしない設計の根拠もここ。
+description: 作業中に Cardputer-Adv が独り言を言う機能 (host/mcp/src/buddy_chatter.py・chatter_pace.py・chatter_inbox.py・chatter_lines.py・chatter_core.py と scripts/buddy_chatter_notify.py) を扱うときに使う。喋らない・喋りすぎる・台詞が変、hook が届いていない、chatter を直したのに反映されないときに参照する。ポートの所有権と、タスクをブロックしない設計の根拠もここ。
 ---
 
 # 作業中の独り言 (chatter)
@@ -15,6 +15,10 @@ hooks ─datagram─> $XDG_STATE_HOME/buddy/chatter.sock ─> buddy-mcpd (常駐
   (plugin の hooks.json が登録)                             ├ ClaudeCliLineSource (claude -p)
                                                             └ _device_lock を try-acquire
 ```
+
+ホスト側の内訳: 受信は `chatter_inbox.Inbox`、いつ喋るかは `chatter_pace.Pacer`、
+台詞は `chatter_lines`、喋らせるのが `buddy_chatter.ChatterService`。共有物は
+`chatter_core`。依存は service → inbox / pace / lines → core の一方向。
 
 **chatter は daemon に 1 つ。** どのセッションの hook で撃たれても同じ chatter が反応する。
 複数セッションが同時に繋がっていても、喋る口は 1 つしかない。
@@ -81,7 +85,7 @@ SDK を直接叩くと認証の解決を再実装して追随し続けること�
      "'"$HOME"'/.local/state/buddy/chatter.sock"); print("ok")'
    ```
 
-   届いたかどうかは `tempo` で測れる。`_tempo()` は
+   届いたかどうかは `tempo` で測れる。`chatter_pace.Pacer.tempo()` は
    `len(_activity) / (窓 120 秒 / 60) / busy_rate` なので、5 発投げれば
    `5 / 2 / 12 = 0.21` になる。0 のままなら 1 件も届いていない。
 
@@ -101,7 +105,8 @@ chatter は黙って諦める — そのための try-acquire。
 ## 直しても反映されないとき
 
 **daemon は起動時にホストのコードを import 済み。** `buddy_chatter.py` (喋る側) や
-`chatter_lines.py` (台詞を書く側) を直しても走っている daemon には届かない。
+`chatter_pace.py` (間隔) や `chatter_lines.py` (台詞を書く側) を直しても走っている
+daemon には届かない。
 
 ```bash
 buddy-mcpd restart     # これだけ。セッションの再起動は要らない
@@ -154,10 +159,10 @@ hook は plugin の `hooks/hooks.json` が登録する。plugin を入れ替え�
 発話間隔のほうは、`gap_min`〜`gap_max` (既定 40〜150 秒) のどこから引くかが**セッションの
 忙しさで動く**。忙しいときは短いほうの端から、静かなときは長いほうの端から引く。
 
-- **tempo** は直近 `_ACTIVITY_WINDOW` (120 秒) に届いた hook イベントの流量を 0〜1 に
+- **tempo** は直近 `chatter_pace.ACTIVITY_WINDOW` (120 秒) に届いた hook イベントの流量を 0〜1 に
   正規化した値。`BUDDY_CHATTER_BUSY_RATE` (既定 12 件/分) で 1.0 に飽和する。ツール呼び出し
   1 回は Pre と Post の両方で数えるので、12 件/分はおよそ 6 回/分
-- 抽選の窓は範囲の `_TEMPO_WIDTH` (0.5) 幅を保ったままスライドする。幅を保つのは、忙しい側で
+- 抽選の窓は範囲の `chatter_pace.TEMPO_WIDTH` (0.5) 幅を保ったままスライドする。幅を保つのは、忙しい側で
   ゆらぎが潰れてメトロノームに戻らないようにするため
 - tempo は**引いた時点ではなく比較する時点で**読む。長い間隔を引いた直後にイベントが集中
   したら、進行中の待ちがその場で縮む。固定されるのは窓の中のゆらぎだけ
