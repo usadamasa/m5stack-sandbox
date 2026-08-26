@@ -76,6 +76,7 @@ select = [
 "host/link/src/buddy_verbs.py" = ["PLR0913"]
 "host/mcp/src/buddy_chatter.py" = ["PLR0913"]
 "host/mcp/src/buddy_mcp.py" = ["PLR0913"]
+"host/mcp/src/mcp_chatter_tools.py" = ["PLR0913"]
 "host/tools/src/buddy_deploy.py" = ["PLR0912", "PLR0913", "PLR0915"]
 "host/tools/src/fetch_firmware.py" = ["PLR0912", "PLR0915"]
 "host/tools/src/provision_wifi.py" = ["PLR0911"]
@@ -97,6 +98,7 @@ known-first-party = [
     "buddy_wire",
     "device_repl",
     "fake_repl",
+    "mcp_stubs",
     "probe_device",
     "provision_wifi",
 ]

@@ -17,7 +17,7 @@ dependencies = [
 # `uv tool install ./host/mcp` か `uvx --from ./host/mcp buddy-mcpd` で入れた
 # 実体を叩く方が、どのプロジェクトから起こしても同じものが上がる。
 [project.scripts]
-buddy-mcp = "buddy_mcp:main"
+buddy-mcp = "buddy_mcp_serve:main"
 buddy-mcpd = "buddy_mcpd:main"
 
 [tool.uv.sources]

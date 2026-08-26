@@ -5,8 +5,6 @@
   "device/tests/test_speak.py": 558,
   "host/link/src/buddy_link.py": 414,
   "host/mcp/src/buddy_chatter.py": 558,
-  "host/mcp/src/buddy_mcp.py": 820,
   "host/mcp/tests/test_chatter.py": 536,
-  "host/mcp/tests/test_mcp.py": 716,
   "host/tools/tests/test_deploy.py": 757
 }

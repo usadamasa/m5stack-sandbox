@@ -117,7 +117,8 @@ jobs:
           uv run --no-sync python - <<'PY'
           import importlib.util as u
 
-          import buddy_mcp  # noqa: F401
+          # 起動口。tool を並べた 3 モジュールと mcp_state をここが引く。
+          import buddy_mcp_serve  # noqa: F401
 
           for name in ("mpy_cross", "esptool", "PIL"):
               assert u.find_spec(name) is None, f"{name} leaked into the mcp environment"

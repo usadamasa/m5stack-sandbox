@@ -181,7 +181,7 @@ hook は plugin の `hooks/hooks.json` が登録する。plugin を入れ替え�
 | 変数 | 既定 | |
 | --- | --- | --- |
 | `BUDDY_CHATTER` | `1` | `0` / `false` / `no` で完全に無効。socket も張らない |
-| `BUDDY_CONNECT_ON_START` | daemon では有効 | ポートを起動時に開くか。読むのは `buddy_mcp.py` |
+| `BUDDY_CONNECT_ON_START` | daemon では有効 | ポートを起動時に開くか。読むのは `mcp_state.py` |
 | `BUDDY_CHATTER_SOCKET` | `$XDG_STATE_HOME/buddy/chatter.sock` | hook 側と一致していること |
 | `BUDDY_CHATTER_GAP_MIN` / `_MAX` | `40` / `150` | 発話間隔のゆらぎ幅 (秒) |
 | `BUDDY_CHATTER_IDLE_MIN` / `_MAX` | `60` / `180` | 独り言までの沈黙のゆらぎ幅 (秒) |
