@@ -46,7 +46,7 @@ ignore = ["ANN", "UP", "SIM105", "B904"]
 # 複雑度の backlog。ルートの同名の表はここを開いた時点で置換されるので、
 # device のぶんはルートではなくここに載る。意味と扱いはルート側のコメント。
 # 循環的複雑度そのものは `poe complexity` のラチェットが持っている。
-"apps/claude_buddy.py" = ["PLR0912", "PLR0915"]
+"buddy/app.py" = ["PLR0912", "PLR0915"]
 
 # ---------------------------------------------------------------- pytest
 
@@ -101,9 +101,9 @@ reportTypeCommentUsage = "none"
 branch = true
 source = ["."]
 omit = [
-    # Calls run() at import time and needs M5 hardware modules; importing it
-    # here would launch the app, not measure it.
-    "apps/*",
+    # apps/ はここに無い。import しただけでは起動しなくなり (起動は
+    # `claude_buddy.run()`)、ハードウェアのモジュールを要求するのは
+    # `buddy/app.py` の `run()` の中だけになったので、両方とも測れる。
     "tests/*",
 ]
 

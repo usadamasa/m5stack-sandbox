@@ -1,5 +1,4 @@
 {
-  "device/apps/claude_buddy.py": 491,
   "device/buddy/chat.py": 694,
   "device/buddy/speak.py": 516,
   "device/tests/test_chat.py": 573,

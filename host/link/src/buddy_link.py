@@ -40,13 +40,12 @@ from device_repl import connect_repl, run_and_release
 # compiling an 18 KB source string in one go is a poor fit for the
 # ~65 KB of free heap this bundle leaves behind.
 #
-# The module is dropped from the cache first. `claude_buddy` calls run()
-# from its module body, so a second `import` of a module still in
-# sys.modules is a no-op — and the app that was running a moment ago put
-# it there. Before Ctrl-C worked this could not happen: every exit went
-# through machine.reset() and took sys.modules with it. Now the common
-# case is a device that was interrupted back to the REPL, where a plain
-# import launches nothing and says nothing about why.
+# 起動するのは最後の `run()`。import が読む `/flash/apps/claude_buddy.py` は
+# sys.path を整えて `/flash/buddy/app.py` へ橋を渡すだけの起動口で、`main.py`
+# も同じ 2 行を書く。キャッシュから先に落とすのは、直前まで走っていたアプリが
+# そこへ自分を入れているため。落ちるのは `claude_buddy` だけで、`buddy.app` も
+# `buddy.chat` も前の run のまま残る (MicroPython は submodule を package の
+# 属性としても持つ)。押し込んだ版を確実に動かしたければ reboot。
 #
 # The collect matters as much as the delete. The previous run's UI,
 # transport and speech objects are unreachable once run() has returned
@@ -59,6 +58,7 @@ LAUNCH_SOURCE = (
     "if 'claude_buddy' in sys.modules: del sys.modules['claude_buddy']\n"
     "gc.collect()\n"
     "import claude_buddy\n"
+    "claude_buddy.run()\n"
 )
 
 # Default read timeout for a link. Short: the readers poll `in_waiting`

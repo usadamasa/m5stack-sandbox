@@ -62,7 +62,7 @@ free 69712  alloc 63856  idf_free 40200  idf_largest 27648
 ## メモリを食わない仕組み
 
 `buddy/debug.mpy` は flash に常駐するが **import されない**。`dbg.*` frame が来た瞬間に
-`apps/claude_buddy.py` の `on_dbg` が import し、`dbg.off` で `del sys.modules` +
+`buddy/router.py` の `on_dbg` が import し、`dbg.off` で `del sys.modules` +
 `delattr(sys.modules["buddy"], "debug")` + `gc.collect()` する。使っていない間のコストは
 `_DBG_TAG in raw` の substring 判定だけ。
 

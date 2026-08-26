@@ -17,10 +17,8 @@ basedpyright's private-member check is switched off for this file rather
 than silenced at each use.
 """
 
-import ast
 import json
 import unittest
-from pathlib import Path
 from typing import cast
 
 from buddy import debug as buddy_debug
@@ -261,44 +259,11 @@ class DebugModuleTest(unittest.TestCase):
                 self.assertNotIn("unload", ack)
 
 
-class CallerUnloadTest(unittest.TestCase):
-    """What the caller has to do once `unload` comes back.
-
-    `on_dbg` lives inside `claude_buddy.run()` and imports M5, so it
-    cannot be called here. What it must not lose is checked against the
-    source instead, because dropping either half is invisible: the ack
-    still says ok, and only the `free` number it carries is wrong.
-
-    Both halves are needed since `buddy.debug` became a submodule.
-    MicroPython stores a submodule as an attribute of its package as
-    well as in `sys.modules`, and the attribute outlives the entry —
-    measured on the device, not inferred.
-    """
-
-    def setUp(self) -> None:
-        app = Path(__file__).resolve().parents[1] / "apps" / "claude_buddy.py"
-        self.source = app.read_text(encoding="utf-8")
-        self.tree = ast.parse(self.source, filename=str(app))
-
-    def test_the_sys_modules_entry_goes(self) -> None:
-        self.assertIn('del sys.modules["buddy.debug"]', self.source)
-
-    def test_the_package_attribute_goes_too(self) -> None:
-        calls = [
-            node
-            for node in ast.walk(self.tree)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "delattr"
-        ]
-        self.assertTrue(calls, "nothing removes the submodule from its package")
-        names = [
-            arg.value
-            for call in calls
-            for arg in call.args
-            if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
-        ]
-        self.assertIn("debug", names)
+# `unload` が返ってきた後に呼び出し側が何をするかは、ここには無い。
+# 以前は `on_dbg` が `claude_buddy.run()` の中のクロージャで M5 を要求した
+# ため、ソースを AST で読むしかなかった。いまは `buddy/router.py` にあって
+# そのまま呼べるので、`tests/test_router.py` が本物を動かして
+# sys.modules と package の属性の両方を見ている。
 
 
 if __name__ == "__main__":
