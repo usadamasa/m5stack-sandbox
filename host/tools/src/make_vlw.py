@@ -314,7 +314,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--dest",
         default="/flash/buddy-ja.vlw",
-        help="デバイス上の置き場所。device/buddy/chat.py の _VLW_PATH と揃える",
+        help="デバイス上の置き場所。device/buddy/chat_font.py の VLW_PATH と揃える",
     )
     args = parser.parse_args(argv)
 

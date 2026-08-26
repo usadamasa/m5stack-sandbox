@@ -85,13 +85,13 @@ the VLW; an all-ASCII transcript stays on DejaVu12, which at 0.75 packs
 characters is not readable, and that is what pinning a CJK face would do
 to every ASCII message.
 
-`_WIDE_SCALE` and `_NARROW_SCALE` exist for the built-in faces, which
+`WIDE_SCALE` and `NARROW_SCALE` exist for the built-in faces, which
 have one size each. `setTextSize` takes a float and the driver reports
 the scaled metrics back through `fontHeight()` and `textWidth()`, so
 nothing below does the arithmetic itself — it just measures. The VLW is
 already the right size and draws at 1:1.
 
-A board with no VLW on it falls back to EFontJA24 at `_WIDE_SCALE`. That
+A board with no VLW on it falls back to EFontJA24 at `WIDE_SCALE`. That
 is the pre-VLW behaviour and it still reads; it just fits less. Run
 `make_vlw.py --port ...` to install the font.
 
@@ -99,13 +99,19 @@ is the pre-VLW behaviour and it still reads; it just fits less. Run
 
 `setFont`, `setTextSize` and the loaded VLW are all sticky on this
 driver, so every entry point that measures or draws brackets itself with
-`_push_font` / `_pop_font` and hands DejaVu9 at 1:1 back to `BuddyUI`.
-Restoring the base font is what drops the VLW, so `_push_font` reloads it
-— 57 ms, paid per bracketed section rather than per glyph.
+`ChatFont.push` / `ChatFont.pop` and hands DejaVu9 at 1:1 back to
+`BuddyUI`. Restoring the base font is what drops the VLW, so `push`
+reloads it — 57 ms, paid per bracketed section rather than per glyph.
 
 Widths are measured per character and cached — the proportional-font
 warning in `buddy_ui_cp` applies doubly here — and the cache is dropped
 whenever the selected face *or* its scale changes.
+
+### 割れているところ
+
+書体の選択・読み込み・計測は `buddy/chat_font.py`、行の折り返しは
+`buddy/chat_wrap.py`。ここに残るのはパネルの幾何、transcript、verb の
+振り分けと描画。
 
 ### MicroPython
 
@@ -117,6 +123,8 @@ board attached.
 """
 
 import json
+
+from buddy import chat_font, chat_wrap
 
 # Anthropic palette, inlined. Same values as buddy_ui_cp.py, duplicated
 # for the same reason it duplicates them: importing that module pulls in
@@ -137,63 +145,10 @@ _RIGHT_PAD = 4
 _Y0 = 0
 _Y1 = 110
 
-# Rows are painted at exactly fontHeight() with no extra leading: every
-# face here already carries padding inside the glyph cell, and on a
-# 110 px panel a row of leading costs a whole row of text.
-_LEADING = 0
-
 # Bounded so a long session cannot grow the transcript without limit.
 # Only the last few rows are ever visible; the rest is scrollback we do
 # not have a way to reach yet.
 _MAX_MESSAGES = 16
-
-# Used when the driver has no fontHeight(). Never hit on UIFlow 2.0,
-# but the alternative is a ZeroDivision in the row-count maths.
-_FALLBACK_LINE_H = 12
-
-# The generated Japanese face. Put here by
-# `host/tools/src/make_vlw.py --port ...`, which is a provisioning step
-# and not part of a deploy — the file is 930 KB and does not change.
-# Absent on a board that has never had it installed, which is why every
-# path below has to work without it.
-_VLW_PATH = "/flash/buddy-ja.vlw"
-
-# What `info()` calls the VLW. A fixed name rather than the path: the ack
-# is read by a host that wants to know which *kind* of face is up, and
-# the path is already known to whoever installed it.
-_VLW_NAME = "vlw"
-
-# Built-in fonts with Japanese glyphs, best first. Both are 27 px tall on
-# this build; EFontJA24 is the bitmap face, AlibabaSansJA24 the fallback
-# if a future build drops it. Only reached when the VLW is missing.
-_WIDE_FONTS = ("EFontJA24", "AlibabaSansJA24")
-
-# Used while the transcript is ASCII-only, where DejaVu12 at 0.75 packs
-# more than the VLW does — 24 characters over nine rows against 27 over
-# six. Japanese is what needs the tall face, not Latin.
-_NARROW_FONTS = ("DejaVu12", "DejaVu9")
-
-# The font BuddyUI expects to find when it paints. Restored on the way
-# out of every bracketed section.
-_BASE_FONT = "DejaVu9"
-
-# Text scale per face. The built-ins have one size each and get scaled
-# down to fit; 0.75 is where kanji still resolve after the driver drops
-# pixel rows out of them. The VLW was generated at its final size and
-# would only lose detail if scaled.
-_WIDE_SCALE = 0.75
-_NARROW_SCALE = 0.75
-_VLW_SCALE = 1.0
-
-# What BuddyUI's chrome is drawn at. Restored alongside `_BASE_FONT`.
-_BASE_SCALE = 1.0
-
-# `_select_face` tags which driver call applies a face. A VLW is loaded
-# by path and a built-in is selected by handle; the two are not
-# interchangeable, and the tag is what keeps `_push_font` from having to
-# guess from the type of what it holds.
-_KIND_VLW = "vlw"
-_KIND_BUILTIN = "builtin"
 
 # prefix, prefix colour, body colour. Keyed on `object` rather than `str`:
 # `role` is whatever the wire handed us, and `.get()` has to accept that
@@ -205,10 +160,9 @@ _ROLE_STYLE = {
 }  # type: dict[object, tuple[str, int, int]]
 _DEFAULT_ROLE = "claude"
 
-# Above this codepoint a glyph is wide enough — and, more importantly,
-# standalone enough — that a line may be broken on either side of it
-# without a space. Covers kana, CJK ideographs and fullwidth forms.
-_WIDE_FROM = 0x1100
+# 本文の字下げ幅を測るための文字列。`_ROLE_STYLE` の接頭辞はどれも同じ
+# 2 文字なので、どれで測っても同じ幅になる。
+_INDENT = "> "
 
 
 def _default_lcd():
@@ -226,30 +180,6 @@ def _role_style(role):
     return _ROLE_STYLE.get(role, _ROLE_STYLE[_DEFAULT_ROLE])  # pyright: ignore[reportCallIssue, reportUnknownVariableType, reportArgumentType]
 
 
-def _is_wide(ch: str) -> bool:
-    return ord(ch) >= _WIDE_FROM
-
-
-def _can_break_between(prev: str, ch: str) -> bool:
-    """True if a line may be split between these two characters."""
-    if prev == " ":
-        return True
-    return _is_wide(prev) or _is_wide(ch)
-
-
-def _break_at(line, brk):
-    # type: (str, int) -> tuple[str, str]
-    """Split a full line into (row to emit, what carries over).
-
-    `brk` of 0 means no break opportunity was seen — a long URL or a
-    hash — so the row is emitted as-is and nothing carries over. That is
-    the hard break.
-    """
-    if brk:
-        return line[:brk].rstrip(), line[brk:]
-    return line, ""
-
-
 class ChatPanel:
     """A transcript rendered into the Buddy dashboard's main panel."""
 
@@ -262,46 +192,17 @@ class ChatPanel:
     # and passing "" is how they exercise the fallback. Empty rather than
     # None because annotations here have to be plain builtin names —
     # see `device/tests/test_device_constraints.py`.
-    def __init__(self, lcd=None, vlw_path: str = _VLW_PATH) -> None:  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType]
+    def __init__(self, lcd=None, vlw_path: str = chat_font.VLW_PATH) -> None:  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType]
         self._lcd = lcd if lcd is not None else _default_lcd()  # pyright: ignore[reportUnknownMemberType]
         self._messages = []  # type: list[dict[str, object]]
         self.active = False
-
-        # Per-character advance widths under the chat font. Populated on
-        # demand inside a _push_font bracket; a CJK transcript repeats
-        # the same few hundred glyphs, so this converges fast.
-        self._char_w = {}  # type: dict[str, int]
-        self._indent_w = None  # type: int | None
-        self._line_h = None  # type: int | None
 
         # True once any message holds a wide glyph, which is what pulls
         # the whole panel over to the CJK font. Sticky for as long as
         # that message is in the transcript.
         self._has_wide = False
 
-        self._font_name = None  # type: str | None
-        self._font_scale = _BASE_SCALE
-        self._wide_name = None  # type: str | None
-        self._wide_font = None  # type: object | None
-        self._narrow_name = None  # type: str | None
-        self._narrow_font = None  # type: object | None
-        self._base_font = None  # type: object | None
-
-        # Set once the driver refuses `setTextSize`. Latched rather than
-        # retried: the alternative is one printed traceback per repaint,
-        # and the metrics stay consistent either way because they are
-        # read back off the driver rather than computed here.
-        self._can_scale = getattr(self._lcd, "setTextSize", None) is not None  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-
-        # The VLW, if this board has one and this build can load it.
-        self._vlw = self._resolve_vlw(vlw_path)
-
-        # Whether the VLW is the face currently selected on the driver.
-        # Restoring the base font drops it, so this is what tells
-        # `_push_font` it has to load it again.
-        self._vlw_loaded = False
-
-        self._resolve_fonts()
+        self._font = chat_font.ChatFont(self._lcd, vlw_path)  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
 
     # ----- transcript
 
@@ -317,11 +218,11 @@ class ChatPanel:
             self._messages = self._messages[len(self._messages) - _MAX_MESSAGES :]
         self.active = True
         self._refresh_wide()
-        self._push_font()
+        self._font.push(self._has_wide)
         try:
-            return len(self._wrap(text, self._body_width()))
+            return len(chat_wrap.wrap(text, self._body_width(), self._font))
         finally:
-            self._pop_font()
+            self._font.pop()
 
     def clear(self) -> None:
         """Drop the transcript and hand the panel back to BuddyUI."""
@@ -344,18 +245,18 @@ class ChatPanel:
         arrive clipped can tell from here whether the font was ever
         installed rather than guessing.
         """
-        self._push_font()
+        self._font.push(self._has_wide)
         try:
             return {
-                "font": self._font_name or "default",
-                "cjk": self._vlw is not None or self._wide_font is not None,
-                "vlw": self._vlw is not None,
-                "scale": self._font_scale,
+                "font": self._font.name or "default",
+                "cjk": self._font.has_cjk(),
+                "vlw": self._font.vlw is not None,
+                "scale": self._font.scale,
                 "rows": self._max_rows(),
                 "px": self._body_width(),
             }
         finally:
-            self._pop_font()
+            self._font.pop()
 
     def _refresh_wide(self) -> None:
         """Recompute which font the transcript needs.
@@ -371,7 +272,7 @@ class ChatPanel:
             # below is ignored per-line rather than narrowed with a
             # `typing.cast` MicroPython does not have.
             for ch in msg.get("text", ""):  # pyright: ignore[reportUnknownVariableType, reportGeneralTypeIssues]
-                if _is_wide(ch):  # pyright: ignore[reportUnknownArgumentType]
+                if chat_font.is_wide(ch):  # pyright: ignore[reportUnknownArgumentType]
                     self._has_wide = True
                     return
         self._has_wide = False
@@ -430,14 +331,14 @@ class ChatPanel:
         prefix is empty on continuation rows so a wrapped message reads
         as one block.
 
-        Must be called inside a _push_font bracket — it measures.
+        Must be called inside a `ChatFont.push` bracket — it measures.
         """
         avail = self._body_width()
         out = []  # type: list[tuple[str, int, str, int]]
         for msg in self._messages:
             prefix, prefix_color, body_color = _role_style(msg.get("role"))
             first = True
-            for row in self._wrap(msg.get("text", ""), avail):  # pyright: ignore[reportArgumentType]
+            for row in chat_wrap.wrap(msg.get("text", ""), avail, self._font):  # pyright: ignore[reportArgumentType]
                 out.append((prefix if first else "", prefix_color, row, body_color))
                 first = False
         if max_rows > 0 and len(out) > max_rows:
@@ -449,246 +350,27 @@ class ChatPanel:
         # `self._lcd` is duck-typed (see __init__), so every call through
         # `lcd` below is ignored per-line.
         lcd = self._lcd  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
-        self._push_font()
+        self._font.push(self._has_wide)
         try:
             rows = self.layout(self._max_rows())
             lcd.fillRect(0, _Y0, _W, _Y1 - _Y0, _BLACK)  # pyright: ignore[reportUnknownMemberType]
             y = _Y0
-            line_h = self._line_height()
+            line_h = self._font.line_height()
+            indent = self._font.indent_width(_INDENT)
             for prefix, prefix_color, body, body_color in rows:
                 if prefix:
                     lcd.setTextColor(prefix_color, _BLACK)  # pyright: ignore[reportUnknownMemberType]
                     lcd.drawString(prefix, _X0, y)  # pyright: ignore[reportUnknownMemberType]
                 lcd.setTextColor(body_color, _BLACK)  # pyright: ignore[reportUnknownMemberType]
-                lcd.drawString(body, _X0 + self._indent_width(), y)  # pyright: ignore[reportUnknownMemberType]
+                lcd.drawString(body, _X0 + indent, y)  # pyright: ignore[reportUnknownMemberType]
                 y += line_h
         finally:
-            self._pop_font()
-
-    # ----- wrapping
-
-    def _wrap_paragraph(self, para, avail):
-        # type: (str, int) -> list[str]
-        """Break one paragraph into rows no wider than `avail` pixels."""
-        rows = []  # type: list[str]
-        line = ""
-        line_w = 0
-        brk = 0
-        for ch in para:
-            if not line and ch == " ":
-                continue  # never start a row on a space
-            w = self._advance(ch)
-            if line and line_w + w > avail:
-                row, line = _break_at(line, brk)
-                rows.append(row)
-                line_w = self._measure(line)
-                brk = 0
-            if line and _can_break_between(line[-1], ch):
-                brk = len(line)
-            line += ch
-            line_w += w
-        if line:
-            rows.append(line)
-        return rows
-
-    def _wrap(self, text, avail):
-        # type: (str, int) -> list[str]
-        """Break `text` into rows no wider than `avail` pixels.
-
-        Greedy, with two kinds of break opportunity: after a space, and
-        on either side of a wide (CJK) glyph. Japanese has no spaces, so
-        a space-only wrapper would emit one enormous row and clip it —
-        which is exactly the failure the dashboard's `msg` line already
-        has and the reason this module exists.
-
-        A run with no break opportunity at all (a long URL, a hash) is
-        hard-broken at the last character that fits rather than allowed
-        to overflow.
-        """
-        rows = []  # type: list[str]
-        for para in text.replace("\r", "").split("\n"):
-            if not para.strip():
-                rows.append("")
-                continue
-            rows.extend(self._wrap_paragraph(para, avail))
-        return rows
-
-    def _advance(self, ch: str) -> int:
-        w = self._char_w.get(ch)
-        if w is None:
-            w = self._lcd.textWidth(ch)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-            self._char_w[ch] = w
-        return w  # pyright: ignore[reportUnknownVariableType]
-
-    def _measure(self, text: str) -> int:
-        total = 0
-        for ch in text:
-            total += self._advance(ch)
-        return total
+            self._font.pop()
 
     # ----- metrics
 
     def _body_width(self) -> int:
-        return _W - _RIGHT_PAD - _X0 - self._indent_width()
-
-    def _indent_width(self) -> int:
-        if self._indent_w is None:
-            self._indent_w = self._measure("> ")
-        return self._indent_w
-
-    def _line_height(self) -> int:
-        line_h = self._line_h
-        if line_h is None:
-            font_height = getattr(self._lcd, "fontHeight", None)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-            height = int(font_height()) if font_height is not None else 0
-            line_h = (height + _LEADING) if height else _FALLBACK_LINE_H
-            self._line_h = line_h
-        return line_h
+        return _W - _RIGHT_PAD - _X0 - self._font.indent_width(_INDENT)
 
     def _max_rows(self) -> int:
-        return (_Y1 - _Y0) // self._line_height()
-
-    # ----- font bracketing
-
-    def _resolve_vlw(self, path):
-        # type: (str) -> str | None
-        """The VLW path, if there is a font there and a driver to load it.
-
-        An empty `path` means "do not look" and is how a caller opts out.
-
-        `loadFont` reports nothing on failure — it accepts a missing path
-        and a zero-length blob alike and leaves the previous face
-        selected — so the existence check has to happen here. Statting
-        once at construction is cheaper than discovering per repaint that
-        the face never changed.
-        """
-        if not path:
-            return None
-        if getattr(self._lcd, "loadFont", None) is None:  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-            return None
-        try:
-            import os
-
-            os.stat(path)
-        except (ImportError, OSError):
-            print("buddy.chat: no VLW at", path, "- falling back to the built-in CJK face")
-            return None
-        return path
-
-    def _resolve_fonts(self) -> None:
-        fonts = getattr(self._lcd, "FONTS", None)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-        if fonts is None:
-            return
-        self._base_font = getattr(fonts, _BASE_FONT, None)
-        self._wide_name, self._wide_font = self._first_font(fonts, _WIDE_FONTS)
-        self._narrow_name, self._narrow_font = self._first_font(fonts, _NARROW_FONTS)
-        if self._vlw is None and self._wide_font is None:
-            # Not fatal — Latin still draws. But Japanese will come out
-            # as blanks, and `cjk` in every ack is how the host finds
-            # that out without anyone looking at the device.
-            print("buddy.chat: no CJK font on this build; Japanese will not render")
-        if self._narrow_font is None and self._wide_font is None:
-            print("buddy.chat: no known font on this build, using the driver default")
-
-    def _first_font(self, fonts, names):
-        # type: (object, tuple[str, ...]) -> tuple[str, object] | tuple[None, None]
-        for name in names:
-            font = getattr(fonts, name, None)
-            if font is not None:
-                return name, font
-        return None, None
-
-    def _select_face(self):
-        # type: () -> tuple[str | None, str, object | None, float]
-        """The (name, kind, handle, scale) this transcript wants.
-
-        Japanese takes the VLW if there is one and the built-in CJK face
-        otherwise. Anything else takes the narrow Latin face, which packs
-        more than the VLW does at the same panel height.
-        """
-        if self._has_wide:
-            if self._vlw is not None:
-                return _VLW_NAME, _KIND_VLW, self._vlw, _VLW_SCALE
-            if self._wide_font is not None:
-                return self._wide_name, _KIND_BUILTIN, self._wide_font, _WIDE_SCALE
-        if self._narrow_font is not None:
-            return self._narrow_name, _KIND_BUILTIN, self._narrow_font, _NARROW_SCALE
-        if self._vlw is not None:
-            return _VLW_NAME, _KIND_VLW, self._vlw, _VLW_SCALE
-        if self._wide_font is not None:
-            return self._wide_name, _KIND_BUILTIN, self._wide_font, _WIDE_SCALE
-        return None, _KIND_BUILTIN, None, _BASE_SCALE
-
-    def _push_font(self) -> None:
-        name, kind, handle, scale = self._select_face()
-        if name != self._font_name or scale != self._font_scale:
-            # Every cached number below was measured under the old face.
-            self._font_name = name
-            self._font_scale = scale
-            self._char_w = {}
-            self._indent_w = None
-            self._line_h = None
-        if kind == _KIND_VLW:
-            self._load_vlw(handle)
-        elif handle is not None:
-            self._unload_vlw()
-            try:
-                self._lcd.setFont(handle)  # pyright: ignore[reportUnknownMemberType]
-            except Exception as e:
-                print("buddy.chat: setFont failed:", e)
-        self._set_scale(scale)
-
-    def _pop_font(self) -> None:
-        # Order matters only in that the scale has to be restored even
-        # when there is no base font to go back to: BuddyUI's chrome is
-        # drawn at 1:1 regardless of which face is selected.
-        self._unload_vlw()
-        if self._base_font is not None:
-            try:
-                self._lcd.setFont(self._base_font)  # pyright: ignore[reportUnknownMemberType]
-            except Exception as e:
-                print("buddy.chat: font restore failed:", e)
-        self._set_scale(_BASE_SCALE)
-
-    def _load_vlw(self, path):
-        # type: (object) -> None
-        if self._vlw_loaded:
-            return
-        try:
-            self._lcd.loadFont(path)  # pyright: ignore[reportUnknownMemberType]
-        except Exception as e:
-            # Reaching here means the driver rejected the call outright,
-            # which is different from the silent failure `_resolve_vlw`
-            # guards against. Drop the VLW so the next repaint takes the
-            # built-in face instead of retrying forever.
-            print("buddy.chat: loadFont failed:", e)
-            self._vlw = None
-            self._font_name = None
-            return
-        self._vlw_loaded = True
-
-    def _unload_vlw(self) -> None:
-        if not self._vlw_loaded:
-            return
-        self._vlw_loaded = False
-        unload = getattr(self._lcd, "unloadFont", None)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-        if unload is None:
-            return
-        try:
-            unload()
-        except Exception as e:
-            print("buddy.chat: unloadFont failed:", e)
-
-    def _set_scale(self, scale: float) -> None:
-        if not self._can_scale:
-            return
-        try:
-            self._lcd.setTextSize(scale)  # pyright: ignore[reportUnknownMemberType]
-        except Exception as e:
-            print("buddy.chat: setTextSize failed:", e)
-            # Everything cached was measured at a scale the driver never
-            # applied. Drop both the capability and the numbers.
-            self._can_scale = False
-            self._char_w = {}
-            self._indent_w = None
-            self._line_h = None
+        return (_Y1 - _Y0) // self._font.line_height()
