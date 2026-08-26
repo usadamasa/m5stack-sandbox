@@ -46,6 +46,7 @@ APP = "buddy"
 PID_NAME = "buddy-mcpd.pid"
 LOG_NAME = "buddy-mcpd.log"
 SOCKET_NAME = "chatter.sock"
+HEALTH_NAME = "health.json"
 CONFIG_NAME = "config.toml"
 
 
@@ -94,6 +95,15 @@ def pid_path(env: Mapping[str, str] | None = None) -> Path:
 
 def log_path(env: Mapping[str, str] | None = None) -> Path:
     return state_dir(env) / LOG_NAME
+
+
+def health_path(env: Mapping[str, str] | None = None) -> Path:
+    """起動時の疏通確認の結果。daemon が書き、`buddy-mcpd status` が読む。
+
+    pid ファイルと同じ扱いで、これも「そのとき何が見えたか」でしかない。
+    daemon が生きているかは別に問うこと。
+    """
+    return state_dir(env) / HEALTH_NAME
 
 
 def _flatten(table: Mapping[str, Any], prefix: str) -> dict[str, str]:

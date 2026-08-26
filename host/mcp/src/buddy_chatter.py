@@ -36,21 +36,18 @@ able to claim the port between sessions.
 ここに残る `ChatterService` は喋る側 — 何に向かって喋るかを決め、台詞を
 デバイスへ載せ、結果を報告する。いつ喋るかは `chatter_pace.Pacer`、hook の
 データグラムを受ける側は `chatter_inbox.Inbox`、台詞そのものを書くのは
-`chatter_lines`。依存は service → inbox / pace / lines → core の一方向で、
-逆向きは無い。
+`chatter_lines`、自分のプロセスで走らせる口は `chatter_cli`。依存は
+cli → service → inbox / pace / lines → core の一方向で、逆向きは無い。
 """
 
 from __future__ import annotations
 
-import json
-import os
+import logging
 import random
-import sys
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Sequence
-from dataclasses import replace
+from collections.abc import Callable
 from typing import Any
 
 from buddy_verbs import say, speak, voicevox_url
@@ -58,6 +55,11 @@ from chatter_core import SAID, ChatLink, ChatterConfig, Event, LineSource
 from chatter_inbox import Inbox
 from chatter_lines import ClaudeCliLineSource
 from chatter_pace import Pacer
+
+# daemon の log へ。喋ったこと・喋れなかった理由が残るのはここだけで、
+# `status()` は「今どうなっているか」しか答えられない — 30 分前に何を言った
+# かも、なぜ 10 分黙っていたかも、後から訊く先が無い。
+log = logging.getLogger("buddy.chatter")
 
 # What the model is told about, and what a line is generated from.
 _HISTORY_DEPTH = 12
@@ -151,17 +153,20 @@ class ChatterService:
 
     # ----- speaking
 
-    def _transmit(self, link: ChatLink, line: str) -> bool:
+    def _transmit(self, link: ChatLink, line: str, *, voice: bool) -> bool:
         """Put one line on the device. Never raises.
 
         A silent device is the correct failure here: VOICEVOX may be
         down, the WiFi may have dropped, the device may have been reset
         out from under the link. None of that is worth interrupting the
         work the chatter exists to accompany.
+
+        声に出すかどうかは呼び出し側が決める。ここで数え直すと、log に
+        「声付き」と書いた行と実際に鳴らした行がずれうるため。
         """
         try:
             say(link, line, pace=0)
-            if self.spoken % self._cfg.voice_every == 0:
+            if voice:
                 speak(
                     link,
                     line,
@@ -171,6 +176,9 @@ class ChatterService:
                 )
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
+            # デバイスが受け取らなかった。喋らない chatter の理由がここに
+            # 出るので、status の `last_error` だけに残して黙らない。
+            log.warning("not said: %s (%s)", line, self.last_error)
             return False
         return True
 
@@ -186,6 +194,9 @@ class ChatterService:
             # rather than re-deciding every second for the whole time
             # the device is unplugged.
             self.skipped_offline += 1
+            # DEBUG: デバイスを抜いている間ずっと出続ける行なので、既定の
+            # INFO では log がこれで埋まる。数えた分は status にある。
+            log.debug("skipped: no link (offline %d)", self.skipped_offline)
             self._pace.rearm(self._clock())
             return
 
@@ -203,9 +214,11 @@ class ChatterService:
             # A real tool call owns the device. Keep the line and come
             # back for it; do not rearm, this is not a turn spent.
             self.skipped_busy += 1
+            log.debug("skipped: device busy (busy %d)", self.skipped_busy)
             return
+        voice = self.spoken % self._cfg.voice_every == 0
         try:
-            ok = self._transmit(link, self._pending)
+            ok = self._transmit(link, self._pending, voice=voice)
         finally:
             self._lock.release()
 
@@ -216,8 +229,18 @@ class ChatterService:
             # the few slots the generator has to differ from.
             self._said.append(self._pending)
             self.spoken += 1
+        said = self._pending
         self._pending = None
         self._pace.rearm(self._clock())
+        if ok:
+            # rearm の後に読む。次の待ち時間はここで引き直されるので、前に
+            # 読むと 1 回前の抽選を「次」として書くことになる。
+            log.info(
+                'said "%s" (voice=%s, next %.0fs)',
+                said,
+                "yes" if voice else "no",
+                self._pace.gap_now(),
+            )
 
     # ----- threads
 
@@ -241,6 +264,16 @@ class ChatterService:
     @property
     def running(self) -> bool:
         return self._worker is not None
+
+    @property
+    def listening(self) -> bool:
+        """socket が bind できていて、hook のデータグラムが届く状態か。
+
+        `running` とは別に持つ。bind に失敗した chatter は worker だけが
+        回っている状態になり、外からは「独り言を言わない」としか見えない
+        — 起動時の疏通確認がそこを名指しできるように分けてある。
+        """
+        return self._inbox.running
 
     def _work(self) -> None:
         while not self._stop.is_set():
@@ -306,88 +339,5 @@ class ChatterService:
 
 # ----- standalone
 #
-# Normally the chatter is threads inside the MCP server. This runs the
-# same service as its own process, owning the port itself.
-#
-# Two reasons it exists. The MCP server imports the host code once at
-# session start, so a change here does not reach a running one — this is
-# how a change gets tried without restarting Claude Code. And it is the
-# only way to have the device muttering during a session that started
-# before the feature did. Remember that the port takes one owner: call
-# `buddy_disconnect` first, and expect the MCP tools to be unable to
-# reach the device until this exits.
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    """Run the chatter against a device this process owns."""
-    import argparse
-
-    from resident_link import ResidentLink
-
-    parser = argparse.ArgumentParser(description="Run the Buddy idle chatter standalone.")
-    parser.add_argument("--port", default=os.environ.get("BUDDY_PORT", "/dev/cu.usbmodem101"))
-    parser.add_argument(
-        "--start", action="store_true", help="launch the app over the REPL before listening"
-    )
-    parser.add_argument("--gap-min", type=float, default=None)
-    parser.add_argument("--gap-max", type=float, default=None)
-    parser.add_argument("--busy-rate", type=float, default=None)
-    parser.add_argument("--voice-every", type=int, default=None)
-    parser.add_argument(
-        "--once", action="store_true", help="say one line, report, and exit — a smoke test"
-    )
-    args = parser.parse_args(argv)
-
-    cfg = ChatterConfig.from_env()
-    if args.gap_min is not None:
-        cfg = replace(cfg, gap_min=args.gap_min)
-    if args.gap_max is not None:
-        cfg = replace(cfg, gap_max=args.gap_max)
-    if args.busy_rate is not None:
-        cfg = replace(cfg, busy_rate=args.busy_rate)
-    if args.voice_every is not None:
-        cfg = replace(cfg, voice_every=max(1, args.voice_every))
-
-    link = ResidentLink(args.port)
-    link.connect()
-    if args.start:
-        link.start_app()
-
-    service = ChatterService(cfg, lambda: link, threading.Lock())
-    if args.once:
-        # Zero thresholds so the very first turn is due.
-        service = ChatterService(
-            replace(cfg, gap_min=0.0, gap_max=0.0, idle_min=0.0, idle_max=0.0),
-            lambda: link,
-            threading.Lock(),
-        )
-        service.step(Event("session", "smoke test"))
-        print(json.dumps(service.status(), ensure_ascii=False, indent=2))
-        link.disconnect()
-        return 0 if service.spoken else 1
-
-    service.start()
-    print(f"chatter listening on {cfg.socket_path} (device {args.port})", file=sys.stderr)
-
-    def report(status: dict[str, Any]) -> None:
-        note = f"  ! {status['last_error']}" if status["last_error"] else ""
-        print(
-            f"[{status['spoken']:3d}] {status['last_line'] or '-'}"
-            f"  (busy {status['skipped_busy']}, offline {status['skipped_offline']},"
-            f" tempo {status['tempo']}, next {status['next_gap_s']}s){note}",
-            file=sys.stderr,
-            flush=True,
-        )
-
-    try:
-        service.wait(report)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        service.stop()
-        link.disconnect()
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+# 自分のプロセスで走らせる口は `chatter_cli` にある。ここから import する
+# ことは無い — サービスは CLI を知らない。

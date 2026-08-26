@@ -15,6 +15,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import buddy_mcpd
+import mcp_health
 
 
 class _StateTestCase(unittest.TestCase):
@@ -177,6 +178,17 @@ class StatusTests(_StateTestCase):
         status = buddy_mcpd.status(self.env, running=lambda _: True)
         self.assertTrue(status["running"])
         self.assertEqual(status["pid"], 4321)
+
+    def test_a_daemon_that_never_wrote_its_health_still_has_a_status(self) -> None:
+        # health は daemon が書き置くもので、supervisor が確かめられるもの
+        # ではない。無いことが status を落とす理由になってはいけない。
+        self.assertIsNone(buddy_mcpd.status(self.env, running=lambda _: False)["health"])
+
+    def test_what_the_daemon_checked_is_reported_here(self) -> None:
+        mcp_health.save([mcp_health.Check("voicevox", False, "unreachable")], self.env)
+        health = buddy_mcpd.status(self.env, running=lambda _: True)["health"]
+        assert health is not None
+        self.assertEqual(health["checks"][0]["name"], "voicevox")
 
 
 class IsRunningTests(unittest.TestCase):

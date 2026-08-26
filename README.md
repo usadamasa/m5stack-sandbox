@@ -259,10 +259,27 @@ buddy-mcpd status                    # pid・serve している URL・log の場
 | `buddy-mcpd start` | 起こす。ポートを掴み、chatter が動き出す |
 | `buddy-mcpd stop` | 止めてポートを解放する。`buddy_deploy.py` や `esptool` の前に |
 | `buddy-mcpd restart` | ホスト側のコードを直したときはこれだけ |
-| `buddy-mcpd status` | 動いているか、どの URL とどのシリアルポートを見ているか |
+| `buddy-mcpd status` | 動いているか、どの URL とどのシリアルポートを見ているか、起動時の疏通確認の結果 |
 
 daemon の出力は `~/.local/state/buddy/buddy-mcpd.log` に落ちる。起きなかったときは
 まずここを読む。
+
+**起動直後に関係先を一通り確かめて log に出す。** 1 項目 1 行で、成功は INFO、
+失敗は WARNING。落ちていても daemon は起動を続ける。
+
+| 項目 | 出るもの |
+| --- | --- |
+| `config` | 読んだ `config.toml` の path (無ければその旨)、効いている値と env / config / default のどれ由来か |
+| `serial` | ポートが開いたか。開いたならデバイスの `version` / `name` / `heap` |
+| `socket` | chatter の socket を bind できたか |
+| `chatter` | worker が回っているか。`BUDDY_CHATTER=0` なら「無効」と 1 行 |
+| `voicevox` | engine の URL と `/version` に届いたか |
+| `claude` | 台詞を書く CLI が PATH に居るか、その `--version` |
+
+同じ結果は `~/.local/state/buddy/health.json` にも残り、`buddy-mcpd status` の
+`health` に出る。これは daemon が書き置いたもので supervisor が確かめ直したもの
+ではないので、`checked_at` と `running` を突き合わせて読む — 止まっている daemon の
+health はその run の遺言でしかない。
 
 **1 プロセスだけがポートを掴む。** 複数セッションが同時に繋がっても、デバイスに
 触るのはこの daemon 1 つ。chatter も 1 つで、どのセッションの hook で撃たれても
@@ -386,9 +403,15 @@ daemon は起動時にホストのコードを import 済みなので、`buddy_c
 **先に `buddy-mcpd stop`。**
 
 ```bash
-uv run python host/mcp/src/buddy_chatter.py --port $PORT --once   # 1 行喋って終わる
-uv run python host/mcp/src/buddy_chatter.py --port $PORT          # 常駐する
+uv run python host/mcp/src/chatter_cli.py --port $PORT --once   # 1 行喋って終わる
+uv run python host/mcp/src/chatter_cli.py --port $PORT          # 常駐する
 ```
+
+daemon で走らせているときは、喋った台詞も喋れなかった理由も
+`~/.local/state/buddy/buddy-mcpd.log` に `buddy.chatter` として残る
+(`said "…" (voice=yes, next 63s)`、生成の失敗、デバイスが受け取らなかった行)。
+`skipped_busy` / `skipped_offline` は DEBUG なので既定では出ない — 数だけ
+`buddy_chatter_status` にある。
 
 ## 品質チェック
 

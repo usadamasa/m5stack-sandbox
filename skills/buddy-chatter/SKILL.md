@@ -1,6 +1,6 @@
 ---
 name: buddy-chatter
-description: 作業中に Cardputer-Adv が独り言を言う機能 (host/mcp/src/buddy_chatter.py・chatter_pace.py・chatter_inbox.py・chatter_lines.py・chatter_core.py と scripts/buddy_chatter_notify.py) を扱うときに使う。喋らない・喋りすぎる・台詞が変、hook が届いていない、chatter を直したのに反映されないときに参照する。ポートの所有権と、タスクをブロックしない設計の根拠もここ。
+description: 作業中に Cardputer-Adv が独り言を言う機能 (host/mcp/src/buddy_chatter.py・chatter_pace.py・chatter_inbox.py・chatter_lines.py・chatter_core.py・chatter_cli.py と scripts/buddy_chatter_notify.py) を扱うときに使う。喋らない・喋りすぎる・台詞が変、hook が届いていない、chatter を直したのに反映されないときに参照する。ポートの所有権と、タスクをブロックしない設計の根拠もここ。
 ---
 
 # 作業中の独り言 (chatter)
@@ -17,8 +17,9 @@ hooks ─datagram─> $XDG_STATE_HOME/buddy/chatter.sock ─> buddy-mcpd (常駐
 ```
 
 ホスト側の内訳: 受信は `chatter_inbox.Inbox`、いつ喋るかは `chatter_pace.Pacer`、
-台詞は `chatter_lines`、喋らせるのが `buddy_chatter.ChatterService`。共有物は
-`chatter_core`。依存は service → inbox / pace / lines → core の一方向。
+台詞は `chatter_lines`、喋らせるのが `buddy_chatter.ChatterService`、単体プロセスで
+走らせる口が `chatter_cli`。共有物は `chatter_core`。依存は
+cli → service → inbox / pace / lines → core の一方向。
 
 **chatter は daemon に 1 つ。** どのセッションの hook で撃たれても同じ chatter が反応する。
 複数セッションが同時に繋がっていても、喋る口は 1 つしかない。
@@ -33,8 +34,13 @@ SDK を直接叩くと認証の解決を再実装して追随し続けること�
 
 ## 動かない・喋らないときの順序
 
+0. **まず log を読む。** `~/.local/state/buddy/buddy-mcpd.log`。daemon は起動直後に
+   config / serial / socket / chatter / voicevox / claude を 1 項目 1 行で書く
+   (`buddy.health`)。失敗した層はここに WARNING で立つ。喋った台詞と喋れなかった
+   理由も `buddy.chatter` として同じファイルに残る。結果の写しは
+   `buddy-mcpd status` の `health` にもある
 1. **daemon が上がっているか。** `buddy-mcpd status` の `running`。落ちていたら
-   `~/.local/state/buddy/buddy-mcpd.log` に理由がある
+   同じ log に理由がある
 2. **リンクが上がっているか。** `buddy_chatter_status` の `skipped_offline` が増えていたら
    これ。chatter は自分からポートを開けない。daemon は起動直後に一度だけ開くので、
    その一度がどうだったかは同じ status の `connect_on_start` に出る (`ok: false` なら
@@ -115,8 +121,8 @@ buddy-mcpd restart     # これだけ。セッションの再起動は要らな�
 単体プロセスで切り分けたいときは、先に `buddy-mcpd stop` してポートを空ける。
 
 ```bash
-uv run python host/mcp/src/buddy_chatter.py --port $PORT --once   # 1 行喋って status を吐く
-uv run python host/mcp/src/buddy_chatter.py --port $PORT          # 常駐 (発話を stderr に出す)
+uv run python host/mcp/src/chatter_cli.py --port $PORT --once   # 1 行喋って status を吐く
+uv run python host/mcp/src/chatter_cli.py --port $PORT          # 常駐 (発話を stderr に出す)
 ```
 
 **ポートは 1 プロセスしか掴めない。** 動いている間は MCP の `buddy_*` からデバイスに

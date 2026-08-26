@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any
 
 import buddy_paths
+import mcp_health
 from mcp_state import FALLBACK_PORT, HTTP_HOST, http_port
 
 # How long each stage of a stop waits.
@@ -204,6 +205,11 @@ def status(env: Mapping[str, str] | None = None, running: Alive = is_running) ->
     `url` is printed because the registration that reaches this server
     is a static URL on the default port: if `config.toml` has moved the
     port, this line is where the two stop matching.
+
+    `health` は daemon が起動時に書いた疏通確認の結果で、この supervisor が
+    確かめたものではない。シリアルポートを持っているのは daemon の方なので、
+    ここから確かめ直す道は無い。`checked_at` と `running` を突き合わせて
+    読むこと — 止まっている daemon の health はその run の遺言でしかない。
     """
     resolved = buddy_paths.environment(env)
     pid = read_pid(env)
@@ -217,6 +223,7 @@ def status(env: Mapping[str, str] | None = None, running: Alive = is_running) ->
         "log": str(buddy_paths.log_path(env)),
         "socket": str(buddy_paths.socket_path(env)),
         "config": str(buddy_paths.config_path(env)),
+        "health": mcp_health.load(env),
     }
 
 

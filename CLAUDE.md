@@ -119,7 +119,10 @@ buddy-mcpd stop                      # deploy や esptool の前に
 - **HTTP は `127.0.0.1:8787` 固定**。`mcp-servers.json` が静的な URL を持つので、
   `config.toml` で `http_port` を変えたら登録側も直す。ずれは `buddy-mcpd status` の
   `url` に出る
-- 落ちた理由は `~/.local/state/buddy/buddy-mcpd.log` にある
+- 落ちた理由は `~/.local/state/buddy/buddy-mcpd.log` にある。起動直後の
+  疏通確認 (config / serial / socket / chatter / voicevox / claude) と、chatter が
+  喋った台詞・喋れなかった理由も同じファイルに出る。確認の結果は
+  `~/.local/state/buddy/health.json` にも残り、`buddy-mcpd status` の `health` に出る
 
 ## 設定と状態の置き場
 

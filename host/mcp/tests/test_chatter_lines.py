@@ -5,6 +5,7 @@ CLI を実際に起こすことは無い。`subprocess.run` を差し替える�
 """
 
 import json
+import logging
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -222,6 +223,19 @@ class ClaudeCliLineSourceTests(unittest.TestCase):
         # 理由は status のフィールドまで残らないといけない。黙って決め打ちの
         # 台詞へ落ちた chatter は、単に口数が少ない chatter に見えるため。
         self.assertIn("not logged in", source.last_error)
+
+    def test_falling_back_to_canned_lines_is_written_to_the_log(self) -> None:
+        # デバイスを見ていても分からない失敗。log に出ていなければ、
+        # 「台詞が急につまらなくなった」としか観測できない。
+        fake = FakeClaude(None, returncode=1)
+        source = ClaudeCliLineSource(ChatterConfig())
+        with (
+            mock.patch.object(chatter_lines.subprocess, "run", fake),
+            self.assertLogs("buddy.chatter", level=logging.WARNING) as caught,
+        ):
+            source.next_line([])
+        self.assertIn("generation failed", caught.output[0])
+        self.assertIn("not logged in", caught.output[0])
 
     def test_no_effort_flag_when_the_session_default_should_stand(self) -> None:
         fake = FakeClaude({"lines": ["ほい"]})

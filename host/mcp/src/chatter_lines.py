@@ -8,6 +8,7 @@ socket にも触らないので、テストはプロセスを起こさずにこ�
 from __future__ import annotations
 
 import json
+import logging
 import random
 import subprocess
 import tempfile
@@ -23,6 +24,10 @@ from chatter_core import (
     clean,
     describe,
 )
+
+# 喋る側と同じ logger。読む側にとって「独り言が止まった」の原因は 1 つの
+# 流れなので、生成の失敗とデバイスの失敗を同じ名前の下に並べる。
+log = logging.getLogger("buddy.chatter")
 
 # 2 つずつ引いてプロンプトへ貼る。イベントログはセッション中ずっと同じ形
 # — `tool: Bash` の繰り返し — なので、これが無いとどのバッチもほとんど同じ
@@ -139,6 +144,9 @@ class BatchedLineSource:
         except Exception as exc:  # chatter は劣化する。投げはしない
             self.failures += 1
             self.last_error = f"{type(exc).__name__}: {exc}"
+            # 缶詰の台詞に落ちたことは、デバイスを見ていても分からない。
+            # CLI が入っていない・ログインが切れたはここに出る。
+            log.warning("generation failed (%d so far): %s", self.failures, self.last_error)
             return
 
         # プロンプトは新しいものを求めている。ここはその求めに部分的にしか
