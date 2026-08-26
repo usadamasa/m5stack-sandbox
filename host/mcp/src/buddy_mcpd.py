@@ -46,13 +46,13 @@ from pathlib import Path
 from typing import Any
 
 import buddy_paths
-from buddy_mcp import FALLBACK_PORT, HTTP_HOST, http_port
+from mcp_state import FALLBACK_PORT, HTTP_HOST, http_port
 
 # How long each stage of a stop waits.
 #
 # A daemon nobody is attached to answers the first SIGTERM in a second
 # or two. The worst case is a request in flight when the signal lands:
-# uvicorn then spends up to `buddy_mcp.SHUTDOWN_TIMEOUT` on the
+# uvicorn then spends up to `mcp_state.SHUTDOWN_TIMEOUT` on the
 # connection before dropping it, and the daemon another second or so
 # letting go of the serial port and the socket. `TERM_GRACE` has to
 # cover both, or the supervisor kills the daemon before its own cleanup
@@ -135,7 +135,7 @@ def _daemon_argv() -> list[str]:
     interpreter's own path is certain to be on this process's PATH when
     an agent launched it.
     """
-    return [sys.executable, "-m", "buddy_mcp", "--http"]
+    return [sys.executable, "-m", "buddy_mcp_serve", "--http"]
 
 
 def start(
