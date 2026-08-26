@@ -43,6 +43,30 @@ _DBG_TAG = b'"dbg.'
 # 何も触らない。
 
 
+def _forget_debug_module():
+    # type: () -> None
+    """`buddy.debug` への参照を落とす。collect も測定もしない。
+
+    ここで集めないのは、この関数のフレームが載ったままヒープを測ると、
+    ack の `free` がそのぶん小さく出るため。呼び出し側 (`Router.on_dbg`)
+    が戻ってから `gc.collect()` して数える。
+    """
+    if "buddy.debug" in sys.modules:
+        del sys.modules["buddy.debug"]
+    # 参照は sys.modules だけではない。MicroPython は submodule を
+    # package の属性としても持っていて、そちらは上のエントリより
+    # 長生きする — デバイスの上で測った話で、module オブジェクトへの
+    # `delattr` は効き、後の `from buddy import debug` は flash を
+    # 読み直す。これが無いとモジュールはヒープに残り、ack の `free`
+    # はそれを使用中として数える。
+    pkg = sys.modules.get("buddy")
+    if pkg is not None:
+        try:
+            delattr(pkg, "debug")
+        except AttributeError:
+            pass
+
+
 class Router:
     """コールバックが呼ぶ振り分け。1 つのアプリに 1 つ。
 
@@ -75,32 +99,49 @@ class Router:
         """ack を 1 行にして返す。LCD には触らない。"""
         self.ble.send_line(json.dumps(ack, separators=(",", ":")).encode("utf-8"))  # pyright: ignore[reportUnknownMemberType]
 
+    def _intercept(self, raw):
+        # type: (bytes) -> bool
+        """protocol 層より先に握れるか試す。握ったら True。
+
+        呼ぶのは `on_line` だけで、`self.ble` があることは向こうが確かめて
+        いる — 前処理の 3 つがそろって ack を返す先を要るので、判定は 1 回に
+        まとめてある。順序 (chat -> speak -> dbg) と、bytes の部分文字列で
+        先に弾く形は元のまま。
+        """
+        if _CHAT_TAG in raw:
+            ack = self.chat.handle_raw(raw)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            if ack is not None:
+                self._reply(ack)  # pyright: ignore[reportUnknownArgumentType]
+                self.chat_dirty = True
+                return True
+        # speak.say は engine から音声を取り切ってから答えるので、合成の
+        # あいだこのループが止まる。もともと同期でなければ困る作りでもある:
+        # ack が載せる長さと rate は、engine の応答ヘッダが来るまで分からない。
+        if _SPEAK_TAG in raw and self.speech is not None:
+            ack = self.speech.handle_raw(raw)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            if ack is not None:
+                self._reply(ack)  # pyright: ignore[reportUnknownArgumentType]
+                return True
+        # 前処理の最後。debug の通信は稀なので、そうでない 2 つの後ろへ置いて
+        # 普通の経路の負担を変えないようにする。
+        if _DBG_TAG in raw:
+            dbg_ack = self.on_dbg(raw)
+            if dbg_ack is not None:
+                self._reply(dbg_ack)
+                return True
+        return False
+
     def on_line(self, raw):
         # type: (bytes) -> None
         # ここに来るのは常に bytes。`buddy.serial._handle_line()` は on_line
         # を呼ぶ前に何もデコードしない — 下の chat / speech / dbg 側の
         # `handle_raw()` が受ける bytes|bytearray|str より狭い。
-        if _CHAT_TAG in raw and self.ble is not None:
-            ack = self.chat.handle_raw(raw)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-            if ack is not None:
-                self._reply(ack)  # pyright: ignore[reportUnknownArgumentType]
-                self.chat_dirty = True
-                return
-        # speak.say は engine から音声を取り切ってから答えるので、合成の
-        # あいだこのループが止まる。もともと同期でなければ困る作りでもある:
-        # ack が載せる長さと rate は、engine の応答ヘッダが来るまで分からない。
-        if _SPEAK_TAG in raw and self.ble is not None and self.speech is not None:
-            ack = self.speech.handle_raw(raw)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-            if ack is not None:
-                self._reply(ack)  # pyright: ignore[reportUnknownArgumentType]
-                return
-        # 前処理の最後。debug の通信は稀なので、そうでない 2 つの後ろへ置いて
-        # 普通の経路の負担を変えないようにする。
-        if _DBG_TAG in raw and self.ble is not None:
-            dbg_ack = self.on_dbg(raw)
-            if dbg_ack is not None:
-                self._reply(dbg_ack)
-                return
+        #
+        # 1 行ごとに増える呼び出しは `_intercept` の 1 つだけ。ack を返す先が
+        # まだ無いあいだは何も握らないので、その 1 つも `ble` があるときしか
+        # 出ない。
+        if self.ble is not None and self._intercept(raw):
+            return
         # `self.proto` は protocol ができるまで None を持てるよう `object`
         # として宣言してあるので、読み戻すと BuddyProtocol という具体型は
         # 落ちる。下の呼び出しを行単位で無視しているのはそのためで、
@@ -153,20 +194,9 @@ class Router:
             # する。
             mod = None
             self.dbg = None
-            if "buddy.debug" in sys.modules:
-                del sys.modules["buddy.debug"]
-            # 参照は sys.modules だけではない。MicroPython は submodule を
-            # package の属性としても持っていて、そちらは上のエントリより
-            # 長生きする — デバイスの上で測った話で、module オブジェクトへの
-            # `delattr` は効き、後の `from buddy import debug` は flash を
-            # 読み直す。これが無いとモジュールはヒープに残り、ack の `free`
-            # はそれを使用中として数える。
-            pkg = sys.modules.get("buddy")
-            if pkg is not None:
-                try:
-                    delattr(pkg, "debug")
-                except AttributeError:
-                    pass
+            # 残りの参照 (sys.modules と package の属性) はこちらが落とす。
+            # 集めて数えるのは、あの関数のフレームが消えてからのここ。
+            _forget_debug_module()
             gc.collect()
             ack["free"] = gc.mem_free()
         return ack  # pyright: ignore[reportUnknownVariableType]
