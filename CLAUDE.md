@@ -163,8 +163,9 @@ overlay が何に何を重ねているかは [README の「overlay とは」](RE
   installable である必要がある。`device` だけ `package = false`
 - `host/link` は責務ごとの flat module。`buddy_wire` (framing と encode/decode)、
   `buddy_text` (パネルに載る形へ潰す。I/O を持たない)、`buddy_verbs` (chat / speech / debug の
-  verb)、`buddy_link` (`BuddyLink` / `ResidentLink` / `launch_app`)、`device_repl`
-  (raw REPL)。`buddy_bridge` はこれらを束ねる CLI だけ
+  verb)、`buddy_link` (`BuddyLink` / `launch_app`)、`resident_link` (`ResidentLink`)、
+  `device_repl` (raw REPL)。`buddy_bridge` はこれらを束ねる CLI だけ。リンクの依存は
+  `resident_link` -> `buddy_link` の一方向
 - `vendor/device/` はデバイスから吸い出した upstream ソース。git 管理外だが、`tmp/` とは違って
   **消してはいけない** (再配布しないので他に控えが無い)
 - `device/buddy/` は本リポジトリがデバイスへ載せるモジュールの package。flash では

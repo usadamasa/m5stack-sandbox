@@ -33,8 +33,8 @@ from mcp.server.mcpserver import MCPServer
 
 import buddy_paths
 from buddy_chatter import ChatterService
-from buddy_link import ResidentLink
 from chatter_core import ChatterConfig
+from resident_link import ResidentLink
 
 # macOS で Cardputer-Adv が現れるデバイスノード。定数にしてあるのは
 # `buddy-mcpd status` も解決済みのポートを報告するからで、この文字列の写しが

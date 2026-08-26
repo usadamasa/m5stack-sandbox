@@ -102,6 +102,7 @@ known-first-party = [
     "mcp_stubs",
     "probe_device",
     "provision_wifi",
+    "resident_link",
 ]
 
 # ルートはテストも型検査の対象も持たない。pytest と basedpyright は
