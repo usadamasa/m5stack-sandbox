@@ -1,7 +1,5 @@
 {
-  "device/buddy/chat.py": 694,
   "device/buddy/speak.py": 516,
-  "device/tests/test_chat.py": 573,
   "device/tests/test_speak.py": 558,
   "host/link/src/buddy_link.py": 414,
   "host/mcp/src/buddy_chatter.py": 558,

@@ -27,6 +27,11 @@ uv run python host/tools/src/buddy_deploy.py --compile-only   # MicroPython の�
 
 # チャットパネル (`buddy/chat.py`)
 
+3 つに割れている。パネルの幾何・transcript・verb の振り分けと描画が `buddy/chat.py`、
+書体の選択と読み込みと計測が `buddy/chat_font.py` (`ChatFont`)、行の折り返しが
+`buddy/chat_wrap.py` (`wrap`)。テストも同じ継ぎ目で `test_chat.py` / `test_chat_font.py` /
+`test_chat_wrap.py` に割れていて、fake の LCD は `device/tests/chat_fakes.py`。
+
 `chat.say` / `chat.clear` / `chat.info` は upstream の `buddy_protocol.py` が知らない verb。
 知らない `cmd` は "unknown cmd" と印字して捨てられるので、`buddy/router.py` の `on_line` で
 先に横取りしてから proto へ流す。**ここが upstream ファイルを触らずに protocol を拡張できる
@@ -46,18 +51,20 @@ uv run python host/tools/src/buddy_deploy.py --compile-only   # MicroPython の�
   930KB。実測で `loadFont` 57ms・ヒープ 19.5KB・**6 行 × 13 文字**。M5GFX はグリフ属性の配列
   だけを常駐させてビットマップは描画のたびにファイルから読むので、ヒープ 99KB でも載る
 - **`loadFont` は失敗しても何も言わない。** 存在しないパスでも空の bytes でも例外を投げず、
-  前の書体が選ばれたまま。だから `_resolve_vlw` が構築時に `os.stat` で存在を確かめる。
-  ack の `vlw` フィールドはこの判定結果で、`font: vlw` でなければ内蔵にフォールバックしている
-- **`setTextSize` は float を取る。** 内蔵書体はこれで 0.75 に縮めて使う (`_WIDE_SCALE` /
-  `_NARROW_SCALE`)。ただし最近傍で画素行を間引くだけなので、画数の多い漢字は潰れる。
+  前の書体が選ばれたまま。だから `ChatFont._resolve_vlw` が構築時に `os.stat` で存在を
+  確かめる。ack の `vlw` フィールドはこの判定結果で、`font: vlw` でなければ内蔵に
+  フォールバックしている
+- **`setTextSize` は float を取る。** 内蔵書体はこれで 0.75 に縮めて使う
+  (`chat_font.WIDE_SCALE` / `chat_font.NARROW_SCALE`)。ただし最近傍で画素行を間引くだけ
+  なので、画数の多い漢字は潰れる。
   VLW を入れるまでの繋ぎと割り切ること。VLW 側は生成時が最終サイズなので 1:1
 - 書体は中身で切り替える。日本語なら VLW、ASCII だけなら `DejaVu12` @0.75 で 9 行 × 24 文字。
   ASCII は VLW より DejaVu のほうが詰まる
 - ホスト側の分割上限 (`buddy_text.MAX_SAY_CHARS_WIDE` / `MAX_SAY_CHARS`) はこの実測値から
   来ている。**片方を変えたらもう片方も見る。** `device/tests/test_chat.py` が両側の定数を
   import して食い違いを検出する契約テストになっている
-- `setFont` も `setTextSize` も、読み込んだ VLW も sticky。計測も描画も `_push_font` /
-  `_pop_font` で挟んで DejaVu9 の 1:1 に戻す。戻し忘れると `BuddyUI` の footer とヒント列まで
-  巻き添えになる。base font に戻すと VLW は外れるので、次の `_push_font` が読み直す
+- `setFont` も `setTextSize` も、読み込んだ VLW も sticky。計測も描画も `ChatFont.push` /
+  `ChatFont.pop` で挟んで DejaVu9 の 1:1 に戻す。戻し忘れると `BuddyUI` の footer と
+  ヒント列まで巻き添えになる。base font に戻すと VLW は外れるので、次の `push` が読み直す
 - 実測を採り直すのは `host/tools/src/probe_device.py`。フォント一覧・各書体のメトリクス・
   ヒープをまとめて吐く
