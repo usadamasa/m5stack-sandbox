@@ -96,6 +96,7 @@ known-first-party = [
     "buddy_text",
     "buddy_verbs",
     "buddy_wire",
+    "deploy_stubs",
     "device_repl",
     "fake_repl",
     "mcp_stubs",
