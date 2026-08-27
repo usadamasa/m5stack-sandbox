@@ -8,10 +8,7 @@
   "plugins": [
     {
       "name": "buddy",
-      "source": {
-        "source": "github",
-        "repo": "usadamasa/m5stack-sandbox"
-      },
+      "source": "./",
       "description": "常駐 daemon 経由で Cardputer-Adv を操作する MCP tool、chatter の hook、デバイス側の skill 一式。デバイスに触るには checkout 側で buddy-mcpd を起こす必要がある。"
     }
   ]
