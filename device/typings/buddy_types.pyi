@@ -147,7 +147,7 @@ class SocketStream(ByteStream, Protocol):
 
     `ByteStream` と分けてあるのは、`StreamSource` が受け取る側には
     `settimeout` を持たない相手があるため。こちらは HTTP の response が
-    抱えている socket そのもので、`buddy.tts._PrefixedStream` は
+    抱えている socket そのもので、`buddy.wav.PrefixedStream` は
     `settimeout` を無条件で転送する。
     """
 
