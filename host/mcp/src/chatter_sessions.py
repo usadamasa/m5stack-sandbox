@@ -95,23 +95,52 @@ def read_note(path: Path, session: str, limit: int = TAIL_BYTES) -> SessionNote 
     ではない — 消えている途中かもしれないし、書き込みの最中かもしれない。
     chatter がそれで止まる価値は無い。
     """
-    title = prompt = project = branch = ""
+    found: dict[str, str] = {}
     for entry in _tail_entries(path, limit):
-        kind = entry.get("type")
-        if kind == _TITLE and not title:
-            title = _flat(entry.get("aiTitle"), _MAX_TITLE)
-        elif kind == _PROMPT and not prompt:
-            prompt = _flat(entry.get("lastPrompt"), _MAX_PROMPT)
-        elif not project:
-            # `cwd` と `gitBranch` はどの user / assistant 行にも付いている。
-            # 種別で選ばずに、持っている行から採る。
-            project = _project(_flat(entry.get("cwd"), _MAX_NAME))
-            branch = _flat(entry.get("gitBranch"), _MAX_NAME)
-        if title and prompt and project:
+        _absorb(entry, found)
+        if found.keys() >= _WANTED:
             break
-    if not (title or prompt or project):
+    if not found:
         return None
-    return SessionNote(session, title, prompt, project, branch)
+    return SessionNote(
+        session,
+        found.get("title", ""),
+        found.get("prompt", ""),
+        found.get("project", ""),
+        found.get("branch", ""),
+    )
+
+
+# 揃った時点で読むのをやめてよい項目。`branch` は入れない — git の外で
+# 動いているセッションには最後まで来ないので、待つと必ず末尾まで読む。
+_WANTED = frozenset({"title", "prompt", "project"})
+
+
+def _absorb(entry: Mapping[str, Any], found: dict[str, str]) -> None:
+    """行 1 つから、まだ埋まっていない項目を採る。
+
+    後ろから読んでいるので、先に入ったものが新しい。上書きはしない。
+    """
+    kind = entry.get("type")
+    if kind == _TITLE:
+        _put(found, "title", _flat(entry.get("aiTitle"), _MAX_TITLE))
+    elif kind == _PROMPT:
+        _put(found, "prompt", _flat(entry.get("lastPrompt"), _MAX_PROMPT))
+    elif "project" not in found:
+        # `cwd` と `gitBranch` はどの user / assistant 行にも付いている。
+        # 種別で選ばずに、持っている行から採る。
+        _put(found, "project", _project(_flat(entry.get("cwd"), _MAX_NAME)))
+        _put(found, "branch", _flat(entry.get("gitBranch"), _MAX_NAME))
+
+
+def _put(found: dict[str, str], key: str, value: str) -> None:
+    """空でない値を、まだ無いときだけ入れる。
+
+    空を入れないのは、それが「その行には無かった」と「そのセッションには
+    無い」の区別になっているから。前者ならもっと前の行に載っている。
+    """
+    if value and key not in found:
+        found[key] = value
 
 
 def _tail_entries(path: Path, limit: int) -> Iterator[Mapping[str, Any]]:
