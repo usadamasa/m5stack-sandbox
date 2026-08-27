@@ -30,12 +30,16 @@ class StubLink:
         self.started = False
         self.lock_held: list[bool] = []
         self.interrupts = 0
+        # `tcp://` の link は interrupt を ReplError で断る。それを写すため。
+        self.interrupt_error: Exception | None = None
         # Merged into every ack, so a test can make the device claim it
         # just entered debug mode.
         self.ack_extra: Message = {}
         StubLink.instances.append(self)
 
     def interrupt(self) -> None:
+        if self.interrupt_error is not None:
+            raise self.interrupt_error
         self.interrupts += 1
         self.lock_held.append(mcp_state.device_lock.locked())
 

@@ -23,7 +23,7 @@ from __future__ import annotations
 import select
 import socket
 from collections.abc import Callable
-from typing import Any, Protocol
+from typing import Protocol
 
 import serial
 
@@ -47,13 +47,14 @@ DEFAULT_CONNECT_TIMEOUT = 5.0
 class Sock(Protocol):
     """`socket.socket` のうちここが触るぶん。テストの fake も同じ面。"""
 
+    def fileno(self) -> int: ...
     def recv(self, bufsize: int, /) -> bytes: ...
     def sendall(self, data: bytes, /) -> None: ...
     def settimeout(self, value: float | None, /) -> None: ...
     def close(self) -> None: ...
 
 
-CreateConnection = Callable[[tuple[str, int], float], Any]
+CreateConnection = Callable[[tuple[str, int], float], Sock]
 DEFAULT_CREATE_CONNECTION: CreateConnection = socket.create_connection
 
 
@@ -80,7 +81,7 @@ def parse_target(target: str) -> tuple[str, int]:
     return host, port
 
 
-def _selectable(sock: Any) -> Callable[[], bool]:
+def _selectable(sock: Sock) -> Callable[[], bool]:
     def readable() -> bool:
         ready, _, _ = select.select([sock], [], [], 0)
         return bool(ready)
@@ -125,19 +126,19 @@ def open_port(
     baud: int,
     timeout: float,
     *,
-    connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
     create_connection: CreateConnection = DEFAULT_CREATE_CONNECTION,
     serial_factory: SerialFactory = serial.Serial,
 ) -> SerialPort:
     """target に応じて TCP かシリアルを開く。どちらも `SerialPort`。
 
     `baud` は TCP では意味を持たないが、呼び手 (`ResidentLink` / `BuddyLink`) が
-    どちらを開くか知らずに済むよう、同じ引数を受ける。
+    どちらを開くか知らずに済むよう、同じ引数を受ける。接続を張るまでの上限は
+    `DEFAULT_CONNECT_TIMEOUT` で固定 — 変えたい理由がまだ無い。
     """
     if not is_tcp(target):
         return serial_factory(target, baud, timeout=timeout)
     host, port = parse_target(target)
-    sock = create_connection((host, port), connect_timeout)
+    sock = create_connection((host, port), DEFAULT_CONNECT_TIMEOUT)
     # 張るまでは connect_timeout、張ってからは reader の刻み。
     sock.settimeout(timeout)
     return TcpPort(sock)

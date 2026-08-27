@@ -20,6 +20,9 @@ class FakeSock:
         self.timeouts: list[float | None] = []
         self.closed = False
 
+    def fileno(self) -> int:
+        return -1
+
     def recv(self, n: int) -> bytes:
         if not self.rx:
             raise TimeoutError("timed out")
@@ -120,12 +123,13 @@ class OpenPortTest(unittest.TestCase):
             "tcp://192.168.0.227",
             115200,
             0.05,
-            connect_timeout=3.0,
             create_connection=create_connection,
             serial_factory=self.serial_factory,
         )
         self.assertIsInstance(port, TcpPort)
-        self.assertEqual(self.dialled, [(("192.168.0.227", DEFAULT_PORT), 3.0)])
+        self.assertEqual(
+            self.dialled, [(("192.168.0.227", DEFAULT_PORT), buddy_net.DEFAULT_CONNECT_TIMEOUT)]
+        )
         self.assertEqual(sock.timeouts, [0.05])
         self.assertEqual(self.opened, [])
 

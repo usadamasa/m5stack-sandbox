@@ -53,6 +53,8 @@ from typing import Any
 # working directory.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from buddy_net import is_tcp
+
 import mcp_state
 from buddy_text import DEFAULT_PACE
 from buddy_verbs import DEFAULT_RATE, ZUNDAMON, say, speak, voicevox_url
@@ -76,6 +78,10 @@ def probe_serial(port: str = "") -> dict[str, Any]:
         "tcgetattr": False,
         "tcsetattr": False,
     }
+    if is_tcp(target):
+        # ioctl はシリアルの話。socket は sandbox の中からでも張れる。
+        result["verdict"] = "tcp:// target — no serial ioctl involved, nothing to probe"
+        return result
     try:
         fd = os.open(target, os.O_RDWR | os.O_NONBLOCK)
     except OSError as e:

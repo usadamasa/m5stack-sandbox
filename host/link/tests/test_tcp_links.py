@@ -6,12 +6,15 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import unittest
 from typing import Any
 from unittest import mock
 
 from test_resident_link import FakeSerial
 
+import buddy_bridge
 import buddy_link
 import resident_link
 from buddy_link import BuddyLink
@@ -56,9 +59,11 @@ class ResidentOverTcpTest(unittest.TestCase):
 class BuddyLinkOverTcpTest(unittest.TestCase):
     def test_open_goes_through_open_port(self) -> None:
         ser = FakeSerial("tcp://x", 0, None)
-        with mock.patch.object(buddy_link, "open_port", return_value=ser) as open_port:
-            with BuddyLink("tcp://192.168.0.227:9000") as link:
-                self.assertIsInstance(link, BuddyLink)
+        with (
+            mock.patch.object(buddy_link, "open_port", return_value=ser) as open_port,
+            BuddyLink("tcp://192.168.0.227:9000") as link,
+        ):
+            self.assertIsInstance(link, BuddyLink)
         open_port.assert_called_once_with("tcp://192.168.0.227:9000", 115200, timeout=mock.ANY)
         self.assertTrue(ser.closed)
 
@@ -68,9 +73,29 @@ class BuddyLinkOverTcpTest(unittest.TestCase):
 
     def test_interrupt_is_refused(self) -> None:
         ser = FakeSerial("tcp://x", 0, None)
-        with mock.patch.object(buddy_link, "open_port", return_value=ser):
-            with BuddyLink("tcp://x") as link, self.assertRaises(ReplError):
-                link.interrupt()
+        with (
+            mock.patch.object(buddy_link, "open_port", return_value=ser),
+            BuddyLink("tcp://x") as link,
+            self.assertRaises(ReplError),
+        ):
+            link.interrupt()
+        self.assertEqual(ser.written(), b"")
+
+
+class BridgeCliOverTcpTest(unittest.TestCase):
+    def test_interrupt_over_tcp_fails_with_a_reason_not_a_traceback(self) -> None:
+        ser = FakeSerial("tcp://x", 0, None)
+        err = io.StringIO()
+        with (
+            mock.patch.object(
+                buddy_bridge.sys, "argv", ["buddy_bridge", "--port", "tcp://x", "--interrupt"]
+            ),
+            mock.patch.object(buddy_link, "open_port", return_value=ser),
+            contextlib.redirect_stderr(err),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(buddy_bridge.main(), 1)
+        self.assertIn("USB console", err.getvalue())
         self.assertEqual(ser.written(), b"")
 
 
