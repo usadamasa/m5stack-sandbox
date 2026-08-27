@@ -68,3 +68,28 @@ uv run python host/tools/src/buddy_deploy.py --compile-only   # MicroPython の�
   ヒント列まで巻き添えになる。base font に戻すと VLW は外れるので、次の `push` が読み直す
 - 実測を採り直すのは `host/tools/src/probe_device.py`。フォント一覧・各書体のメトリクス・
   ヒープをまとめて吐く
+
+# 発話 (`buddy/speak.py`)
+
+デバイスは自分で音声を取りに行く。Mac の VOICEVOX ENGINE との HTTP のやりとりが
+`buddy/tts.py` (`fetch_speech`)、返ってきた WAV を解いて samples の頭を見つけるのが
+`buddy/wav.py` (`open_pcm` / `parse_wav_header` / `PrefixedStream`)、socket から届く
+バイト列を player が欲しがる大きさのブロックに均すのが `buddy/speak_stream.py`、
+`M5.Speaker` へ渡すのが `buddy/speak.py`。依存は `speak` -> `speak_stream` と
+`speak` -> `tts` -> `wav` の一方向で、`wav` はネットワークも speaker も知らない。
+
+テストも同じ継ぎ目で `test_tts.py` / `test_wav.py` / `test_speak_stream.py` /
+`test_speak.py` に割れている。fake は `device/tests/wav_fakes.py` (engine が返す
+バイト列の組み立てと、socket の形をした読み口) と `device/tests/speak_fakes.py`
+(時計と speaker)。実機も engine も要らない。
+
+音まわりで踏みやすい点:
+
+- **WiFi を繋ぐのはこの経路ではない。** `/flash/main.py` が boot で繋ぐ。アプリの中から
+  `connect()` すると受け付けられたまま完了しない (ESP-IDF heap が足りない)。ラジオが
+  落ちていれば最初の POST が OSError になり、その台詞は失われる — それが正しい結末
+- **rate はヘッダから採る。** `outputSamplingRate` は engine が断れる要求で、24 kHz の
+  samples を 16 kHz で鳴らすのは全編ずれた音程になる。`fetch_speech` が返す `rate` は
+  頼んだ値ではなく WAV が名乗った値
+- **ヘッダを探すと samples を読み過ぎる。** 読み過ぎたぶんは `PrefixedStream` が抱えて
+  次の読み手へ先に返す。捨てると毎回の台詞の頭がクリックになる
