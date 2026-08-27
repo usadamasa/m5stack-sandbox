@@ -11,8 +11,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 
-import serial
-
+from buddy_net import is_tcp, open_port
 from buddy_wire import (
     LineDemux,
     Message,
@@ -20,7 +19,23 @@ from buddy_wire import (
     decode,
     encode,
 )
-from device_repl import connect_repl, run_and_release
+from device_repl import ReplError, connect_repl, run_and_release
+
+
+def refuse_tcp(target: str, what: str) -> None:
+    """REPL か console が要る操作を `tcp://` で頼まれたら、触る前に断る。
+
+    TCP の向こうにあるのはアプリの listener だけで、raw REPL のハンドシェイクも
+    Ctrl-C も届く先が無い。黙って試すと `connect_repl` は 3 分待ち、0x03 は
+    行の途中のごみとして捨てられる。どちらも「効かなかった」としか見えない
+    ので、理由を言って断る。
+    """
+    if is_tcp(target):
+        raise ReplError(
+            f"{what} needs the USB console; {target} is a tcp:// target with no REPL "
+            "behind it. Plug the cable in and use the serial port for this."
+        )
+
 
 # ----- launching the app
 #
@@ -79,6 +94,7 @@ def launch_app(
     Hand the result to `BuddyLink.open(adopt=...)` or
     `ResidentLink.connect(adopt=...)`; whoever takes it owns it.
     """
+    refuse_tcp(port, "launch_app")
     repl = connect_repl(port, baud, timeout=wait, on_wait=on_wait)
     return run_and_release(repl, LAUNCH_SOURCE, read_timeout)
 
@@ -118,7 +134,7 @@ class BuddyLink:
             self._ser = (
                 adopt
                 if adopt is not None
-                else serial.Serial(self.port, self.baud, timeout=self.read_timeout)
+                else open_port(self.port, self.baud, timeout=self.read_timeout)
             )
         return self
 
@@ -153,6 +169,7 @@ class BuddyLink:
         stays open and the prompt on the other end is live. What it says
         on the way out arrives as log lines — `pump()` for them.
         """
+        refuse_tcp(self.port, "interrupt")
         self._io.write(b"\x03")
         self._io.flush()
 

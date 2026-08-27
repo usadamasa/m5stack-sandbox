@@ -190,7 +190,7 @@ class CliOutputTest(unittest.TestCase):
         with (
             mock.patch.object(buddy_bridge.sys, "argv", ["buddy_bridge", *argv]),
             mock.patch.object(buddy_bridge, "launch_app", return_value=io_port),
-            mock.patch.object(buddy_link.serial, "Serial", return_value=io_port),
+            mock.patch.object(buddy_link, "open_port", return_value=io_port),
             contextlib.redirect_stdout(out),
         ):
             self.assertEqual(buddy_bridge.main(), 0)
@@ -238,7 +238,7 @@ class CliOutputTest(unittest.TestCase):
             mock.patch.object(
                 buddy_bridge.sys, "argv", ["buddy_bridge", "--port", "/dev/fake", "--interrupt"]
             ),
-            mock.patch.object(buddy_link.serial, "Serial", return_value=io_port),
+            mock.patch.object(buddy_link, "open_port", return_value=io_port),
             contextlib.redirect_stdout(out),
         ):
             self.assertEqual(buddy_bridge.main(), 0)
