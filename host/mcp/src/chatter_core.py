@@ -8,6 +8,7 @@ import することは無い。
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,9 @@ from buddy_wire import Message
 # 飛んでくるので、どちらも自分のファイルの置き場ではなく環境からこれを
 # 計算する。buddy_paths を参照。
 DEFAULT_SOCKET = buddy_paths.socket_path()
+
+# Claude Code のセッション transcript の置き場。読む側は `chatter_sessions`。
+DEFAULT_PROJECTS = buddy_paths.projects_dir()
 
 # hook が報告できるイベント。それ以外はモデルへ渡さずに捨てる。見知らぬ
 # 送り主にモデルを操られないようにするため。
@@ -53,12 +57,27 @@ class ChatLink(Protocol):
     def await_ack(self, expect: str, timeout: float = 5.0) -> Message: ...
 
 
+# hook が名乗るセッションの識別子として受け付ける形。Claude Code の
+# transcript は `<session_id>.jsonl` という名前で置かれるので、この値は後で
+# glob のパターンに埋まる。socket はこのマシンの誰にでも開いているため、
+# ここが「送られてきた文字列がパスの部品になる」唯一の場所になる — だから
+# UUID そのものだけを通す。`..` もセパレータもワイルドカードもこの形には
+# 収まらない。
+SESSION_ID = re.compile(r"\A[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
+
+
 @dataclass(frozen=True, slots=True)
 class Event:
-    """hook が見たものを、台詞を組み立てられる形まで削ったもの。"""
+    """hook が見たものを、台詞を組み立てられる形まで削ったもの。
+
+    `session` はそれを送ってきた Claude Code のセッション。空でもよい —
+    この項目を知らない古い hook からも届くし、`SAID` のように chatter が
+    自分で作るイベントには送り主が居ない。
+    """
 
     kind: str
     detail: str = ""
+    session: str = ""
 
 
 class LineSource(Protocol):
@@ -123,6 +142,21 @@ class ChatterConfig:
     idle_max: float = 180.0
     # N 回に 1 回だけ声に出す。残りはパネルにだけ出す。
     voice_every: int = 1
+    # ----- よそのセッション
+    #
+    # hook を飛ばしてきたセッションの transcript を読んで、何をしている
+    # セッションなのかを台詞の材料に加えるか。切れるようにしてあるのは、
+    # ここで拾ったものはパネルに出て読み上げられるから — 人が見ている前で
+    # 他所の作業を口にさせたくない場面のために、chatter ごと止めずに済む
+    # ノブが要る。
+    sessions: bool = True
+    projects_path: Path = DEFAULT_PROJECTS
+    # プロンプトへ載せるセッションの数。多くしても喋れる量は増えないので、
+    # これは話題の幅ではなく、1 回の生成で読む transcript の数になる。
+    session_limit: int = 3
+    # これだけ hook が来なければ、そのセッションは動いていないものとする。
+    # 昨日の作業を今の話として喋られても困る。
+    session_ttl: float = 900.0
     # 1 回の生成で作る台詞の数。1 回の呼び出しで数分をまかなえるので、
     # これが安さの理由になっている。
     batch: int = 6
@@ -171,6 +205,10 @@ class ChatterConfig:
             idle_max=_float_env(env, "BUDDY_CHATTER_IDLE_MAX", 180.0),
             busy_rate=_float_env(env, "BUDDY_CHATTER_BUSY_RATE", 12.0),
             voice_every=max(1, _int_env(env, "BUDDY_CHATTER_VOICE_EVERY", 1)),
+            sessions=env.get("BUDDY_CHATTER_SESSIONS", "1") not in ("0", "false", "no"),
+            projects_path=buddy_paths.projects_dir(env),
+            session_limit=max(1, _int_env(env, "BUDDY_CHATTER_SESSION_LIMIT", 3)),
+            session_ttl=_float_env(env, "BUDDY_CHATTER_SESSION_TTL", 900.0),
             batch=max(1, _int_env(env, "BUDDY_CHATTER_BATCH", 6)),
             claude_bin=env.get("BUDDY_CHATTER_CLAUDE_BIN", "claude"),
             model=env.get("BUDDY_CHATTER_MODEL", "sonnet"),
@@ -205,7 +243,20 @@ def parse_event(payload: bytes) -> Event | None:
         detail = ""
     # detail はプロンプトへ貼り付けられるので、送り主が常識的であることを
     # 信じるのではなくここで刈り込む。
-    return Event(kind, " ".join(detail.split())[:120])
+    return Event(kind, " ".join(detail.split())[:120], _session_id(obj.get("session")))
+
+
+def _session_id(value: object) -> str:
+    """名乗られたセッション。UUID でなければ、名乗らなかったものとして扱う。
+
+    形が合わないときにイベントごと捨てないのは、出来事そのものは実際に
+    起きているから。送り主として一番ありそうなのは攻撃者ではなく、この
+    項目をまだ送らない古い hook で、そちらのイベントは今までどおり使える。
+    """
+    if not isinstance(value, str):
+        return ""
+    lowered = value.lower()
+    return lowered if SESSION_ID.match(lowered) else ""
 
 
 def clean(line: object, limit: int) -> str:

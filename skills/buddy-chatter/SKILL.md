@@ -1,6 +1,6 @@
 ---
 name: buddy-chatter
-description: 作業中に Cardputer-Adv が独り言を言う機能 (host/mcp/src/buddy_chatter.py・chatter_pace.py・chatter_inbox.py・chatter_lines.py・chatter_core.py・chatter_cli.py と scripts/buddy_chatter_notify.py) を扱うときに使う。喋らない・喋りすぎる・台詞が変、hook が届いていない、chatter を直したのに反映されないときに参照する。ポートの所有権と、タスクをブロックしない設計の根拠もここ。
+description: 作業中に Cardputer-Adv が独り言を言う機能 (host/mcp/src/buddy_chatter.py・chatter_pace.py・chatter_inbox.py・chatter_lines.py・chatter_sessions.py・chatter_core.py・chatter_cli.py と scripts/buddy_chatter_notify.py) を扱うときに使う。喋らない・喋りすぎる・台詞が変、よそのセッションの話をしない、hook が届いていない、chatter を直したのに反映されないときに参照する。ポートの所有権と、タスクをブロックしない設計の根拠もここ。
 ---
 
 # 作業中の独り言 (chatter)
@@ -17,12 +17,42 @@ hooks ─datagram─> $XDG_STATE_HOME/buddy/chatter.sock ─> buddy-mcpd (常駐
 ```
 
 ホスト側の内訳: 受信は `chatter_inbox.Inbox`、いつ喋るかは `chatter_pace.Pacer`、
-台詞は `chatter_lines`、喋らせるのが `buddy_chatter.ChatterService`、単体プロセスで
-走らせる口が `chatter_cli`。共有物は `chatter_core`。依存は
-cli → service → inbox / pace / lines → core の一方向。
+台詞は `chatter_lines`、動いているセッションを読むのが `chatter_sessions`、
+喋らせるのが `buddy_chatter.ChatterService`、単体プロセスで走らせる口が `chatter_cli`。
+共有物は `chatter_core`。依存は cli → service → inbox / pace / lines / sessions → core の
+一方向。
 
 **chatter は daemon に 1 つ。** どのセッションの hook で撃たれても同じ chatter が反応する。
 複数セッションが同時に繋がっていても、喋る口は 1 つしかない。
+
+## よそのセッションの話
+
+線に載るのは `kind` と 100 文字の `detail` だけで、それは `tool: Bash: uv run pytest` の
+ような行にしかならない。何をやっているセッションなのかはそこに残らないし、daemon には
+複数のセッションから同じ socket へ届くので、イベント列は混ざったまま持ち主を名乗らない。
+
+**セッションの中身は transcript から読む。** hook は `session_id` を datagram に載せ、
+daemon が `~/.claude/projects/*/<session_id>.jsonl` を自分で引いて末尾 128KB を読む。
+拾うのは 4 つだけ — `ai-title` (セッションを 1 行にした要約)、`last-prompt` (最後に
+ユーザーが言ったこと)、`cwd`、`gitBranch`。プロンプトには「今このマシンで動いている
+セッション」として、出来事とは別の節で渡る。
+
+- **`transcript_path` は線に載せない。** hook の payload には入っているが、送らない。
+  socket はこのマシンの誰にでも開いているので、受け取ったパスを daemon が開けば、
+  送り主が読ませたいどんなファイルの断片でもプロンプトへ貼られ、デバイスが読み上げる。
+  `session_id` は `chatter_core.SESSION_ID` が UUID として検め、`SessionRegistry` でも
+  検め直してから glob に埋まる
+- **本文は読まない。** `assistant` と `user` のメッセージには手を付けない。ここで
+  拾ったものはパネルに出て VOICEVOX が読み上げるので、他プロジェクトの会話が
+  そのまま部屋の音になる経路を作らない
+- **台帳は時間で落ちる。** `BUDDY_CHATTER_SESSION_TTL` (既定 900 秒) 以上 hook が
+  来なければ、そのセッションは動いていないものとして忘れる。daemon はセッションより
+  長く生きるので、落とさなければ台帳はその日に開いたセッション全部になる
+- **transcript を読むのは生成のとき。** イベントは毎秒来うるが、バッチを作るのは
+  数分に 1 回。mtime が動いていなければキャッシュから返す
+
+載っているセッションの数は `buddy_chatter_status` の `sessions`。`null` なら
+`BUDDY_CHATTER_SESSIONS` が切られている。
 
 ## 台詞を書くのは `claude -p`
 
@@ -107,6 +137,13 @@ SDK を直接叩くと認証の解決を再実装して追随し続けること�
 
 `skipped_busy` が増えるのは異常ではない。本物のツール呼び出しがデバイスを持っている間、
 chatter は黙って諦める — そのための try-acquire。
+
+**よそのセッションの話をしないとき**は `buddy_chatter_status` の `sessions` を見る。
+`null` なら `BUDDY_CHATTER_SESSIONS` が切られている。`0` なら hook が `session_id` を
+載せていない — 古い版の `buddy_chatter_notify.py` が残っている。1 以上あるのに話題に
+出ないなら、transcript が見つかっていないか (`CLAUDE_CONFIG_DIR` の食い違い)、
+そのセッションにまだ `ai-title` が付いていない。話題にするかどうかはモデルの裁量なので、
+渡っていても毎回は出ない。
 
 ## 直しても反映されないとき
 
@@ -198,6 +235,10 @@ hook は plugin の `hooks/hooks.json` が登録する。plugin を入れ替え�
 | `BUDDY_CHATTER_IDLE_MIN` / `_MAX` | `60` / `180` | 独り言までの沈黙のゆらぎ幅 (秒) |
 | `BUDDY_CHATTER_BUSY_RATE` | `12` | tempo が 1.0 に飽和する hook イベント数 (件/分) |
 | `BUDDY_CHATTER_VOICE_EVERY` | `1` | N 回に 1 回だけ声を出す。残りは画面のみ |
+| `BUDDY_CHATTER_SESSIONS` | `1` | よそのセッションの transcript を読むか |
+| `BUDDY_CHATTER_SESSION_LIMIT` | `3` | プロンプトへ載せるセッションの数 |
+| `BUDDY_CHATTER_SESSION_TTL` | `900` | hook が来なくなってから忘れるまで (秒) |
+| `CLAUDE_CONFIG_DIR` | `~/.claude` | transcript の置き場。決めるのは Claude Code 側 |
 | `BUDDY_CHATTER_PROMPT` | `host/mcp/src/chatter_prompt.md` | 口調と性格 |
 | `BUDDY_CHATTER_BATCH` | `6` | 1 回の生成で作る台詞の数 |
 | `BUDDY_CHATTER_CLAUDE_BIN` | `claude` | Claude CLI の場所 |

@@ -126,23 +126,37 @@ def classify(payload: dict) -> tuple[str, str] | None:
     return None
 
 
+def message(payload: dict) -> dict | None:
+    """線に載せるデータグラム 1 つ。送るものが無ければ None。
+
+    `session_id` は載せるが `transcript_path` は載せない。どちらも payload に
+    あるが、socket はこのマシンの誰にでも開いているので、daemon が開く
+    ファイルを送り主に決めさせるわけにはいかない。向こう側は名乗られた
+    セッションを UUID として検めたうえで、自分の知っている置き場から
+    transcript を引く。
+    """
+    classified = classify(payload)
+    if classified is None:
+        return None
+    kind, detail = classified
+    return {"kind": kind, "detail": detail, "session": _text(payload, "session_id")}
+
+
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
         if not isinstance(payload, dict):
             return 0
-        classified = classify(payload)
-        if classified is None:
+        built = message(payload)
+        if built is None:
             return 0
-        kind, detail = classified
-        message = {"kind": kind, "detail": detail}
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         try:
             # Bounded so a full receive buffer cannot park a tool call
             # here. Losing a line of chatter is not worth a millisecond
             # of anyone's attention.
             sock.settimeout(0.2)
-            sock.sendto(json.dumps(message, ensure_ascii=False).encode(), SOCKET)
+            sock.sendto(json.dumps(built, ensure_ascii=False).encode(), SOCKET)
         finally:
             sock.close()
     except Exception:

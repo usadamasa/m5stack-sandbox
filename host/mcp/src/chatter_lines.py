@@ -24,6 +24,7 @@ from chatter_core import (
     clean,
     describe,
 )
+from chatter_sessions import SessionRegistry
 
 # 喋る側と同じ logger。読む側にとって「独り言が止まった」の原因は 1 つの
 # 流れなので、生成の失敗とデバイスの失敗を同じ名前の下に並べる。
@@ -80,9 +81,18 @@ class BatchedLineSource:
     # バックエンドまで辿れるように `status()` で報告する。
     backend = "none"
 
-    def __init__(self, cfg: ChatterConfig, rng: random.Random | None = None) -> None:
+    def __init__(
+        self,
+        cfg: ChatterConfig,
+        rng: random.Random | None = None,
+        sessions: SessionRegistry | None = None,
+    ) -> None:
         self._cfg = cfg
         self._rng = rng or random.Random()
+        # 台帳は喋る側が持ち、ここは覗くだけ。どのセッションが動いているかを
+        # 知っているのは hook のイベントを受けている側で、ここが知るのは
+        # バッチを作る瞬間にそれがどうなっているか、だけ。
+        self._sessions = sessions
         self._cache: deque[str] = deque()
         self._prompt: str | None = None
         self.generated = 0
@@ -115,16 +125,37 @@ class BatchedLineSource:
         first, second = self._rng.sample(_ANGLES, 2)
         return f"{first}と{second}"
 
+    def _sessions_note(self) -> str:
+        """今このマシンで動いているセッションが何をしているか。無ければ空。
+
+        イベントログへ混ぜずに節を分ける理由は、過去の台詞のときと同じ。
+        出来事は「何が起きたか」で、これは「誰が何をしているか」— 読み方が
+        違うものを 1 つの箇条書きにすると、どちらも薄まる。
+
+        動いているものが無いときに「ありません」と書かないのは、それ自体が
+        話題になってしまうから。デバイスに孤独を実況させたいわけではない。
+        """
+        if self._sessions is None:
+            return ""
+        notes = [note.describe() for note in self._sessions.recent()]
+        if not notes:
+            return ""
+        listed = "\n".join(f"- {note}" for note in notes if note)
+        return f"今このマシンで動いているセッション:\n{listed}"
+
     def _user_prompt(self, context: Sequence[Event]) -> str:
         """何が起きたか、既に何を言ったか、そして次にどこを見るか。
 
-        この 2 つは 1 つのイベントログとしてまとめずに分けてある。読まれ方が
+        節は 1 つのイベントログとしてまとめずに分けてある。読まれ方が
         違うから: 出来事は何について話すかで、過去の台詞は二度と言わない
         ものだ。
         """
         spoken = [ev.detail for ev in context if ev.kind == SAID and ev.detail]
         happened = [ev for ev in context if ev.kind != SAID]
         parts = [f"直近の出来事:\n{describe(happened)}"]
+        running = self._sessions_note()
+        if running:
+            parts.append(running)
         if spoken:
             said = "\n".join(f"- {line}" for line in spoken)
             parts.append(f"すでに言ったこと。話題も言い回しも繰り返さない:\n{said}")
@@ -205,8 +236,9 @@ class ClaudeCliLineSource(BatchedLineSource):
         cfg: ChatterConfig,
         rng: random.Random | None = None,
         run: Callable[[str, str], str] | None = None,
+        sessions: SessionRegistry | None = None,
     ) -> None:
-        super().__init__(cfg, rng)
+        super().__init__(cfg, rng, sessions)
         # テストが CLI を起こさずに済むように、そしてパースに触らずに別の
         # 起動方法を差し込めるように注入可能にしてある。
         self._run = run if run is not None else self._run_claude

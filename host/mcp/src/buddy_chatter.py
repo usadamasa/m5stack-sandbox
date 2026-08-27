@@ -55,6 +55,7 @@ from chatter_core import SAID, ChatLink, ChatterConfig, Event, LineSource
 from chatter_inbox import Inbox
 from chatter_lines import ClaudeCliLineSource
 from chatter_pace import Pacer
+from chatter_sessions import SessionRegistry
 
 # daemon の log へ。喋ったこと・喋れなかった理由が残るのはここだけで、
 # `status()` は「今どうなっているか」しか答えられない — 30 分前に何を言った
@@ -93,7 +94,17 @@ class ChatterService:
         self._cfg = cfg
         self._link = link_provider
         self._lock = device_lock
-        self._source = source if source is not None else ClaudeCliLineSource(cfg, rng)
+        # 台帳はここが持つ。hook のイベントを見ているのはこの側だけで、
+        # 台詞を書く側はバッチを作る瞬間にそれを覗く。同じものを渡すのは、
+        # 2 つあれば片方だけが更新されて、読まれるのはもう片方になるから。
+        self._sessions = (
+            SessionRegistry(cfg.projects_path, ttl=cfg.session_ttl, limit=cfg.session_limit)
+            if cfg.sessions
+            else None
+        )
+        self._source = (
+            source if source is not None else ClaudeCliLineSource(cfg, rng, sessions=self._sessions)
+        )
         self._rng = rng or random.Random()
         self._clock = clock
 
@@ -122,6 +133,11 @@ class ChatterService:
         """The settings in force. Frozen — retune by rebuilding the service."""
         return self._cfg
 
+    @property
+    def sessions(self) -> SessionRegistry | None:
+        """動いているセッションの台帳。読まない設定なら None。"""
+        return self._sessions
+
     # ----- deciding
 
     def _due(self, ev: Event | None) -> Event | None:
@@ -135,6 +151,10 @@ class ChatterService:
         if ev is not None:
             self._history.append(ev)
             self._pace.note_activity(now)
+            if self._sessions is not None and ev.session:
+                # 喋るかどうかとは無関係に記録する。黙っている間も
+                # セッションは動いていて、次に口を開くときの材料になる。
+                self._sessions.note_activity(ev.session)
         if self._pace.waiting(now):
             return None
         if ev is not None:
@@ -318,6 +338,10 @@ class ChatterService:
             "skipped_offline": self.skipped_offline,
             "dropped_events": self._inbox.dropped,
             "queued": self._inbox.queued,
+            # 台帳に載っているセッションの数。読まない設定なら None。
+            # デバイスがよその話をしないときに、届いていないのか読めて
+            # いないのかがここで分かれる。
+            "sessions": self._sessions.tracked if self._sessions is not None else None,
             # The wait in force right now, not a number settled earlier:
             # it moves as the session speeds up and slows down.
             "next_gap_s": round(self._pace.gap_now(), 1),

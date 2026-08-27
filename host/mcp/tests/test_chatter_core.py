@@ -44,6 +44,55 @@ class ParseEventTests(unittest.TestCase):
         self.assertEqual(parse_event(b'{"kind": "stop", "agent": "codex"}'), Event("stop", ""))
 
 
+class SessionIdTests(unittest.TestCase):
+    """`session` は transcript を引く鍵になるので、ここが唯一の検問になる。
+
+    socket はこのマシンの誰にでも開いている。この値は後で
+    `~/.claude/projects/*/<session>.jsonl` の glob に埋まるので、UUID 以外の
+    ものが通ればそこがパスの組み立てになる。
+    """
+
+    VALID = "747883a7-180d-453a-9f99-b06b38767561"
+
+    def test_accepts_a_uuid(self) -> None:
+        ev = parse_event(json.dumps({"kind": "tool", "session": self.VALID}).encode())
+        self.assertEqual(ev, Event("tool", "", self.VALID))
+
+    def test_absent_session_is_empty(self) -> None:
+        ev = parse_event(b'{"kind": "stop"}')
+        assert ev is not None
+        self.assertEqual(ev.session, "")
+
+    def test_uppercase_is_normalised(self) -> None:
+        # 送り主がどう書いても、引く先のファイル名は小文字。
+        ev = parse_event(json.dumps({"kind": "tool", "session": self.VALID.upper()}).encode())
+        assert ev is not None
+        self.assertEqual(ev.session, self.VALID)
+
+    def test_rejects_anything_that_is_not_a_uuid(self) -> None:
+        # 弾いたものは黙って空になる。イベント自体は捨てない — 出来事は
+        # 起きたのだし、送り主が古い hook である可能性の方が高い。
+        for bad in (
+            "../../../etc/passwd",
+            "747883a7-180d-453a-9f99-b06b38767561/../secret",
+            "not-a-uuid",
+            "",
+            "*",
+            "747883a7180d453a9f99b06b38767561",
+            "747883a7-180d-453a-9f99-b06b38767561 ",
+            "g47883a7-180d-453a-9f99-b06b38767561",
+        ):
+            with self.subTest(session=bad):
+                ev = parse_event(json.dumps({"kind": "tool", "session": bad}).encode())
+                assert ev is not None
+                self.assertEqual(ev.session, "")
+
+    def test_a_non_string_session_is_dropped_not_fatal(self) -> None:
+        ev = parse_event(b'{"kind": "tool", "session": 42}')
+        assert ev is not None
+        self.assertEqual(ev.session, "")
+
+
 class ConfigTests(unittest.TestCase):
     def test_defaults(self) -> None:
         cfg = ChatterConfig.from_env({})
@@ -68,6 +117,27 @@ class ConfigTests(unittest.TestCase):
     def test_voice_every_cannot_be_zero(self) -> None:
         # 0 だと _transmit の剰余が毎行で例外になる。
         self.assertEqual(ChatterConfig.from_env({"BUDDY_CHATTER_VOICE_EVERY": "0"}).voice_every, 1)
+
+    def test_sessions_are_read_by_default(self) -> None:
+        cfg = ChatterConfig.from_env({"HOME": "/home/u"})
+        self.assertTrue(cfg.sessions)
+        self.assertEqual(cfg.session_limit, 3)
+        self.assertEqual(cfg.session_ttl, 900.0)
+        self.assertEqual(str(cfg.projects_path), "/home/u/.claude/projects")
+
+    def test_sessions_can_be_turned_off(self) -> None:
+        # デバイスが他所の作業を口にするのが嫌なときに、chatter ごと
+        # 止めずに済ませられるように。
+        for off in ("0", "false", "no"):
+            with self.subTest(value=off):
+                self.assertFalse(ChatterConfig.from_env({"BUDDY_CHATTER_SESSIONS": off}).sessions)
+
+    def test_session_limits_are_tunable(self) -> None:
+        cfg = ChatterConfig.from_env(
+            {"BUDDY_CHATTER_SESSION_LIMIT": "5", "BUDDY_CHATTER_SESSION_TTL": "60"}
+        )
+        self.assertEqual(cfg.session_limit, 5)
+        self.assertEqual(cfg.session_ttl, 60.0)
 
     def test_the_model_defaults_to_sonnet(self) -> None:
         # 独り言を 1 行書くのは最大のモデルを要する仕事ではないし、これは

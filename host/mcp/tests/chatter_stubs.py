@@ -109,6 +109,9 @@ def build(
         "idle_min": 100.0,
         "idle_max": 100.0,
         "engine": "http://192.0.2.1:50021",
+        # 既定は off。実際の `~/.claude/projects` を読むテストにしないため
+        # で、これを見るテストは自分で tmp の root を渡す。
+        "sessions": False,
     }
     settings.update(overrides)
     cfg = ChatterConfig(**settings)

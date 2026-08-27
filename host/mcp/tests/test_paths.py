@@ -49,6 +49,28 @@ class XdgTests(unittest.TestCase):
         self.assertEqual(buddy_paths.log_path(env), Path("/x/state/buddy/buddy-mcpd.log"))
 
 
+class ProjectsDirTests(unittest.TestCase):
+    """Claude Code のセッション transcript の置き場。buddy のものではない。
+
+    XDG ではなく `CLAUDE_CONFIG_DIR` に従う。ここを決めているのは
+    Claude Code の側で、こちらはそれを読みに行くだけ。
+    """
+
+    def test_the_default_is_under_the_home_directory(self) -> None:
+        env = {"HOME": "/home/u"}
+        self.assertEqual(buddy_paths.projects_dir(env), Path("/home/u/.claude/projects"))
+
+    def test_claude_config_dir_moves_it(self) -> None:
+        env = {"HOME": "/home/u", "CLAUDE_CONFIG_DIR": "/elsewhere/.claude"}
+        self.assertEqual(buddy_paths.projects_dir(env), Path("/elsewhere/.claude/projects"))
+
+    def test_a_relative_value_is_ignored(self) -> None:
+        # XDG のときと同じ理由。daemon は任意のディレクトリから起動される
+        # ので、cwd に対して解決したら起動のたびに別の場所を指す。
+        env = {"HOME": "/home/u", "CLAUDE_CONFIG_DIR": "relative/.claude"}
+        self.assertEqual(buddy_paths.projects_dir(env), Path("/home/u/.claude/projects"))
+
+
 class ConfigFileTests(unittest.TestCase):
     """`config.toml` reaches the rest of the code as `BUDDY_*` names.
 
