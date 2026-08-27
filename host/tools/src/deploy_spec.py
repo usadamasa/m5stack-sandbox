@@ -56,10 +56,12 @@ OVERLAY: tuple[str, ...] = (
     # and no heap. Leaving it off the device would mean the one bundle
     # that cannot be inspected is the one already misbehaving.
     "buddy/debug.py",
+    # 発話。ライフサイクルと `speak.*` verb の振り分けが `speak`、speaker へ
+    # ブロックを渡すのが `speak_out`、socket から 2 KiB のブロックを貯めて
+    # 渡すのが `speak_stream`。後ろ 2 つとも `speak` が import するので、
+    # 載せ忘れると実機では ImportError になる。
     "buddy/speak.py",
-    # `buddy/speak.py` から切り出した、socket から 2 KiB のブロックを
-    # 貯めて渡すところ。speak が import するので、載せ忘れると実機では
-    # ImportError になる。
+    "buddy/speak_out.py",
     "buddy/speak_stream.py",
     "buddy/tts.py",
     "apps/claude_buddy.py",

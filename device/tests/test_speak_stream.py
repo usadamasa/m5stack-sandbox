@@ -24,7 +24,7 @@
 import unittest
 
 from buddy import speak_stream
-from buddy.speak import _BLOCK
+from buddy.speak_out import BLOCK
 from buddy.speak_stream import StreamSource
 from speak_fakes import FakeStream, FakeTime, TimeFrozen, blk
 
@@ -52,28 +52,28 @@ class RadioTest(TimeFrozen):
         # 既定の省電力だと socket が 300 ms 止まることがあり (実測: 9.5 秒の
         # 台詞 7 回中 2 回)、枠 2 つぶんのクッションでは覆えない。
         radio = _FakeRadio(pm=1)
-        src = StreamSource(FakeStream(), _BLOCK, radio=radio)
+        src = StreamSource(FakeStream(), BLOCK, radio=radio)
         self.assertEqual(radio.pm, speak_stream._PM_AWAKE)
         src.close()
         self.assertEqual(radio.pm, 1)
 
     def test_restores_only_once(self) -> None:
         radio = _FakeRadio(pm=2)
-        src = StreamSource(FakeStream(), _BLOCK, radio=radio)
+        src = StreamSource(FakeStream(), BLOCK, radio=radio)
         src.close()
         src.close()
         self.assertEqual(radio.writes, [speak_stream._PM_AWAKE, 2])
 
     def test_a_radio_that_cannot_be_configured_does_not_stop_playback(self) -> None:
         radio = _FakeRadio(broken=True)
-        src = StreamSource(FakeStream(blk(b"a")), _BLOCK, radio=radio)
-        self.assertEqual(src.read_block(_BLOCK), blk(b"a"))
+        src = StreamSource(FakeStream(blk(b"a")), BLOCK, radio=radio)
+        self.assertEqual(src.read_block(BLOCK), blk(b"a"))
         src.close()
         self.assertEqual(radio.writes, [])
 
     def test_the_host_has_no_radio(self) -> None:
         # ホストには `network` が無い。触らずに動く。
-        src = StreamSource(FakeStream(), _BLOCK)
+        src = StreamSource(FakeStream(), BLOCK)
         self.assertIsNone(src._radio)
 
 
@@ -87,19 +87,19 @@ class StreamSourceTest(TimeFrozen):
 
     def test_hands_back_whole_blocks_in_order(self) -> None:
         stream = FakeStream(blk(b"a") + blk(b"b"))
-        src = StreamSource(stream, 2 * _BLOCK)
-        self.assertEqual(src.read_block(_BLOCK), blk(b"a"))
-        self.assertEqual(src.read_block(_BLOCK), blk(b"b"))
+        src = StreamSource(stream, 2 * BLOCK)
+        self.assertEqual(src.read_block(BLOCK), blk(b"a"))
+        self.assertEqual(src.read_block(BLOCK), blk(b"b"))
         self.assertEqual(src.left, 0)
 
     def test_a_block_split_across_calls_is_not_lost(self) -> None:
         # WiFi delivers a block in pieces routinely. Dropping the first
         # piece would shift every sample after it.
         stream = FakeStream(b"a" * 100)
-        src = StreamSource(stream, _BLOCK)
-        self.assertIsNone(src.read_block(_BLOCK))
-        stream.feed(b"a" * (_BLOCK - 100))
-        self.assertEqual(src.read_block(_BLOCK), blk(b"a"))
+        src = StreamSource(stream, BLOCK)
+        self.assertIsNone(src.read_block(BLOCK))
+        stream.feed(b"a" * (BLOCK - 100))
+        self.assertEqual(src.read_block(BLOCK), blk(b"a"))
 
     def test_pads_the_final_short_block_with_silence(self) -> None:
         # playRaw is handed exactly one block. The last one almost never
@@ -107,17 +107,17 @@ class StreamSourceTest(TimeFrozen):
         # used to do before the audio came off a socket.
         stream = FakeStream(b"x" * 500)
         src = StreamSource(stream, 500)
-        block = src.read_block(_BLOCK)
+        block = src.read_block(BLOCK)
         assert block is not None
-        self.assertEqual(len(block), _BLOCK)
+        self.assertEqual(len(block), BLOCK)
         self.assertEqual(block[:500], b"x" * 500)
-        self.assertEqual(block[500:], b"\x00" * (_BLOCK - 500))
+        self.assertEqual(block[500:], b"\x00" * (BLOCK - 500))
 
     def test_the_pad_is_not_counted_as_audio(self) -> None:
         # `left` is what tells the player the utterance is over. Counting
         # the padding would end it a block early on every short tail.
         src = StreamSource(FakeStream(b"x" * 500), 500)
-        src.read_block(_BLOCK)
+        src.read_block(BLOCK)
         self.assertEqual(src.left, 0)
 
     def test_never_reads_past_the_declared_length(self) -> None:
@@ -125,31 +125,31 @@ class StreamSourceTest(TimeFrozen):
         # the next response, not to this utterance.
         stream = FakeStream(b"x" * 500 + b"NEXT")
         src = StreamSource(stream, 500)
-        src.read_block(_BLOCK)
+        src.read_block(BLOCK)
         self.assertEqual(bytes(stream.buf), b"NEXT")
 
     def test_waiting_is_not_failing(self) -> None:
         # An empty read is the normal case on a 40 ms tick. Treating it
         # as an error would kill an utterance on the first jitter.
-        src = StreamSource(FakeStream(), _BLOCK)
-        self.assertIsNone(src.read_block(_BLOCK))
+        src = StreamSource(FakeStream(), BLOCK)
+        self.assertIsNone(src.read_block(BLOCK))
         self.assertFalse(src.dead)
 
     def test_gives_up_once_nothing_has_arrived_for_the_stall_window(self) -> None:
-        src = StreamSource(FakeStream(), _BLOCK)
+        src = StreamSource(FakeStream(), BLOCK)
         FakeTime.now = speak_stream._STALL_MS + 1
-        self.assertIsNone(src.read_block(_BLOCK))
+        self.assertIsNone(src.read_block(BLOCK))
         self.assertTrue(src.dead)
 
     def test_progress_resets_the_stall_deadline(self) -> None:
         # A slow stream that is still alive must not be killed by the
         # clock. Any byte at all counts as progress.
         stream = FakeStream(b"a" * 100)
-        src = StreamSource(stream, _BLOCK)
+        src = StreamSource(stream, BLOCK)
         FakeTime.now = speak_stream._STALL_MS - 1
-        self.assertIsNone(src.read_block(_BLOCK))
+        self.assertIsNone(src.read_block(BLOCK))
         FakeTime.now = speak_stream._STALL_MS + 1
-        self.assertIsNone(src.read_block(_BLOCK))
+        self.assertIsNone(src.read_block(BLOCK))
         self.assertFalse(src.dead)
 
     def test_a_stream_that_ends_short_is_a_failure_not_a_short_utterance(self) -> None:
@@ -158,14 +158,14 @@ class StreamSourceTest(TimeFrozen):
         # would hide it.
         stream = FakeStream(b"x" * 100)
         stream.end()
-        src = StreamSource(stream, _BLOCK)
-        self.assertIsNone(src.read_block(_BLOCK))
+        src = StreamSource(stream, BLOCK)
+        self.assertIsNone(src.read_block(BLOCK))
         self.assertTrue(src.dead)
 
     def test_close_releases_the_socket_and_the_response(self) -> None:
         stream = FakeStream()
         response = FakeStream()
-        src = StreamSource(stream, _BLOCK, response)
+        src = StreamSource(stream, BLOCK, response)
         src.close()
         self.assertTrue(stream.closed)
         self.assertTrue(response.closed)

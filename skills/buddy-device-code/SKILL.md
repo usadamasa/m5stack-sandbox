@@ -68,3 +68,28 @@ uv run python host/tools/src/buddy_deploy.py --compile-only   # MicroPython の�
   ヒント列まで巻き添えになる。base font に戻すと VLW は外れるので、次の `push` が読み直す
 - 実測を採り直すのは `host/tools/src/probe_device.py`。フォント一覧・各書体のメトリクス・
   ヒープをまとめて吐く
+
+# 発話 (`buddy/speak.py`)
+
+3 つに割れている。発話のライフサイクル (`speak.say` / `speak.stop` の振り分け、fetch、
+tick ごとの pump、`speak.end` の ack) が `buddy/speak.py` (`SpeechPlayer`)、speaker への
+出口が `buddy/speak_out.py` (`SpeakerOut`)、socket から来るバイト列をブロックに均すのが
+`buddy/speak_stream.py` (`StreamSource`)。依存は `speak` -> `speak_out` /
+`speak_stream` の一方向で、後ろ 2 つは player を知らない。テストも同じ継ぎ目で
+`test_speak.py` / `test_speak_out.py` / `test_speak_stream.py` に割れていて、fake の
+speaker とストリームと時計は `device/tests/speak_fakes.py`。ホスト側から見た
+`buddy_verbs.speak` の契約は `test_speak_host.py` が両側の定数を突き合わせる。
+
+音まわりで踏みやすい点:
+
+- **合成はデバイスがやっていない。** ESP32-S3 には日本語の音声を置く flash も回す
+  サイクルも無い。WiFi 越しに VOICEVOX engine を叩いて PCM を取ってくるのが
+  `buddy/tts.py` で、`speak.say` の ack はその往復 (数秒) が終わってから出る
+- **チャンネルは 1 本に固定する。** `channel=-1` は空きチャンネルを探すので、ブロックが
+  重なって鳴る (実測)。枠は 2 つ (再生中 + 次) で、渡す前に `isPlaying(ch)` を見る —
+  満杯の `playRaw` は False を返さずに**待つ**ので、待たされた tick は UI が止まる
+- **渡したブロックの参照を落とさない。** binding は buffer のポインタを渡すだけで複製
+  しないので、GC がその領域を次の bytes に回すと鳴っている途中で中身が変わる。
+  `SpeakerOut` が最後の数個を持ち続け、もう読まれないと分かったところで `release()` する
+- 実測の根拠 (ブロック長、枠のタイミング、起動時のポップ) は `buddy/speak_out.py` の
+  docstring の Timing 節、WiFi の省電力を切る理由は `buddy/speak_stream.py` の docstring
