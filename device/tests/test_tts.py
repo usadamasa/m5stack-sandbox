@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 """The device's own fetch path: the VOICEVOX call.
 
 Nothing here needs a board, a speaker or a running engine. What it
@@ -14,6 +15,7 @@ import json
 import unittest
 from typing import Any, cast
 
+from buddy import tts
 from buddy.tts import FetchError, fetch_speech, quote, tune_query
 from wav_fakes import FakeRaw, wav_head
 
@@ -95,18 +97,25 @@ class _FakeResponse:
 class _FakeRequests:
     """Stands in for the firmware's frozen `requests` module."""
 
-    def __init__(self, *responses: _FakeResponse | Exception) -> None:
+    def __init__(self, *responses: _FakeResponse | Exception, takes_timeout: bool = True) -> None:
         self._queue = list(responses)
         self.calls: list[tuple[str, bytes | None, dict[str, str] | None]] = []
+        self.timeouts: list[object] = []
+        # 古いファームウェアの `requests.post` は `timeout` を取らない。
+        self._takes_timeout = takes_timeout
 
     def post(
         self,
         url: str,
         data: bytes | None = None,
         headers: dict[str, str] | None = None,
-        **_kw: object,
+        timeout: float | None = None,
     ) -> _FakeResponse:
+        if timeout is not None and not self._takes_timeout:
+            # 古いファームウェアはこう答える。
+            raise TypeError("post() got an unexpected keyword argument 'timeout'")
         self.calls.append((url, data, headers))
+        self.timeouts.append(timeout)
         nxt = self._queue.pop(0)
         if isinstance(nxt, Exception):
             raise nxt
@@ -114,7 +123,15 @@ class _FakeRequests:
 
 
 class FetchSpeechTest(unittest.TestCase):
-    def _ok(self, rate: int = 16000, pcm_bytes: int = 81920) -> _FakeRequests:
+    def setUp(self) -> None:
+        # モジュールに残る「この firmware は timeout を取らない」の記憶を、
+        # テストごとにまっさらへ戻す。
+        tts._post_takes_timeout = True
+        self.addCleanup(setattr, tts, "_post_takes_timeout", True)
+
+    def _ok(
+        self, rate: int = 16000, pcm_bytes: int = 81920, takes_timeout: bool = True
+    ) -> _FakeRequests:
         # The body carries real samples up to a cap, so a test can read
         # across the seam between the over-read header buffer and the
         # socket without materialising 80 KB per case.
@@ -122,7 +139,26 @@ class FetchSpeechTest(unittest.TestCase):
         return _FakeRequests(
             _FakeResponse(payload={"outputSamplingRate": 24000, "outputStereo": True}),
             _FakeResponse(raw=FakeRaw(wav_head(pcm_bytes, rate=rate) + body)),
+            takes_timeout=takes_timeout,
         )
+
+    def test_every_post_carries_a_timeout(self) -> None:
+        # timeout の無い POST は main loop を人質に取る。WiFi が詰まると
+        # 実機は ack を返さなくなり、Ctrl-C も REPL も効かなくなった
+        # (issue #92)。止まる場所が C の中なので、socket 側で切るしかない。
+        req = self._ok()
+        fetch_speech("http://host:50021", "こんにちは", speaker=3, rate=16000, requests_mod=req)
+        self.assertEqual(req.timeouts, [tts.HTTP_TIMEOUT, tts.HTTP_TIMEOUT])
+
+    def test_a_firmware_that_will_not_take_a_timeout_still_speaks(self) -> None:
+        # `requests.post` の signature はファームウェアのもので、こちらの
+        # 持ち物ではない。取らない相手なら timeout 無しへ落ちる — 喋れなく
+        # なるよりはブロックしうる方がまし。
+        req = self._ok(takes_timeout=False)
+        got = fetch_speech("http://host:50021", "やあ", speaker=3, rate=16000, requests_mod=req)
+        self.assertEqual(got["rate"], 16000)
+        self.assertEqual(len(req.calls), 2)
+        self.assertEqual(req.timeouts, [None, None])
 
     def test_calls_audio_query_then_synthesis(self) -> None:
         req = self._ok()

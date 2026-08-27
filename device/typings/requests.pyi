@@ -18,8 +18,12 @@ class Response:
     def json(self) -> dict[str, object]: ...
     def close(self) -> None: ...
 
+# `timeout` は micropython-lib の `requests` にはあるが、ファームウェアが
+# どの版を焼いているかはこちらの持ち物ではない。取らない相手に当たったときは
+# `TypeError` になり、`buddy/tts.py` の `_call_post` が timeout 無しへ落ちる。
 def post(
     url: str,
     data: bytes | None = ...,
     headers: dict[str, str] | None = ...,
+    timeout: float | None = ...,
 ) -> Response: ...
