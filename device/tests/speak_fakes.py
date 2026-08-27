@@ -7,6 +7,10 @@
 
 `TimeFrozen` が差し替えるのは `buddy.speak_stream.time` — stall の期限を
 持っているのはあちらで、`buddy.speak` はもう時計を見ない。
+
+ブロックの大きさを `buddy.speak._BLOCK` から直接引くので、basedpyright の
+private-member の検査はこのファイルごと切ってある
+(冒頭の `reportPrivateUsage=false`)。
 """
 
 import unittest
