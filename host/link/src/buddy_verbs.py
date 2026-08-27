@@ -81,10 +81,12 @@ _ENGINE_PORT = 50021
 # Zundamon, normal. Style ids come from the engine's /speakers.
 ZUNDAMON = 3
 
-# 16 kHz over the engine's default 24 kHz. The device has 61 KB of heap
-# and no PSRAM, so a third off the stream is worth more than the
-# bandwidth it saves.
-DEFAULT_RATE = 16000
+# VOICEVOX のネイティブは 24 kHz。16 kHz は転送と heap を 1/3 削るが 8 kHz から
+# 上を落とし、64 ms のブロックでは重い tick で途切れた。24 kHz は 85 ms の
+# ブロックで stall 0、heap は 54 KB 残る (実測、2.56 秒の台詞) ので、ネイティブに
+# 合わせる。48 kHz も鳴るが、エンジンが upsample するだけで情報は増えず、heap の
+# 底が 35 KB まで下がる。デバイス側の `buddy.speak._DEFAULT_RATE` と同じ値。
+DEFAULT_RATE = 24000
 
 # Long enough to cover synthesis, which is seconds: the device does not
 # answer speak.say until the engine has produced the whole WAV and the
@@ -174,8 +176,8 @@ def speak(
     Returns the `speak.end` ack, which arrives once the last block has
     been played. Blocks for synthesis plus playback.
 
-    A non-zero `stalls` in the result means the device ran out of audio
-    while waiting on the network — the utterance will have gapped.
+    `stalls` は再生が始まった後に speaker が空になった回数 — 0 でなければ
+    その回数だけ音が途切れている。socket を待っただけの tick は数えない。
     """
     if not text.strip():
         raise ValueError("nothing to say")

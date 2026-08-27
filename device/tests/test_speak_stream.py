@@ -29,6 +29,54 @@ from buddy.speak_stream import StreamSource
 from speak_fakes import FakeStream, FakeTime, TimeFrozen, blk
 
 
+class _FakeRadio:
+    """`network.WLAN` のうち pm だけ。読みは位置引数、書きはキーワード。"""
+
+    def __init__(self, pm: int = 1, broken: bool = False) -> None:
+        self.pm = pm
+        self.broken = broken
+        self.writes: list[object] = []
+
+    def config(self, *args: str, **kwargs: object) -> object:
+        if self.broken:
+            raise OSError("wifi not up")
+        if args:
+            return self.pm
+        self.pm = int(str(kwargs["pm"]))
+        self.writes.append(self.pm)
+        return None
+
+
+class RadioTest(TimeFrozen):
+    def test_keeps_wifi_awake_while_streaming(self) -> None:
+        # 既定の省電力だと socket が 300 ms 止まることがあり (実測: 9.5 秒の
+        # 台詞 7 回中 2 回)、枠 2 つぶんのクッションでは覆えない。
+        radio = _FakeRadio(pm=1)
+        src = StreamSource(FakeStream(), _BLOCK, radio=radio)
+        self.assertEqual(radio.pm, speak_stream._PM_AWAKE)
+        src.close()
+        self.assertEqual(radio.pm, 1)
+
+    def test_restores_only_once(self) -> None:
+        radio = _FakeRadio(pm=2)
+        src = StreamSource(FakeStream(), _BLOCK, radio=radio)
+        src.close()
+        src.close()
+        self.assertEqual(radio.writes, [speak_stream._PM_AWAKE, 2])
+
+    def test_a_radio_that_cannot_be_configured_does_not_stop_playback(self) -> None:
+        radio = _FakeRadio(broken=True)
+        src = StreamSource(FakeStream(blk(b"a")), _BLOCK, radio=radio)
+        self.assertEqual(src.read_block(_BLOCK), blk(b"a"))
+        src.close()
+        self.assertEqual(radio.writes, [])
+
+    def test_the_host_has_no_radio(self) -> None:
+        # ホストには `network` が無い。触らずに動く。
+        src = StreamSource(FakeStream(), _BLOCK)
+        self.assertIsNone(src._radio)
+
+
 class StreamSourceTest(TimeFrozen):
     def test_stops_the_socket_blocking_the_ui(self) -> None:
         # A socket left at its default waits for the bytes it was asked

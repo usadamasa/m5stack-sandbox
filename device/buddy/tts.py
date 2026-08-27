@@ -11,9 +11,9 @@ The public VOICEVOX-compatible hosts are HTTPS-only, and a TLS handshake
 costs this chip about 40 KB of heap it would rather spend on audio. They
 also answer with a job to poll rather than a stream, and their download
 URLs 404 until synthesis finishes. A local engine is plain HTTP, answers
-immediately, and — the part that matters most here — lets us ask for
-16 kHz instead of the default 24 kHz, which is a third off both the
-transfer and the memory.
+immediately, and — the part that matters most here — takes
+`outputSamplingRate`, so the rate is the host's choice rather than the
+engine's (`buddy_verbs.DEFAULT_RATE` says which and why).
 
 ### Who brings the radio up
 
@@ -100,8 +100,9 @@ _UNRESERVED = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_
 _HEAD_BYTES = 512
 
 # Longest utterance we will start. Matches `buddy.speak._MAX_BYTES`:
-# 30 s at 16 kHz 16-bit, far more than a notification and far less than
-# enough to hold the speaker and the link for a noticeable time. Kept as
+# 30 s at 16 kHz 16-bit (20 s at 24 kHz), far more than a notification
+# and far less than enough to hold the speaker and the link for a
+# noticeable time. Kept as
 # its own constant rather than imported so neither module has to load
 # the other on a device counting every kilobyte.
 _MAX_BYTES = 960000
@@ -324,7 +325,7 @@ def _read_exactly(stream, n):
     return buf
 
 
-def fetch_speech(url, text, speaker=3, rate=16000, requests_mod=None):
+def fetch_speech(url, text, speaker=3, rate=24000, requests_mod=None):
     # type: (str, str, int, int, HttpClient | None) -> SpeechSource
     """Ask VOICEVOX for `text` and return a stream of its samples.
 

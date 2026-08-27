@@ -68,6 +68,10 @@ uv run python host/tools/src/buddy_deploy.py --compile-only            # 実機�
   断った層を名指しする
 - **デプロイ後、デバイスはアプリを走らせたままになる。** 次のデプロイは Ctrl-C で
   そのアプリを畳んでから始まる。転送せず REPL に残したいときだけ `--no-speak`
+- **デプロイ後の起動は reboot ではなく re-import。** Ctrl-C で畳んだアプリの `buddy.*` は
+  `sys.modules` に残っているので、転送した `.mpy` ではなく**前のモジュールが動く**
+  (確認の発話も古いコードで喋る)。実機で挙動を測るときは、デプロイの後に
+  `--dbg exec --dbg-src 'import machine;machine.reset()'` で本当に再起動してから測る
 
 ## REPL は mpremote に任せる
 

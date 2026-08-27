@@ -98,9 +98,13 @@ class UiModule(Protocol):
 class Speaker(Protocol):
     """`M5.Speaker` のうち player が触るぶん。"""
 
+    # I2S と codec を起こす。最初の playRaw が代わりに呼ぶが、そのときポップが鳴る。
+    def begin(self) -> bool: ...
     def getVolume(self) -> int: ...
     def setVolume(self, volume: int, /) -> None: ...
     def stop(self) -> None: ...
+    # そのチャンネルの枠の埋まり具合。0 空 / 1 再生中で次が空き / 2 満杯 (実測)。
+    def isPlaying(self, channel: int, /) -> int: ...
     # 引数が位置専用なのは `Lcd` と同じ理由 — C の binding で、呼ぶ側も
     # 位置でしか渡さない。
     def playRaw(
@@ -113,6 +117,17 @@ class Speaker(Protocol):
         stop_current: bool,
         /,
     ) -> bool: ...
+
+# ------------------------------------------------------------ 無線
+
+class Radio(Protocol):
+    """`network.WLAN` のうち、再生の間だけ省電力を切るのに触るぶん。
+
+    `config("pm")` で読み、`config(pm=...)` で書く。MicroPython の流儀で、
+    読みは位置引数 1 つ、書きはキーワード。
+    """
+
+    def config(self, *args: str, **kwargs: object) -> object: ...
 
 # ------------------------------------------------------ バイト列の口
 
