@@ -41,6 +41,10 @@ REPL が要る (走っているアプリはハンドシェイクの Ctrl-C で�
   前に実物を見る。これが無いとストリーミングができず、`content` で全体を heap に載せる
   しかなくなる
 - **socket の既定はブロッキング。** アプリの 40ms tick に載せるには `settimeout` が要る
+- **non-blocking な socket を素で呼ぶと、毎 tick 例外を確保する。** 相手が居ない
+  `accept()` / `recv()` は `OSError(EAGAIN)` を投げる。40ms tick に載せると 1 秒あたり
+  25 個の例外オブジェクトが積まれ、発話中の heap では詰まりの種になる。`select.poll` に
+  登録して、読めるときだけ呼ぶ (`buddy/serial.py` / `buddy/netlink.py`)
 - **`errno` は CPython より小さい。** `EWOULDBLOCK` が無く、モジュール読み込みの時点で
   `AttributeError` になってアプリが起動しない (`--compile-only` では捕まらない)。
   `EAGAIN` / `EINPROGRESS` / `ECONNRESET` / `ETIMEDOUT` はある。名前で引くなら
