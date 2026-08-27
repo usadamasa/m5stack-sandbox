@@ -55,8 +55,6 @@ against the AST. The LCD is injectable so the wrapping and layout logic
 board attached.
 """
 
-import json
-
 from buddy import chat_font, chat_log, chat_wrap
 
 # 型検査だけの import。デバイスの上では `False` なので走らない。事情と
@@ -183,26 +181,6 @@ class ChatPanel:
             self._font.pop()
 
     # ----- command dispatch
-
-    def handle_raw(self, raw):
-        # type: (bytes | bytearray | str) -> dict[str, object] | None
-        """Parse one wire line and dispatch it. None if it is not ours.
-
-        Deliberately quiet about malformed input: `buddy_protocol` is
-        the layer that owns "bad line" reporting, and anything we reject
-        here still falls through to it.
-        """
-        try:
-            msg = json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
-        except (ValueError, UnicodeError):
-            return None
-        if not isinstance(msg, dict):
-            return None
-        # json.loads() is untyped, so isinstance() only narrows `msg` to
-        # dict[Unknown, Unknown] rather than the dict[str, object] handle()
-        # declares. Runtime-safe regardless: the isinstance check above
-        # already guarantees this is a dict.
-        return self.handle(msg)  # pyright: ignore[reportUnknownArgumentType]
 
     def handle(self, msg):
         # type: (dict[str, object]) -> dict[str, object] | None

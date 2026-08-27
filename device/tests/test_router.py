@@ -24,7 +24,7 @@ class RouterLineTest(unittest.TestCase):
         chat, ble, proto = FakeChat(), FakeBle(), FakeProto()
         router = make_router(chat=chat, ble=ble, proto=proto)
         router.on_line(b'{"cmd":"chat.say","text":"hi"}')
-        self.assertEqual(chat.names(), ["handle_raw"])
+        self.assertEqual(chat.names(), ["handle"])
         self.assertEqual(ble.acks(), [{"ack": "chat.say", "ok": True}])
         # 描くのは main loop。ここで立つのは印だけ。
         self.assertTrue(router.chat_dirty)
@@ -42,7 +42,7 @@ class RouterLineTest(unittest.TestCase):
         speech, ble, chat = FakeSpeech(), FakeBle(), FakeChat()
         router = make_router(speech=speech, ble=ble, chat=chat)
         router.on_line(b'{"cmd":"speak.say","text":"hi"}')
-        self.assertEqual(speech.names(), ["handle_raw"])
+        self.assertEqual(speech.names(), ["handle"])
         self.assertEqual(ble.acks(), [{"ack": "speak.say", "ok": True}])
         # speech は LCD を触らないので、chat の描き直しは要らない。
         self.assertFalse(router.chat_dirty)
@@ -87,6 +87,37 @@ class RouterLineTest(unittest.TestCase):
         self.assertEqual(ble.lines, [b'{"ack":"chat.say","ok":true}'])
 
 
+class RouterDecodeTest(unittest.TestCase):
+    """1 行を JSON にするのはここだけ。verb 層が受けるのは解けた後の dict。"""
+
+    def test_one_line_is_decoded_once_for_every_verb_layer(self) -> None:
+        # 前置きを 2 つ持つ行。chat が握らなければ speech へ回るが、
+        # そのとき渡るのは chat が見たのと同じ dict でなければならない。
+        chat, speech = FakeChat(), FakeSpeech()
+        chat.ack = None
+        router = make_router(chat=chat, speech=speech, ble=FakeBle())
+        router.on_line(b'{"cmd":"speak.say","text":"chat.say"}')
+        self.assertEqual(chat.names(), ["handle"])
+        self.assertEqual(speech.names(), ["handle"])
+        self.assertIs(chat.calls[0][1][0], speech.calls[0][1][0])
+
+    def test_a_line_that_is_not_json_falls_through(self) -> None:
+        # 壊れた行の報告は buddy_protocol の持ち場。ここは黙って流す。
+        chat, proto = FakeChat(), FakeProto()
+        router = make_router(chat=chat, proto=proto)
+        router.on_line(b'not json, but it says "chat. anyway')
+        self.assertEqual(chat.names(), [])
+        self.assertEqual(proto.names(), ["on_line"])
+
+    def test_json_that_is_not_an_object_falls_through(self) -> None:
+        chat, proto = FakeChat(), FakeProto()
+        router = make_router(chat=chat, proto=proto)
+        router.on_line(b'["chat.say"]')
+        router.on_line(b'"chat.say"')
+        self.assertEqual(chat.names(), [])
+        self.assertEqual(proto.names(), ["on_line", "on_line"])
+
+
 class RouterDebugTest(unittest.TestCase):
     """`dbg.*` は届いてから `buddy.debug` を読み、`dbg.off` で落とす。"""
 
@@ -105,26 +136,26 @@ class RouterDebugTest(unittest.TestCase):
     def test_the_first_frame_says_it_pulled_the_module_in(self) -> None:
         # ホストにはこれを自力で知る手立てが無い。起ち上がったばかりの CLI
         # には、前のプロセスが読み込ませたかどうかが分からない。
-        ack = self.router.on_dbg(b'{"cmd":"dbg.state"}')
+        ack = self.router.on_dbg({"cmd": "dbg.state"})
         assert ack is not None
         self.assertTrue(ack["entered"])
         self.assertIsNotNone(self.router.dbg)
 
     def test_a_later_frame_does_not(self) -> None:
-        _ = self.router.on_dbg(b'{"cmd":"dbg.state"}')
-        ack = self.router.on_dbg(b'{"cmd":"dbg.state"}')
+        _ = self.router.on_dbg({"cmd": "dbg.state"})
+        ack = self.router.on_dbg({"cmd": "dbg.state"})
         assert ack is not None
         self.assertNotIn("entered", ack)
 
     def test_dbg_state_sees_the_app_s_live_objects(self) -> None:
         # bind() のキーはホストの `dbg.eval` が名前で呼ぶもの。
-        ack = self.router.on_dbg(b'{"cmd":"dbg.state"}')
+        ack = self.router.on_dbg({"cmd": "dbg.state"})
         assert ack is not None
         self.assertEqual(ack["ble.advertised_name"], "Claude_serial")
 
     def test_dbg_off_drops_both_references(self) -> None:
-        _ = self.router.on_dbg(b'{"cmd":"dbg.state"}')
-        ack = self.router.on_dbg(b'{"cmd":"dbg.off"}')
+        _ = self.router.on_dbg({"cmd": "dbg.state"})
+        ack = self.router.on_dbg({"cmd": "dbg.off"})
         assert ack is not None
         self.assertTrue(ack["unload"])
         self.assertIsNone(self.router.dbg)
@@ -138,7 +169,7 @@ class RouterDebugTest(unittest.TestCase):
         self.assertGreaterEqual(self.gc.collects, 1)
 
     def test_an_off_that_had_to_import_first_did_not_enter_anything(self) -> None:
-        ack = self.router.on_dbg(b'{"cmd":"dbg.off"}')
+        ack = self.router.on_dbg({"cmd": "dbg.off"})
         assert ack is not None
         self.assertNotIn("entered", ack)
 
@@ -147,12 +178,16 @@ class RouterDebugTest(unittest.TestCase):
         # main loop ごと落ちる。
         delattr(self.package, "debug")
         with mock.patch.dict(sys.modules, {"buddy.debug": None}):
-            ack = self.router.on_dbg(b'{"cmd":"dbg.state"}')
+            ack = self.router.on_dbg({"cmd": "dbg.state"})
         assert ack is not None
         self.assertFalse(ack["ok"])
         self.assertIn("buddy.debug", str(ack["err"]))
 
     def test_a_dbg_line_arrives_through_on_line(self) -> None:
+        # 1 行から ack まで、本物の `buddy.debug` を通す唯一の経路。
+        # `handle` の名前と引数が router の期待とずれたら、ここが落ちる —
+        # あのモジュールは dbg.* が届くまで import されないので、ずれを
+        # 実機の前に捕まえる仕掛けは他に無い。
         ble = FakeBle()
         router = make_router(ble=ble)
         router.on_line(b'{"cmd":"dbg.state"}')

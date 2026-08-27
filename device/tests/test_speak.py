@@ -260,12 +260,9 @@ class SpeechPlayerTest(TimeFrozen):
 
     def test_other_commands_fall_through(self) -> None:
         self.assertIsNone(self.player.handle({"cmd": "status"}))
-        self.assertIsNone(self.player.handle_raw(b"not json"))
 
-    def test_handles_a_raw_wire_line(self) -> None:
-        ack = self.player.handle_raw(
-            json.dumps({"cmd": "speak.say", "text": "あ", "url": "http://h:50021"}).encode("utf-8")
-        )
+    def test_only_text_and_url_is_enough(self) -> None:
+        ack = self.player.handle({"cmd": "speak.say", "text": "あ", "url": "http://h:50021"})
         assert ack is not None
         self.assertTrue(ack["ok"])
         # Defaults matter: the host may send only text and url.
