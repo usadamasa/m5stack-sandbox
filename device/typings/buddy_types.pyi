@@ -176,13 +176,19 @@ class HttpResponse(Protocol):
     def close(self) -> None: ...
 
 class HttpClient(Protocol):
-    """ファームウェアの `requests` モジュールの面。"""
+    """ファームウェアの `requests` モジュールの面。
+
+    `timeout` は micropython-lib の `requests` にはあるが、ファームウェアが
+    どの版を焼いているかはこちらの持ち物ではない。取らない相手に当たると
+    `TypeError` になり、`buddy.tts._call_post` が timeout 無しへ落ちる。
+    """
 
     def post(
         self,
         url: str,
         data: bytes | None = ...,
         headers: dict[str, str] | None = ...,
+        timeout: float | None = ...,
     ) -> HttpResponse: ...
 
 class SpeechSource(TypedDict):

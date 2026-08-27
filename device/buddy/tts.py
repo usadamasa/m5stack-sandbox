@@ -87,6 +87,23 @@ _MAX_BYTES = 960000
 # utterance. Availability beyond this is explicitly out of scope.
 _TRIES = 3
 
+# 1 回の POST が待ってよい上限 (秒)。
+#
+# これが無いと、詰まった WiFi がアプリの main loop をそのまま人質に取る。
+# 実測 (issue #92): ack が一切返らなくなり、Ctrl-C も raw REPL も効かず、
+# BtnRST でしか戻らなくなった。止まる場所は C のブロッキング呼び出しの中で、
+# そこでは MicroPython が割り込みを見に来ない — socket 側で切るしかない。
+#
+# 8 秒は、engine が実際に使う時間 (短い台詞で合成まで込み 1.8 秒) の倍以上。
+# `_TRIES` と掛けて最悪 24 秒だが、そこまで行くのは engine が死んでいるときで、
+# その 24 秒は「黙る」だけで済む。
+HTTP_TIMEOUT = 8.0
+
+# ファームウェアの `requests.post` が `timeout` を取らなかったら False へ倒れ、
+# 以後は渡さない。signature はこちらの持ち物ではないので、取らない相手に
+# 当たったときに黙って喋れなくなるより、ブロックしうる方を選ぶ。
+_post_takes_timeout = True
+
 
 class FetchError(RuntimeError):
     """The engine could not be reached, or gave us something unusable."""
@@ -137,6 +154,19 @@ def _default_requests():
     return requests
 
 
+def _call_post(req, url, data, headers):
+    # type: (HttpClient, str, bytes | None, dict[str, str] | None) -> HttpResponse
+    """1 回ぶんの POST。`timeout` を取らないファームウェアなら無しで呼び直す。"""
+    global _post_takes_timeout
+    if _post_takes_timeout:
+        try:
+            return req.post(url, data=data, headers=headers, timeout=HTTP_TIMEOUT)
+        except TypeError:
+            _post_takes_timeout = False
+            print("buddy.tts: this requests has no timeout=; POSTs can block")
+    return req.post(url, data=data, headers=headers)
+
+
 def _post(req, url, data, headers):
     # type: (HttpClient, str, bytes | None, dict[str, str] | None) -> HttpResponse
     """POST with retries. Raises FetchError once the attempts run out.
@@ -149,7 +179,7 @@ def _post(req, url, data, headers):
     last = None
     for _ in range(_TRIES):
         try:
-            res = req.post(url, data=data, headers=headers)
+            res = _call_post(req, url, data, headers)
         except Exception as e:  # OSError, and whatever the TLS-less stack raises
             last = e
             continue
