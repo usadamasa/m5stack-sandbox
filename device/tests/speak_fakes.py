@@ -6,8 +6,8 @@
 テストを割ったが、時計とバイト列の口はどちらも同じものを要る。片方だけに
 置くともう片方が import しに行くことになるので、ここに置く。
 
-`TimeFrozen` が差し替えるのは `buddy.speak_stream.time` — stall の期限を
-持っているのはあちらで、`buddy.speak` はもう時計を見ない。
+`TimeFrozen` は `buddy.speak_stream.time` (stall の期限) と `buddy.speak.time`
+(途切れの診断) の両方を差し替える。
 
 ブロックの大きさを `buddy.speak._BLOCK` から直接引くので、basedpyright の
 private-member の検査はこのファイルごと切ってある
@@ -17,7 +17,7 @@ private-member の検査はこのファイルごと切ってある
 import unittest
 from typing import TYPE_CHECKING
 
-from buddy import speak_stream
+from buddy import speak, speak_stream
 from buddy.speak import _BLOCK
 
 if TYPE_CHECKING:
@@ -170,10 +170,16 @@ class RecordingTransport:
 
 
 class TimeFrozen(unittest.TestCase):
-    """Base: every test here drives buddy.speak_stream's clock by hand."""
+    """Base: every test here drives the device modules' clock by hand.
+
+    `buddy.speak_stream` (stall の期限) と `buddy.speak` (途切れの診断) の
+    両方を差し替える。片方だけだと、もう片方が CPython の `time` を叩いて
+    `ticks_ms` が無いと落ちる。
+    """
 
     def setUp(self) -> None:
-        self._real_time = speak_stream.time
-        speak_stream.time = FakeTime()
-        self.addCleanup(setattr, speak_stream, "time", self._real_time)
+        for mod in (speak_stream, speak):
+            real = mod.time
+            mod.time = FakeTime()
+            self.addCleanup(setattr, mod, "time", real)
         FakeTime.now = 0

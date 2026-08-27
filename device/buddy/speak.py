@@ -52,13 +52,12 @@ socket が bytes をくれる形とブロックの差 (途中までしか来な�
 止まる) は `buddy/speak_stream.py` が吸収する。ここは丸ごとのブロックか
 「まだ」しか見ない。
 
-### MicroPython
-
-No `typing`, no `__future__`, no slice deletion, no exception chaining.
-Speaker, transport and fetch are injectable — `device/tests/test_speak.py`.
+MicroPython: no `typing`, no `__future__`, no slice deletion, no exception
+chaining. Speaker, transport and fetch are injectable — `device/tests/`.
 """
 
 import json
+import time
 
 from buddy import speak_stream
 
@@ -84,12 +83,10 @@ _BYTES_PER_SAMPLE = 2
 
 # 渡し先のチャンネル。-1 は使わない (module docstring の Timing)。
 _CHANNEL = 0
-# `isPlaying(ch)` がこの値なら枠が無い。
-_QUEUE_FULL = 2
-# 渡し済みで持ち続けるブロックの数: 鳴っている 1 つ + 次の 1 つ + 余裕。
-_KEEP = 3
+_QUEUE_FULL = 2  # `isPlaying(ch)` がこの値なら枠が無い
+_KEEP = 3  # 渡し済みで持ち続けるブロック: 鳴っている 1 つ + 次の 1 つ + 余裕
 
-# M5.Speaker.playRaw(data, rate, stereo, repeat, channel, stop_current).
+# playRaw(data, rate, stereo, repeat, channel, stop_current)
 _MONO = False
 _ONCE = 1
 
@@ -98,9 +95,7 @@ _ONCE = 1
 # it survives the firmware moving its default (measured: 64 of 255, so
 # this lands on the cap below — as loud as it goes).
 _VOLUME_GAIN = 4
-
-# setVolume takes a byte.
-_MAX_VOLUME = 255
+_MAX_VOLUME = 255  # setVolume takes a byte
 
 
 def _block_for(rate: int) -> int:
@@ -223,6 +218,7 @@ class SpeechPlayer:
         self._stalls = 0  # type: int
         # 直前の tick も speaker が空だった (続く空きを 1 回に数える)。
         self._starved = False
+        self._last_hand = time.ticks_ms()
         # 読み切った (True) / 切れた (False) / 読んでいる最中 (None)。
         self._done = None  # type: bool | None
 
@@ -343,6 +339,9 @@ class SpeechPlayer:
         starving = depth == 0 and self._blocks_done > 0 and self._done is None and pending
         if starving and not self._starved:
             self._stalls += 1
+            # 番号、渡してからの ms、溜まった bytes。ms 長く bytes 少なければ WiFi 待ち。
+            idle = time.ticks_diff(time.ticks_ms(), self._last_hand)
+            print("buddy.speak: ran dry after block", self._blocks_done, idle, source.buffered)
         self._starved = starving
 
     def _hand_one(self, source):
@@ -367,6 +366,7 @@ class SpeechPlayer:
         self._recent = (self._recent + [block])[-_KEEP:]  # noqa: RUF005
         self._blocks_done += 1
         self._starved = False
+        self._last_hand = time.ticks_ms()
         return True
 
     def _play(self, block: bytes) -> bool:

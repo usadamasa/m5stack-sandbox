@@ -64,6 +64,11 @@ class StreamSource:
             except Exception as e:
                 print("buddy.speak: settimeout failed:", e)
 
+    @property
+    def buffered(self) -> int:
+        """socket から読めたがまだブロックにしていない bytes。診断用。"""
+        return len(self._acc)
+
     def read_block(self, size):
         # type: (int) -> bytes | None
         """`size` byte ちょうどのブロック 1 つ。まだ来ていなければ None。
