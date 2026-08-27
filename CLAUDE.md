@@ -210,7 +210,8 @@ overlay が何に何を重ねているかは [README の「overlay とは」](RE
 - **chatter がデバイスを喋らせている。** daemon の worker thread が hook 起点で独り言を
   言う。daemon が上がった時点でリンクも上がるので、何も呼ばなくても喋り出す。デバイスに
   触る tool は全て `_device_lock` を握ること — 握らずに request を出すと ack が入れ違う。
-  台詞は `claude -p` が書く。詳細は `buddy-chatter` skill
+  台詞は `claude -p` が書き、材料には hook のイベントに加えて、今このマシンで動いている
+  セッションの transcript から読んだ題と直前の指示が入る。詳細は `buddy-chatter` skill
 - **chatter は daemon に 1 つ。** どのセッションの hook で撃たれても同じ chatter が
   反応する。複数セッションが同時に繋がっているときも、喋る口は 1 つ
 

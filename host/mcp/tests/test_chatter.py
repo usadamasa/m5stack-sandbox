@@ -22,6 +22,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+from unittest import mock
 
 import buddy_chatter
 import chatter_core
@@ -258,6 +259,53 @@ class StatusTests(unittest.TestCase):
         status = service.status()
         self.assertEqual(status["backend"], "claude-cli")
         self.assertEqual(status["model"], "sonnet")
+
+
+class SessionRegistryTests(unittest.TestCase):
+    """どのセッションが動いているかを覚えるのは、喋る側の仕事。
+
+    イベントを見ているのはここだけで、台詞を書く側はバッチを作る瞬間に
+    その台帳を覗くだけ。
+    """
+
+    SESSION = "747883a7-180d-453a-9f99-b06b38767561"
+
+    def _service(self, **overrides: Any) -> ChatterService:  # noqa: ANN401 — ChatterConfig のそれ
+        with TemporaryDirectory() as tmp:
+            cfg = ChatterConfig(projects_path=Path(tmp), **overrides)
+        return ChatterService(cfg, lambda: None, threading.Lock())
+
+    def test_an_event_records_the_session_it_came_from(self) -> None:
+        service, clock, _ = build(StubLink(), sessions=True, projects_path=Path("/nonexistent"))
+        clock.advance(31.0)
+        service.step(Event("tool", "Read", self.SESSION))
+        self.assertEqual(service.status()["sessions"], 1)
+
+    def test_an_event_without_a_session_records_nothing(self) -> None:
+        # 古い hook からのイベントも、chatter が自分で作る idle も、
+        # 送り主を名乗らない。
+        service, clock, _ = build(StubLink(), sessions=True, projects_path=Path("/nonexistent"))
+        clock.advance(31.0)
+        service.step(Event("tool", "Read"))
+        self.assertEqual(service.status()["sessions"], 0)
+
+    def test_turning_it_off_leaves_no_registry(self) -> None:
+        service, clock, _ = build(StubLink(), sessions=False)
+        clock.advance(31.0)
+        service.step(Event("tool", "Read", self.SESSION))
+        self.assertIsNone(service.status()["sessions"])
+
+    def test_the_generator_is_handed_the_same_registry(self) -> None:
+        # 台帳が 2 つあると、片方は更新されるのに、もう片方が読まれる。
+        with mock.patch.object(buddy_chatter, "ClaudeCliLineSource") as source:
+            service = self._service()
+        self.assertIsNotNone(source.call_args.kwargs["sessions"])
+        self.assertIs(source.call_args.kwargs["sessions"], service.sessions)
+
+    def test_nothing_is_handed_over_when_it_is_off(self) -> None:
+        with mock.patch.object(buddy_chatter, "ClaudeCliLineSource") as source:
+            self._service(sessions=False)
+        self.assertIsNone(source.call_args.kwargs["sessions"])
 
 
 class VarietyTests(unittest.TestCase):

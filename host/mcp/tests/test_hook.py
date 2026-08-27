@@ -28,6 +28,7 @@ HOOK_PATH = Path(__file__).resolve().parents[3] / "scripts" / "buddy_chatter_not
 
 def _load_hook() -> tuple[
     Callable[[Mapping[str, Any]], tuple[str, str] | None],
+    Callable[[Mapping[str, Any]], dict[str, str] | None],
     Callable[[dict[str, str]], str],
 ]:
     """Import the hook by path and pull out the functions tested.
@@ -43,11 +44,14 @@ def _load_hook() -> tuple[
     spec.loader.exec_module(module)
     return (
         cast("Callable[[Mapping[str, Any]], tuple[str, str] | None]", module.classify),
+        cast("Callable[[Mapping[str, Any]], dict[str, str] | None]", module.message),
         cast("Callable[[dict[str, str]], str]", module.socket_path),
     )
 
 
-classify, hook_socket_path = _load_hook()
+classify, message, hook_socket_path = _load_hook()
+
+SESSION = "747883a7-180d-453a-9f99-b06b38767561"
 
 
 def _registered_hooks() -> list[dict[str, Any]]:
@@ -139,14 +143,17 @@ class ClassifyTests(unittest.TestCase):
 
 
 class WireFormatTests(unittest.TestCase):
-    """What the hook sends must be what the server can read."""
+    """What the hook sends must be what the server can read.
+
+    The datagram is built by the hook's own `message`, not re-assembled
+    here: a copy of the format in the test would keep passing after the
+    hook stopped sending a field.
+    """
 
     def _round_trip(self, payload: Mapping[str, Any]) -> Event | None:
-        classified = classify(payload)
-        assert classified is not None
-        kind, detail = classified
-        message: dict[str, str] = {"kind": kind, "detail": detail}
-        return parse_event(json.dumps(message, ensure_ascii=False).encode())
+        built = message(payload)
+        assert built is not None
+        return parse_event(json.dumps(built, ensure_ascii=False).encode())
 
     def test_a_stop_event_survives_the_trip(self) -> None:
         event = self._round_trip({"hook_event_name": "Stop"})
@@ -158,6 +165,34 @@ class WireFormatTests(unittest.TestCase):
         assert event is not None
         self.assertEqual(event.kind, "prompt")
         self.assertEqual(event.detail, "デプロイして")
+
+    def test_the_session_the_hook_fired_in_survives(self) -> None:
+        # これが届かないと、daemon は複数のセッションからのイベントを
+        # 1 本の混ざった列としてしか見られない。
+        event = self._round_trip(
+            {"hook_event_name": "Stop", "session_id": SESSION, "transcript_path": "/x/y.jsonl"}
+        )
+        assert event is not None
+        self.assertEqual(event.session, SESSION)
+
+    def test_the_transcript_path_is_not_on_the_wire(self) -> None:
+        # hook の payload にはあるが、送らない。socket はこのマシンの誰にでも
+        # 開いているので、daemon が開くパスを送り主に決めさせない。daemon は
+        # session_id から自分で引く。
+        built = message(
+            {"hook_event_name": "Stop", "session_id": SESSION, "transcript_path": "/x/y.jsonl"}
+        )
+        assert built is not None
+        self.assertNotIn("/x/y.jsonl", json.dumps(built))
+        self.assertEqual(set(built), {"kind", "detail", "session"})
+
+    def test_a_payload_without_a_session_still_sends(self) -> None:
+        built = message({"hook_event_name": "Stop"})
+        assert built is not None
+        self.assertEqual(built["session"], "")
+
+    def test_an_event_nobody_speaks_to_sends_nothing(self) -> None:
+        self.assertIsNone(message({"hook_event_name": "PreCompact", "session_id": SESSION}))
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ import chatter_core
 import chatter_lines
 from chatter_core import DEFAULT_PROMPT_PATH, ChatterConfig, Event, describe
 from chatter_lines import ClaudeCliLineSource
+from chatter_sessions import SessionRegistry
 
 
 class FakeClaude:
@@ -140,6 +141,58 @@ class LineSourceTests(unittest.TestCase):
         self.assertEqual(describe([]), "まだ何も起きていない。")
         rendered = describe([Event("tool", "Bash"), Event("idle")])
         self.assertEqual(rendered, "- tool: Bash\n- idle")
+
+
+class SessionContextTests(unittest.TestCase):
+    """よそのセッションで何が起きているかが、プロンプトへ載ること。
+
+    hook が線に載せられるのは `kind` と 100 文字の `detail` だけで、それは
+    どのセッションのものかを言わない。この節が無いと、3 つのセッションが
+    別々の仕事をしていても、生成器にはツール名の羅列が 1 本見えるだけになる。
+    """
+
+    SESSION = "747883a7-180d-453a-9f99-b06b38767561"
+
+    def _registry(self, root: Path) -> SessionRegistry:
+        directory = root / "-Users-u-src-twigpui"
+        directory.mkdir(parents=True)
+        (directory / f"{self.SESSION}.jsonl").write_text(
+            json.dumps({"type": "ai-title", "aiTitle": "APIクォータ超過の特定と修正"}) + "\n",
+            encoding="utf-8",
+        )
+        registry = SessionRegistry(root)
+        registry.note_activity(self.SESSION)
+        return registry
+
+    def _prompt(self, sessions: SessionRegistry | None) -> str:
+        fake = FakeClaude({"lines": ["うむ なのだ"]})
+        source = ClaudeCliLineSource(ChatterConfig(), sessions=sessions)
+        with mock.patch.object(chatter_lines.subprocess, "run", fake):
+            source.next_line([Event("tool", "Bash", self.SESSION)])
+        return fake.stdin
+
+    def test_what_another_session_is_doing_reaches_the_prompt(self) -> None:
+        with TemporaryDirectory() as tmp:
+            prompt = self._prompt(self._registry(Path(tmp)))
+        self.assertIn("APIクォータ超過の特定と修正", prompt)
+
+    def test_the_section_is_kept_apart_from_the_event_log(self) -> None:
+        # 出来事・過去の台詞と同じ理由で節を分ける。読まれ方が違う: 出来事は
+        # 何が起きたか、これは誰が何をしているか。
+        with TemporaryDirectory() as tmp:
+            prompt = self._prompt(self._registry(Path(tmp)))
+        self.assertLess(prompt.index("直近の出来事"), prompt.index("APIクォータ"))
+        self.assertNotIn("- tool: Bash\n- ", prompt.split("APIクォータ")[1])
+
+    def test_nothing_running_leaves_the_section_out(self) -> None:
+        # 「動いているセッションはありません」と書くと、それ自体が話題に
+        # なってしまう。
+        with TemporaryDirectory() as tmp:
+            prompt = self._prompt(SessionRegistry(Path(tmp)))
+        self.assertNotIn("セッション", prompt)
+
+    def test_without_a_registry_the_prompt_is_unchanged(self) -> None:
+        self.assertNotIn("セッション", self._prompt(None))
 
 
 class ClaudeCliLineSourceTests(unittest.TestCase):

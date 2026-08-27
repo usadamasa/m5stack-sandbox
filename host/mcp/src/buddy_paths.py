@@ -89,6 +89,22 @@ def socket_path(env: Mapping[str, str] | None = None) -> Path:
     return state_dir(env) / SOCKET_NAME
 
 
+def projects_dir(env: Mapping[str, str] | None = None) -> Path:
+    """Claude Code がセッションの transcript を置くところ。
+
+    ここにあるものは buddy のものではない。chatter が読みに行くのは、hook が
+    名乗ったセッションが何をしているかを知る手立てが他に無いから — 線に
+    載るのは `kind` と 100 文字の `detail` だけで、それはどのセッションの
+    ものかを言わない。
+
+    `CLAUDE_CONFIG_DIR` に従うのは、それを決めているのが Claude Code の側
+    だから。相対値を捨てる理由は XDG のときと同じで、`_home` がそれを持って
+    いる。
+    """
+    env = os.environ if env is None else env
+    return _home(env, "CLAUDE_CONFIG_DIR", ".claude") / "projects"
+
+
 def pid_path(env: Mapping[str, str] | None = None) -> Path:
     return state_dir(env) / PID_NAME
 
