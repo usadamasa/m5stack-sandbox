@@ -126,17 +126,14 @@ known-first-party = [
 # UNKNOWN も落とす。trivy の分類表に無いライセンスが素通りするのを避けるため。
 # 通しているものは下の `--ignored-licenses` に SPDX ID で並ぶ。中身はいずれも
 # permissive だと確認したもので、増えるのは新しい名前が来たときだけ。
-# "CUSTOM License: MIT License ..." は rich-click の METADATA が License 欄に
-# MIT 全文を入れているせいで trivy が分類できないもの。trivy がその全文を
-# 31 文字に切った文字列がそのまま名前になっている。
 #
 # MIT-CMU は Pillow。SPDX には載っているが trivy の分類表に無いだけで、中身は
 # HPND 系の permissive — 著作権表示の保持しか求めず、copyleft の条項は無い。
 #
-# esptool は GPL-2.0+ で restricted。ファームウェアを焼くときに別プロセスで叩く
-# だけの CLI で、import もしなければ再配布もしないため、Apache-2.0 のこのツリーに
-# 伝播しない。除外の理由が変わったら (ライブラリとして import する等) ここを
-# 外して判断し直すこと。esptool の依存は除外していない。
+# `--skip-dirs` は書かない。ツリーに入れたパッケージは全部見る。GPL-2.0+ の
+# esptool はそのために依存から外してあり (host/tools/pyproject.toml)、
+# `uvx esptool@5.3.1` で uv の tool 環境から呼ぶ。同じ扱いが要るものが増えた
+# ときも、ここで避けるのではなく依存から外す側で解く。
 #
 # `rootfs` なのは `fs` が site-packages を読まないため。読ませるには
 # インストール済みの `.venv` が要る。`--table-mode detailed` は成功時に
@@ -155,8 +152,7 @@ aqua exec -- trivy rootfs .venv
   --exit-code 1
   --table-mode detailed
   --quiet
-  --skip-dirs "**/esptool*"
-  --ignored-licenses "BlueOak-1.0.0,PSF-2.0,MIT-0,MPL-2.0,MIT-CMU,CUSTOM License: MIT License ..."
+  --ignored-licenses "BlueOak-1.0.0,PSF-2.0,MIT-0,MPL-2.0,MIT-CMU"
 """
 
 [tool.poe.tasks.license-list]

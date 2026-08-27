@@ -36,10 +36,15 @@ build-backend = "hatchling.build"
 sources = ["src"]
 only-include = ["src"]
 
-[dependency-groups]
-# Only needed to reflash firmware, which is a provisioning task rather than a
-# development one. Install with `uv sync --package buddy-host-tools --group flash`.
-flash = ["esptool==5.3.1"]
+# esptool はここに置かない。ファームウェアを焼き直すときだけ要る CLI で、
+# GPL-2.0+ なのでロックに入れると `poe license` が拾う。このリポジトリは
+# import も再配布もしないので、uv の tool 環境から別プロセスで呼ぶ:
+#
+#     uvx esptool@5.3.1 --port /dev/cu.usbmodem101 write-flash 0x0 firmware.bin
+#
+# 以前は dependency group `flash` に置いて opt-in で入れていたが、license の
+# CI がそれを入れて `--skip-dirs` で避ける形になり、GPL の CLI 1 つのために
+# rich-click の分類不能なライセンス名まで ignore に並んでいた。
 
 # ---------------------------------------------------------------- ruff
 
