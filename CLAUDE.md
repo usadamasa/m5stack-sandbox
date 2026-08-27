@@ -133,7 +133,7 @@ XDG に従う。`$XDG_CONFIG_HOME/buddy/config.toml` (既定 `~/.config/buddy/`)
 **環境変数 > config.toml > 既定値**。
 
 ```toml
-port = "/dev/cu.usbmodem101"   # BUDDY_PORT
+port = "/dev/cu.usbmodem101"   # BUDDY_PORT。WiFi なら "tcp://192.168.0.227" (:8788 は省略可)
 connect_on_start = true        # BUDDY_CONNECT_ON_START。daemon では既定で on
 
 [chatter]
@@ -183,6 +183,12 @@ overlay が何に何を重ねているかは [README の「overlay とは」](RE
 
 ## デバイスを触るときの前提
 
+- **USB の代わりに WiFi でも繋がる。** アプリは TCP の 8788 番も listen していて
+  (`buddy/netlink.py`、USB と `buddy/mux.py` で束ねる)、`port = "tcp://<ip>"` で
+  daemon も CLI もそちらを使う。framing も verb も同じ。ただし REPL が要るもの
+  (`buddy_start_app` / `buddy_interrupt` / `--start` / `--interrupt` / deploy /
+  provisioning) は USB でしかできず、`tcp://` では理由を言って断る。認証は無いので
+  LAN の中の誰でも `dbg.exec` を撃てる (README の「USB を挿さずに使う」)
 - **ポートは 1 プロセスしか掴めない。** 掴んでいるのは常駐 daemon で、起動直後に
   ポートを開く (chatter を最初から動かすため)。`buddy_deploy.py` や `esptool` を使う前に
   MCP の `buddy_disconnect` を呼ぶか `buddy-mcpd stop`。一度手放したポートを

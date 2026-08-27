@@ -61,7 +61,7 @@ member とファイルの一覧は [CLAUDE.md](CLAUDE.md#構成) にある。
 | `README.md` / `libs/` / `res/` / `certificate/` | UIFlow のユーザー FS の雛形 | 触らない |
 | `boot.py` | UIFlow | 触らない (`uiflow/boot_option` が 2 なので `main.py` へ素通しする) |
 | `buddy_protocol.mpy` / `buddy_ui_cp.mpy` / `buddy_state.mpy` / `buddy_chars.mpy` | upstream | **読んで `.mpy` にして書き戻す。** 中身は変えない |
-| `buddy/` (`app` / `router` / `chat` / `chat_font` / `chat_log` / `chat_wrap` / `debug` / `serial` / `speak` / `speak_out` / `speak_stream` / `tts` / `wav`) | 本リポジトリ | 追加 |
+| `buddy/` (`app` / `router` / `chat` / `chat_font` / `chat_log` / `chat_wrap` / `debug` / `serial` / `netlink` / `mux` / `speak` / `speak_out` / `speak_stream` / `tts` / `wav`) | 本リポジトリ | 追加 |
 | `apps/claude_buddy.mpy` | upstream 派生 | 置き換え (中身は `buddy/app.py` へ移し、ここは `run()` を渡す起動口だけ) |
 | `main.py` | 本リポジトリ | **置き換え。** upstream のランチャーは捨てた |
 | `buddy_ble` / `burst_frames.py` / `apps/snake.py` / `apps/hello_cardputer.py` | upstream | **消す。** NimBLE が確保する ESP-IDF heap が発話のソケットに要る |
@@ -298,6 +298,38 @@ model = "sonnet"
 
 HTTP のポートは `127.0.0.1:8787` に固定してある。`mcp-servers.json` が静的な URL を
 持つので、`http_port` を変えたら登録側も直す。ずれは `buddy-mcpd status` の `url` に出る。
+
+### USB を挿さずに使う (WiFi)
+
+アプリは USB シリアルと並んで、WiFi の上で TCP の 8788 番を listen している
+(`device/buddy/netlink.py`)。framing は USB と同じなので、ホスト側は `port` に
+`tcp://` を書くだけで切り替わる。
+
+```toml
+port = "tcp://192.168.0.227"      # :8788 は省略できる
+```
+
+```bash
+uv run python host/link/src/buddy_bridge.py --port tcp://192.168.0.227 --speak 'ケーブルは要らないのだ'
+```
+
+デバイスの IP は boot 画面 (`IP: ...`) に出る。WiFi の provisioning は
+[デバイスの初期化](#デバイスの初期化) のとおり済んでいること。音声は元から WiFi で
+VOICEVOX から取っているので、USB が運んでいたのは JSON の行だけ — それを socket で
+受ける。2 本は同時に生きていて、USB を挿したままでも WiFi からでも同じアプリが応える
+(`device/buddy/mux.py`)。
+
+**REPL が要るものは USB のまま。** `--start` / `--interrupt`、MCP の `buddy_start_app` /
+`buddy_interrupt`、`buddy_deploy.py`、`provision_wifi.py` は raw REPL か Ctrl-C を
+console へ送るもので、TCP の向こうには console が無い。`tcp://` で頼むと理由を言って
+断る。アプリが落ちて REPL で止まっているときも、TCP は繋がらない (listener はアプリの
+一部)。
+
+**認証は無い。** USB と同じ平文で、LAN の中の誰でも繋げる。`dbg.exec` もこの経路に
+乗るので、繋いだ相手はデバイスの上でコードを流せる。家の LAN で使う前提。
+
+BLE にしなかった理由は issue #29 にある。NimBLE を上げると ESP-IDF heap が 63 KB 減り、
+アプリと発話が同居できない。TCP の listener 1 本は 1 KB で済む。
 
 ### plugin として使う
 
