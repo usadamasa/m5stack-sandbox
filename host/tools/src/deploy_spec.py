@@ -64,6 +64,10 @@ OVERLAY: tuple[str, ...] = (
     # ImportError になる。
     "buddy/speak_stream.py",
     "buddy/tts.py",
+    # `buddy/tts.py` から切り出した、engine が返した WAV を解いて samples の
+    # 頭を見つけるところ。tts が import するので、載せ忘れると実機では
+    # ImportError になる。
+    "buddy/wav.py",
     "apps/claude_buddy.py",
 )
 
