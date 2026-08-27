@@ -1,21 +1,15 @@
-# pyright: reportPrivateUsage=false
 """書体の選択と、VLW の読み込み。
 
 `device/buddy/chat_font.py` は driver へ書体を載せて外し、載っている間の
 文字送りと行高を測る。見えるところは `ChatPanel.info()` に出る書体名・倍率・
 行数なので、テストもそこから見る。fake の尺度と幾何は `chat_fakes.py`。
-
-切り落としのテストが `buddy.chat._MAX_MESSAGES` を直接読むので、
-basedpyright の private-member の検査はこのファイルごと切ってある
-(冒頭の `reportPrivateUsage=false`)。
 """
 
 import tempfile
 import unittest
 from pathlib import Path
 
-from buddy import chat as buddy_chat
-from buddy import chat_font
+from buddy import chat_font, chat_log
 from buddy.chat import ChatPanel
 from chat_fakes import NARROW_ROWS, ROWS, WIDE_H_RAW, FakeLcd, panel_without_vlw
 
@@ -38,12 +32,12 @@ class FontTest(unittest.TestCase):
         self.assertEqual(panel.info()["font"], "DejaVu12")
 
     def test_evicting_the_last_japanese_message_gives_the_rows_back(self) -> None:
-        # _refresh_wide recomputes over the whole transcript rather than
-        # latching, so scrolling the only Japanese message out of the
-        # buffer drops back to the short face.
+        # The transcript recomputes `has_wide` over its whole contents
+        # rather than latching, so scrolling the only Japanese message
+        # out of the buffer drops back to the short face.
         panel = panel_without_vlw(FakeLcd())
         panel.say("claude", "テスト")
-        for i in range(buddy_chat._MAX_MESSAGES):
+        for i in range(chat_log.MAX_MESSAGES):
             panel.say("claude", f"ascii {i}")
         self.assertEqual(panel.info()["font"], "DejaVu12")
 

@@ -46,10 +46,12 @@ OVERLAY: tuple[str, ...] = (
     "buddy/router.py",
     "buddy/serial.py",
     # チャットパネル。パネルの幾何と verb の振り分けが `chat`、書体の選択と
-    # 計測が `chat_font`、行の折り返しが `chat_wrap`。3 つとも `chat` から
-    # import されるので、揃っていないと起動時に ImportError になる。
+    # 計測が `chat_font`、transcript の保持が `chat_log`、行の折り返しが
+    # `chat_wrap`。4 つとも `chat` から import されるので、揃っていないと
+    # 起動時に ImportError になる。
     "buddy/chat.py",
     "buddy/chat_font.py",
+    "buddy/chat_log.py",
     "buddy/chat_wrap.py",
     # Shipped but never imported: the app pulls it in only when a `dbg.*`
     # frame arrives and drops it again on `dbg.off`, so it costs flash

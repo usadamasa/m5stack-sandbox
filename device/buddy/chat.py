@@ -39,79 +39,12 @@ Two consequences for the caller: `BuddyUI.update_footer()` must not run
 while `active` is set (it paints y=96..110, inside us), and clearing the
 transcript has to repaint the chrome we covered.
 
-### Fonts
-
-Measured on the installed UIFlow 2.0 build. Re-measure after a firmware
-change with `uv run python host/tools/src/probe_device.py`:
-
-    font              fontHeight()   "あ"   "A"
-    EFontJA24              27         23    17
-    AlibabaSansJA24        27         23    17
-    DejaVu12               16         --    12
-    DejaVu9                15         --    10
-
-24 px is the *only* size at which this build has Japanese glyphs, and at
-1:1 it costs three quarters of the panel: four rows of nine characters.
-Neither built-in face can do better, so the panel brings its own.
-
-### The VLW face
-
-`M5.Lcd.loadFont()` reads a VLW — the Processing smooth-font format that
-M5GFX supports — off flash, and `host/tools/src/make_vlw.py` generates
-one from a TTF. The installed file is BIZ UDGothic at 16 px, and it is
-what the panel draws Japanese with:
-
-    face                 fontHeight()   "あ"   "A"   panel
-    VLW (16 px)               18         16     8    6 rows x 13 chars
-    EFontJA24 @0.75           20         17    12    5 rows x 12 chars
-    EFontJA24 @1.0            27         23    17    4 rows x  9 chars
-    DejaVu12  @0.75           12         --     9    9 rows x 24 chars
-
-Measured on the device: loading it takes 57 ms, costs 19.5 KB of heap
-while it is loaded, and the file itself is 930 KB of the 1.6 MB that was
-free on flash. The glyph bitmaps stay in the file — M5GFX keeps only the
-per-glyph attribute arrays in memory and reads pixels as it draws — which
-is what makes 3476 glyphs affordable on a board with 99 KB of heap.
-
-Antialiased 16 px is legible in a way that a decimated 24 px bitmap is
-not, which is the whole reason for the detour: `setTextSize` scales the
-built-in faces by dropping pixel rows, and kanji fill in as it does.
-
-### Choosing a face
-
-Still chosen per repaint from the content. Japanese pulls the panel onto
-the VLW; an all-ASCII transcript stays on DejaVu12, which at 0.75 packs
-216 characters against the VLW's 162. A file path wrapped every twelve
-characters is not readable, and that is what pinning a CJK face would do
-to every ASCII message.
-
-`WIDE_SCALE` and `NARROW_SCALE` exist for the built-in faces, which
-have one size each. `setTextSize` takes a float and the driver reports
-the scaled metrics back through `fontHeight()` and `textWidth()`, so
-nothing below does the arithmetic itself — it just measures. The VLW is
-already the right size and draws at 1:1.
-
-A board with no VLW on it falls back to EFontJA24 at `WIDE_SCALE`. That
-is the pre-VLW behaviour and it still reads; it just fits less. Run
-`make_vlw.py --port ...` to install the font.
-
-### Bracketing
-
-`setFont`, `setTextSize` and the loaded VLW are all sticky on this
-driver, so every entry point that measures or draws brackets itself with
-`ChatFont.push` / `ChatFont.pop` and hands DejaVu9 at 1:1 back to
-`BuddyUI`. Restoring the base font is what drops the VLW, so `push`
-reloads it — 57 ms, paid per bracketed section rather than per glyph.
-
-Widths are measured per character and cached — the proportional-font
-warning in `buddy_ui_cp` applies doubly here — and the cache is dropped
-whenever the selected face *or* its scale changes.
-
 ### 割れているところ
 
-書体の選択・読み込み・計測は `buddy/chat_font.py`、行の折り返しは
-`buddy/chat_wrap.py`。ここに残るのはパネルの幾何、transcript、verb の
-振り分けと描画。
+書体の選択・読み込み・計測は `buddy/chat_font.py`、transcript の保持は
+`buddy/chat_log.py`、行の折り返しは `buddy/chat_wrap.py`。ここに残るのは
+パネルの幾何、verb の振り分けと描画。どの書体をなぜ選ぶか、VLW が何者かと
+いう経緯は `chat_font.py` にある。
 
 ### MicroPython
 
@@ -124,7 +57,7 @@ board attached.
 
 import json
 
-from buddy import chat_font, chat_wrap
+from buddy import chat_font, chat_log, chat_wrap
 
 # 型検査だけの import。デバイスの上では `False` なので走らない。事情と
 # 使い方は `device/typings/buddy_types.pyi` の docstring にある。
@@ -150,11 +83,6 @@ _RIGHT_PAD = 4
 # 110 px is six rows of the VLW or nine of DejaVu12 at 0.75.
 _Y0 = 0
 _Y1 = 110
-
-# Bounded so a long session cannot grow the transcript without limit.
-# Only the last few rows are ever visible; the rest is scrollback we do
-# not have a way to reach yet.
-_MAX_MESSAGES = 16
 
 # prefix, prefix colour, body colour. Keyed on `object` rather than `str`:
 # `role` is whatever the wire handed us, and `.get()` has to accept that
@@ -186,18 +114,6 @@ def _role_style(role):
     return _ROLE_STYLE.get(role, _ROLE_STYLE[_DEFAULT_ROLE])
 
 
-def _text_of(msg):
-    # type: (dict[str, object]) -> str
-    """メッセージの本文。
-
-    積むのは `say()` で、そこで str へ寄せてから入れているので実行時は
-    常に str。それでも絞り直すのは、dict の値の型が `object` だから —
-    `typing.cast` はここでは使えない。
-    """
-    text = msg.get("text", "")
-    return text if isinstance(text, str) else str(text)
-
-
 class ChatPanel:
     """A transcript rendered into the Buddy dashboard's main panel."""
 
@@ -216,14 +132,8 @@ class ChatPanel:
         vlw_path: str = chat_font.VLW_PATH,
     ) -> None:
         self._lcd = lcd if lcd is not None else _default_lcd()
-        self._messages = []  # type: list[dict[str, object]]
+        self._log = chat_log.Transcript()
         self.active = False
-
-        # True once any message holds a wide glyph, which is what pulls
-        # the whole panel over to the CJK font. Sticky for as long as
-        # that message is in the transcript.
-        self._has_wide = False
-
         self._font = chat_font.ChatFont(self._lcd, vlw_path)
 
     # ----- transcript
@@ -231,25 +141,17 @@ class ChatPanel:
     def say(self, role, text):
         # type: (object, object) -> int
         """Append one message. Returns how many rows it wraps to."""
-        if not isinstance(text, str):
-            text = str(text)
-        self._messages.append({"role": role, "text": text})
-        if len(self._messages) > _MAX_MESSAGES:
-            # Rebind rather than `del self._messages[:n]` — see the
-            # MicroPython note in the module docstring.
-            self._messages = self._messages[len(self._messages) - _MAX_MESSAGES :]
+        body = self._log.append(role, text)
         self.active = True
-        self._refresh_wide()
-        self._font.push(self._has_wide)
+        self._font.push(self._log.has_wide)
         try:
-            return len(chat_wrap.wrap(text, self._body_width(), self._font))
+            return len(chat_wrap.wrap(body, self._body_width(), self._font))
         finally:
             self._font.pop()
 
     def clear(self) -> None:
         """Drop the transcript and hand the panel back to BuddyUI."""
-        self._messages = []
-        self._has_wide = False
+        self._log.clear()
         self.active = False
 
     def info(self):
@@ -267,7 +169,7 @@ class ChatPanel:
         arrive clipped can tell from here whether the font was ever
         installed rather than guessing.
         """
-        self._font.push(self._has_wide)
+        self._font.push(self._log.has_wide)
         try:
             return {
                 "font": self._font.name or "default",
@@ -279,21 +181,6 @@ class ChatPanel:
             }
         finally:
             self._font.pop()
-
-    def _refresh_wide(self) -> None:
-        """Recompute which font the transcript needs.
-
-        Recomputed over the whole transcript rather than or-ed in on
-        append: trimming to `_MAX_MESSAGES` can evict the only message
-        that held a wide glyph, and staying on the 27 px font after that
-        would cost two rows for nothing.
-        """
-        for msg in self._messages:
-            for ch in _text_of(msg):
-                if chat_font.is_wide(ch):
-                    self._has_wide = True
-                    return
-        self._has_wide = False
 
     # ----- command dispatch
 
@@ -353,10 +240,10 @@ class ChatPanel:
         """
         avail = self._body_width()
         out = []  # type: list[tuple[str, int, str, int]]
-        for msg in self._messages:
+        for msg in self._log.messages:
             prefix, prefix_color, body_color = _role_style(msg.get("role"))
             first = True
-            for row in chat_wrap.wrap(_text_of(msg), avail, self._font):
+            for row in chat_wrap.wrap(chat_log.text_of(msg), avail, self._font):
                 out.append((prefix if first else "", prefix_color, row, body_color))
                 first = False
         if max_rows > 0 and len(out) > max_rows:
@@ -366,7 +253,7 @@ class ChatPanel:
     def render(self) -> None:
         """Repaint the whole panel. Cheap enough to call unconditionally."""
         lcd = self._lcd
-        self._font.push(self._has_wide)
+        self._font.push(self._log.has_wide)
         try:
             rows = self.layout(self._max_rows())
             lcd.fillRect(0, _Y0, _W, _Y1 - _Y0, _BLACK)
