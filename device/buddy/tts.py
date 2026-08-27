@@ -100,8 +100,9 @@ _UNRESERVED = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_
 _HEAD_BYTES = 512
 
 # Longest utterance we will start. Matches `buddy.speak._MAX_BYTES`:
-# 30 s at 16 kHz 16-bit, far more than a notification and far less than
-# enough to hold the speaker and the link for a noticeable time. Kept as
+# 30 s at 16 kHz 16-bit (20 s at 24 kHz), far more than a notification
+# and far less than enough to hold the speaker and the link for a
+# noticeable time. Kept as
 # its own constant rather than imported so neither module has to load
 # the other on a device counting every kilobyte.
 _MAX_BYTES = 960000

@@ -8,10 +8,11 @@ delivers bytes when it feels like it, ends the last block short, and can
 stop altogether.
 
 ブロックを切り出す側の失敗は `test_speak_stream.py` にある。こちらは
-`SpeechPlayer` がそれをどう鳴らし、どう speak.end へ写すか — 1 tick に
-1 ブロックであること、speaker が断ったブロックを落とさないこと、途中で
-切れたストリームを成功として報告しないこと。ホスト側から見た
-`buddy_verbs.speak` の契約も、同じ経路の両端なのでここにある。
+`SpeechPlayer` がそれをどう鳴らし、どう speak.end へ写すか — 1 本の
+チャンネルに枠が空いたぶんだけ渡すこと、渡したブロックを手放さないこと、
+speaker が断ったブロックを落とさないこと、途中で切れたストリームを成功
+として報告しないこと。ホスト側から見た `buddy_verbs.speak` の契約は
+`test_speak_host.py`。
 
 All of it runs without a board, a speaker or an engine.
 
@@ -21,12 +22,9 @@ This is also a whitebox test of `SpeechPlayer`'s private internals
 """
 
 import json
-import os
 import unittest
 from typing import TYPE_CHECKING, Any
-from unittest import mock
 
-import buddy_verbs
 from buddy import speak as buddy_speak
 from buddy import speak_stream
 from buddy.speak import _BLOCK, SpeechPlayer
@@ -40,13 +38,10 @@ if TYPE_CHECKING:
 class _FakeSpeaker:
     """M5.Speaker のうち player が触る面。実測に合わせてある。
 
-    1 チャンネルの枠は 2 つ (再生中 + 次)。`isPlaying(ch)` はその埋まり具合を
-    0 / 1 / 2 で返す。本物の `playRaw` は満杯だと**待つ** (False は返さない)
-    ので、fake は満杯で呼ばれたら `overfilled` を立てて False を返す —
-    player がそこへ渡した時点で、実機なら UI が止まっている。
-
-    `channel=-1` は「空いているチャンネルを探す」で、ブロックが並列に鳴る。
-    fake は渡されたチャンネルを全部記録して、テストがそれを検査する。
+    1 チャンネルの枠は 2 つ (再生中 + 次) で、`isPlaying(ch)` は埋まり具合を
+    0 / 1 / 2 で返す。本物の `playRaw` は満杯だと待つ (False は返さない) ので、
+    fake は満杯で呼ばれたら `overfilled` を立てる — 実機なら UI が止まっている。
+    渡されたチャンネルは全部記録する (-1 は並列に鳴ってしまう)。
     """
 
     def __init__(self, volume: int = 64) -> None:
@@ -159,9 +154,9 @@ class SpeechPlayerTest(TimeFrozen):
         self.assertEqual(self.say()["rate"], 24000)
 
     def test_every_block_goes_to_the_same_fixed_channel(self) -> None:
-        # channel=-1 は「空いているチャンネルを探す」。64 ms のブロックを
-        # 45 ms おきに渡すと別チャンネルで重なって鳴る (実測: 8 ブロックが
-        # 133 ms で終わった)。1 本に固定して初めて順に鳴る。
+        # channel=-1 は「空いているチャンネルを探す」で、64 ms のブロックを
+        # 45 ms おきに渡すと重なって鳴る (実測: 8 ブロックが 133 ms で終わった)。
+        self._bytes = 3 * _BLOCK
         self.say()
         self.stream.feed(blk(b"a") + blk(b"b") + blk(b"c"))
         for _ in range(3):
@@ -174,6 +169,7 @@ class SpeechPlayerTest(TimeFrozen):
     def test_fills_the_free_slots_and_no_more_in_one_tick(self) -> None:
         # 枠は 2 つ。最初の tick で両方埋める — 頭のクッションはこれしか
         # 無い。3 つ目は枠が空くまで socket に置いたままにする。
+        self._bytes = 3 * _BLOCK
         self.say()
         self.stream.feed(blk(b"a") + blk(b"b") + blk(b"c"))
         self.player.pump()
@@ -195,9 +191,9 @@ class SpeechPlayerTest(TimeFrozen):
         self.assertEqual(len(self.spk.handed), 2)
 
     def test_keeps_handed_blocks_referenced_until_played(self) -> None:
-        # binding は buffer のポインタをそのまま渡す (複製しない)。参照を
-        # 落とすと GC がその領域を次の bytes に回し、鳴っている途中で中身が
-        # 変わる。渡した最後の数ブロックは player が持ち続ける。
+        # binding は buffer のポインタを渡すだけ (複製しない)。参照を落とすと
+        # GC がその領域を次の bytes に回し、鳴っている途中で中身が変わる。
+        self._bytes = 4 * _BLOCK
         self.say()
         self.stream.feed(blk(b"a") + blk(b"b") + blk(b"c") + blk(b"d"))
         for _ in range(4):
@@ -206,7 +202,7 @@ class SpeechPlayerTest(TimeFrozen):
         kept = self.player._recent
         self.assertTrue(kept)
         self.assertLessEqual(len(kept), buddy_speak._KEEP)
-        for handed, held in zip(self.spk.handed[-len(kept) :], kept):
+        for handed, held in zip(self.spk.handed[-len(kept) :], kept, strict=True):
             self.assertIs(handed, held)
 
     def test_finishes_and_acks_when_the_payload_runs_out(self) -> None:
@@ -270,9 +266,8 @@ class SpeechPlayerTest(TimeFrozen):
         self.assertFalse(json.loads(self.t.sent[0])["ok"])
 
     def test_stalls_count_the_times_the_speaker_ran_dry(self) -> None:
-        # stalls はホストが「音が途切れた」を知る唯一の値。socket を待った
-        # tick ではなく、鳴り始めた後に speaker が空になった回数で数える —
-        # 続けて空いていた tick は 1 回。
+        # stalls はホストが「音が途切れた」を知る唯一の値。鳴り始めた後に
+        # speaker が空になった回数で、続けて空いていた tick は 1 回。
         self.say()
         self.stream.feed(blk(b"a"))
         self.player.pump()
@@ -300,9 +295,8 @@ class SpeechPlayerTest(TimeFrozen):
         self.assertEqual(json.loads(self.t.sent[0])["stalls"], 0)
 
     def test_block_size_follows_the_rate(self) -> None:
-        # 1 tick (40 ms + 読み取り) に 1〜2 ブロックしか渡せず、枠は 2 つ。
-        # ブロックが tick より短いと再生が追い越す。64 ms 以上になる最小の
-        # 2 の冪。
+        # 枠は 2 つで tick に 1〜2 ブロックしか渡せない。tick (40 ms + 読み
+        # 取り) より短いブロックだと再生が追い越す。64 ms 以上の最小の 2 の冪。
         self.assertEqual(buddy_speak._block_for(16000), 2048)
         self.assertEqual(buddy_speak._block_for(24000), 4096)
         self.assertEqual(buddy_speak._block_for(48000), 8192)
@@ -363,11 +357,8 @@ class SpeechPlayerTest(TimeFrozen):
 
 
 class VolumeTest(TimeFrozen):
-    """Turning the speaker up, relative to whatever the firmware set.
-
-    A fixed byte would go stale the moment M5Unified moved its default,
-    and the thing actually asked for was "twice as loud".
-    """
+    """Turning the speaker up, relative to whatever the firmware set —
+    a fixed byte would go stale the moment M5Unified moved its default."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -385,11 +376,9 @@ class VolumeTest(TimeFrozen):
         self.assertEqual(player.volume, spk.volume)
 
     def test_it_stops_at_the_top_of_the_byte(self) -> None:
-        # setVolume takes a byte, and this board boots at 64 — measured
-        # — so the shipped gain runs into the ceiling rather than
-        # handing the device a value it cannot hold. Worth knowing: at
-        # this gain the speaker is already at its loudest, and raising
-        # `_VOLUME_GAIN` further changes nothing.
+        # setVolume takes a byte, and this board boots at 64 (measured), so
+        # the shipped gain runs into the ceiling rather than handing the
+        # device a value it cannot hold. Raising `_VOLUME_GAIN` changes nothing.
         spk = _FakeSpeaker(volume=64)
         self.build(spk)
         self.assertEqual(spk.volume, buddy_speak._MAX_VOLUME)
@@ -403,110 +392,6 @@ class VolumeTest(TimeFrozen):
 
         player = self.build(_NoVolume())
         self.assertIsNone(player.volume)
-
-
-class _FakeLink:
-    """A link that records requests and answers with canned acks."""
-
-    def __init__(
-        self, ack: dict[str, Any] | None = None, end: dict[str, Any] | None = None
-    ) -> None:
-        self.ack: dict[str, Any] = (
-            ack if ack is not None else {"ok": True, "bytes": 81920, "rate": 16000}
-        )
-        self.end: dict[str, Any] = (
-            end if end is not None else {"ok": True, "blocks": 40, "stalls": 0}
-        )
-        self.requests: list[tuple[dict[str, Any], str, float]] = []
-        self.waited: list[tuple[str, float]] = []
-
-    def request(self, obj: dict[str, Any], expect: str, timeout: float = 5.0) -> dict[str, Any]:
-        self.requests.append((obj, expect, timeout))
-        out = dict(self.ack)
-        out["ack"] = expect
-        return out
-
-    def await_ack(self, expect: str, timeout: float = 5.0) -> dict[str, Any]:
-        self.waited.append((expect, timeout))
-        out = dict(self.end)
-        out["ack"] = expect
-        return out
-
-
-class SpeakSenderTest(unittest.TestCase):
-    def test_asks_the_device_to_fetch_and_then_waits_for_the_end(self) -> None:
-        link = _FakeLink()
-        end = buddy_verbs.speak(link, "ずんだもんなのだ", url="http://h:50021")
-        sent, expect, _timeout = link.requests[0]
-        self.assertEqual(sent["cmd"], "speak.say")
-        self.assertEqual(sent["text"], "ずんだもんなのだ")
-        self.assertEqual(sent["url"], "http://h:50021")
-        self.assertEqual(expect, "speak.say")
-        self.assertEqual([w[0] for w in link.waited], ["speak.end"])
-        self.assertEqual(end["blocks"], 40)
-
-    def test_defaults_to_zundamon(self) -> None:
-        link = _FakeLink()
-        buddy_verbs.speak(link, "あ", url="http://h:50021")
-        self.assertEqual(link.requests[0][0]["speaker"], buddy_verbs.ZUNDAMON)
-
-    def test_allows_time_for_synthesis_before_the_first_ack(self) -> None:
-        # The device does not answer speak.say until the engine has
-        # produced the whole WAV. A chat-sized timeout would give up
-        # while synthesis was still running and leave the link out of
-        # step with a device that is about to start playing.
-        link = _FakeLink()
-        buddy_verbs.speak(link, "あ", url="http://h:50021")
-        self.assertGreaterEqual(link.requests[0][2], 30.0)
-
-    def test_waits_out_the_playback_before_giving_up_on_the_end_ack(self) -> None:
-        # speak.end arrives when the last block has been played, which
-        # is 5.12 s after the start for this payload.
-        link = _FakeLink(ack={"ok": True, "bytes": 163840, "rate": 16000})
-        buddy_verbs.speak(link, "あ", url="http://h:50021", timeout=10.0)
-        self.assertGreaterEqual(link.waited[0][1], 5.12 + 10.0)
-
-    def test_a_refusal_is_raised_not_returned(self) -> None:
-        # Waiting for speak.end after a refusal would block until the
-        # timeout for an utterance that never started.
-        link = _FakeLink(ack={"ok": False, "err": "no engine url"})
-        with self.assertRaises(RuntimeError) as caught:
-            buddy_verbs.speak(link, "あ", url="http://h:50021")
-        self.assertIn("no engine url", str(caught.exception))
-        self.assertEqual(link.waited, [])
-
-    def test_empty_text_never_reaches_the_device(self) -> None:
-        link = _FakeLink()
-        with self.assertRaises(ValueError):
-            buddy_verbs.speak(link, "   ", url="http://h:50021")
-        self.assertEqual(link.requests, [])
-
-
-class VoicevoxUrlTest(unittest.TestCase):
-    def test_an_explicit_url_wins(self) -> None:
-        self.assertEqual(buddy_verbs.voicevox_url("http://10.0.0.5:50021"), "http://10.0.0.5:50021")
-
-    def test_falls_back_to_the_environment(self) -> None:
-        with mock.patch.dict(os.environ, {"VOICEVOX_URL": "http://env:50021"}):
-            self.assertEqual(buddy_verbs.voicevox_url(), "http://env:50021")
-
-    def test_a_bare_address_is_given_a_scheme_and_a_port(self) -> None:
-        # The device does no URL parsing; it concatenates paths onto
-        # whatever it is handed. A bare host would produce
-        # "192.168.0.156/audio_query" and fail at the socket.
-        self.assertEqual(buddy_verbs.voicevox_url("192.168.0.156"), "http://192.168.0.156:50021")
-
-    def test_a_trailing_slash_is_dropped(self) -> None:
-        self.assertEqual(buddy_verbs.voicevox_url("http://h:50021/"), "http://h:50021")
-
-    def test_localhost_is_refused(self) -> None:
-        # The engine runs on this Mac, but the device is not on this
-        # Mac. A loopback address is the single most likely mistake
-        # here and it fails as a connection timeout on the device,
-        # seconds later and nowhere near the cause.
-        for bad in ("http://127.0.0.1:50021", "http://localhost:50021"):
-            with self.assertRaises(ValueError, msg=bad):
-                buddy_verbs.voicevox_url(bad)
 
 
 if __name__ == "__main__":

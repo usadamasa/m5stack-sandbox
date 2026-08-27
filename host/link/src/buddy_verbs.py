@@ -174,8 +174,8 @@ def speak(
     Returns the `speak.end` ack, which arrives once the last block has
     been played. Blocks for synthesis plus playback.
 
-    A non-zero `stalls` in the result means the device ran out of audio
-    while waiting on the network — the utterance will have gapped.
+    `stalls` は再生が始まった後に speaker が空になった回数 — 0 でなければ
+    その回数だけ音が途切れている。socket を待っただけの tick は数えない。
     """
     if not text.strip():
         raise ValueError("nothing to say")
