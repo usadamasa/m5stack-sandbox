@@ -55,6 +55,12 @@ import json
 
 from buddy import speak_stream
 
+# 型検査だけの import。デバイスの上では `False` なので走らない。事情と
+# 使い方は `device/typings/buddy_types.pyi` の docstring にある。
+_TYPE_CHECKING = False
+if _TYPE_CHECKING:
+    from buddy_types import AckSink, Fetch, Speaker  # noqa: F401
+
 # Refuse anything longer than this in one utterance. At 16 kHz 16-bit
 # it is 30 seconds, which is far more than a notification and far less
 # than enough to wedge the device for a noticeable time. `buddy.tts`
@@ -108,7 +114,7 @@ def _default_speaker():
 
 
 def _boost_volume(spk):
-    # type: (object) -> int | None
+    # type: (Speaker) -> int | None
     """Turn `spk` up by `_VOLUME_GAIN`. Returns the volume now set.
 
     Called once, when the player is built. That is once per boot, which
@@ -120,26 +126,24 @@ def _boost_volume(spk):
     audio, and losing the utterance over the setting for it would be the
     wrong trade.
 
-    `spk` is duck-typed — the real M5.Speaker or a test double, and
-    MicroPython has no `typing.Protocol` to name what the two have in
-    common — so every call through it below is ignored per-line rather
-    than left to cascade.
+    `spk` は本物の M5.Speaker かテストの double。両者に共通の base は無いので、
+    面は `.pyi` 側の `Speaker` Protocol で押さえる。
     """
     try:
-        before = spk.getVolume()  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+        before = spk.getVolume()
     except Exception as e:
         print("buddy.speak: getVolume failed:", e)
         return None
-    after = before * _VOLUME_GAIN  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
+    after = before * _VOLUME_GAIN
     if after > _MAX_VOLUME:
         after = _MAX_VOLUME
     try:
-        spk.setVolume(after)  # pyright: ignore[reportUnknownMemberType]
+        spk.setVolume(after)
     except Exception as e:
         print("buddy.speak: setVolume failed:", e)
-        return before  # pyright: ignore[reportUnknownVariableType]
-    print("buddy.speak: volume", before, "->", after)  # pyright: ignore[reportUnknownArgumentType]
-    return after  # pyright: ignore[reportUnknownVariableType]
+        return before
+    print("buddy.speak: volume", before, "->", after)
+    return after
 
 
 def _default_fetch():
@@ -149,32 +153,60 @@ def _default_fetch():
     return buddy_tts.fetch_speech
 
 
+# ----- ワイヤから来た値の絞り込み
+#
+# 届いた命令は `dict[str, object]` で、値の型は名乗らない。`fetch` は
+# str/str/int/int を要る。実行時はいつもそうなっているが、そう言い直す手
+# (`typing.cast`) が MicroPython には無いので、実際に絞る。
+#
+# 変換の意味は元のまま。以前は `str` へは何もせず素通しし、`rate` だけ
+# `int()` に通していた。壊れた値がここを抜けても、その先の `fetch` が
+# 例外を投げて `_say` の try が ack の err に載せる。
+
+
+def _str_of(msg, key):
+    # type: (dict[str, object], str) -> str
+    """本文と URL。str でない値は `str()` に通す — `ChatPanel.say` が
+    transcript へ積むときと同じ扱い。"""
+    value = msg.get(key, "")
+    return value if isinstance(value, str) else str(value)
+
+
+def _int_of(msg, key, default):
+    # type: (dict[str, object], str, int) -> int
+    """`int(msg[key])`。
+
+    数にならない値では投げる。黙って既定へ落とすと、ホストは頼んだ
+    rate と違う音を聞くまで間違いに気付けない。
+    """
+    value = msg.get(key, default)
+    if isinstance(value, (int, float, str)):
+        # str も通すのは元のままで、`int("16000")` は成立する。数にならない
+        # str は ValueError になり、それも呼び出し側の try が受ける。
+        return int(value)
+    raise TypeError("not a number: " + repr(value))
+
+
 class SpeechPlayer:
     """Fetches one utterance at a time and streams it into the speaker."""
 
-    # `transport`/`speaker`/`fetch` are duck-typed dependencies (real
-    # objects or test doubles) — no `typing.Protocol` on MicroPython to
-    # name what the two sides of each have in common, so `transport`,
-    # `speaker` and `fetch` stay unannotated and every use of them, or of
-    # a field built from them, is ignored per-line below rather than left
-    # to cascade silently.
+    # `transport` / `speaker` / `fetch` は注入で受け取る相手 (本物か double)。
+    # どれも共通の base を持たないので、面は `.pyi` 側の Protocol で押さえ、
+    # 名前は `# type:` コメントから引く — ここの注釈は組み込みの名前 1 つで
+    # なければならない (`device/tests/test_device_constraints.py`)。
     def __init__(
         self,
-        transport,  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType]
-        speaker=None,  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType]
-        fetch=None,  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType]
+        transport,  # type: AckSink
+        speaker=None,  # type: Speaker | None
+        fetch=None,  # type: Fetch | None
     ) -> None:
         self._t = transport
-        self._spk = speaker if speaker is not None else _default_speaker()  # pyright: ignore[reportUnknownMemberType]
-        self._fetch = fetch if fetch is not None else None  # pyright: ignore[reportUnknownMemberType]
-        self.volume = _boost_volume(self._spk)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+        self._spk = speaker if speaker is not None else _default_speaker()
+        self._fetch = fetch
+        self.volume = _boost_volume(self._spk)
 
         self.active = False
         self.text = ""
-        # Declared plainly (rather than left to infer) so that a later
-        # Unknown-tainted store — `self._rate = got["rate"]` in `_say()`,
-        # where `got` is the duck-typed fetch's result — cannot widen what
-        # every other method sees this field as.
         self._rate = _DEFAULT_RATE  # type: int
         self._block = _DEFAULT_BLOCK  # type: int
         self._source = None
@@ -213,12 +245,12 @@ class SpeechPlayer:
 
     def _say(self, msg):
         # type: (dict[str, object]) -> dict[str, object]
-        text = msg.get("text", "")
-        url = msg.get("url", "")
+        text = _str_of(msg, "text")
+        url = _str_of(msg, "url")
         if not url:
             return {"ack": "speak.say", "ok": False, "err": "no engine url"}
 
-        fetch = self._fetch if self._fetch is not None else _default_fetch()  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+        fetch = self._fetch if self._fetch is not None else _default_fetch()
 
         # Whatever was playing loses; the host asked for something new.
         # Done before the fetch so the speaker is not still working
@@ -226,35 +258,28 @@ class SpeechPlayer:
         self.stop()
 
         try:
-            # `fetch` is duck-typed (see the class docstring note), so its
-            # result and everything pulled out of it below is ignored
-            # per-line.
-            # msg's values are `object` (see the class docstring's dict[str,
-            # object] note); `fetch`'s real signature wants str/str/int/int,
-            # which they always are on the wire — ignored per-line rather
-            # than narrowed with a `typing.cast` MicroPython does not have.
-            got = fetch(  # pyright: ignore[reportUnknownVariableType]
-                url,  # pyright: ignore[reportArgumentType]
-                text,  # pyright: ignore[reportArgumentType]
-                msg.get("speaker", _DEFAULT_SPEAKER),  # pyright: ignore[reportArgumentType]
-                int(msg.get("rate", _DEFAULT_RATE)),  # pyright: ignore[reportArgumentType]
+            got = fetch(
+                url,
+                text,
+                _int_of(msg, "speaker", _DEFAULT_SPEAKER),
+                _int_of(msg, "rate", _DEFAULT_RATE),
             )
         except Exception as e:
             return {"ack": "speak.say", "ok": False, "err": str(e)}
 
-        total = got["bytes"]  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
-        if total < 1 or total > _MAX_BYTES:  # pyright: ignore[reportOperatorIssue]
+        total = got["bytes"]
+        if total < 1 or total > _MAX_BYTES:
             try:
-                got["response"].close()  # pyright: ignore[reportUnknownMemberType]
+                got["response"].close()
             except Exception:
                 pass
             return {"ack": "speak.say", "ok": False, "err": "length out of range"}
 
-        self._rate = got["rate"]  # pyright: ignore[reportUnknownMemberType]
+        self._rate = got["rate"]
         self._block = _BLOCK
-        self._source = speak_stream.StreamSource(got["stream"], total, got.get("response"))  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType, reportArgumentType]
+        self._source = speak_stream.StreamSource(got["stream"], total, got["response"])
         # Rounded up: the last block is padded rather than dropped.
-        self._blocks_total = (total + self._block - 1) // self._block  # pyright: ignore[reportUnknownVariableType, reportOperatorIssue]
+        self._blocks_total = (total + self._block - 1) // self._block
         self._blocks_done = 0
         self._stalls = 0
         self.text = text
@@ -271,7 +296,7 @@ class SpeechPlayer:
         self._held = []
         self.text = ""
         try:
-            self._spk.stop()  # pyright: ignore[reportUnknownMemberType]
+            self._spk.stop()
         except Exception as e:
             print("buddy.speak: stop failed:", e)
 
@@ -324,7 +349,7 @@ class SpeechPlayer:
 
     def _play(self, block: bytes) -> bool:
         try:
-            return bool(self._spk.playRaw(block, self._rate, _MONO, _ONCE, _ANY_CHANNEL, False))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            return bool(self._spk.playRaw(block, self._rate, _MONO, _ONCE, _ANY_CHANNEL, False))
         except Exception as e:
             print("buddy.speak: playRaw failed:", e)
             return True  # drop it rather than wedge the queue
@@ -337,7 +362,7 @@ class SpeechPlayer:
         if self._source is not None:
             self._source.close()
             self._source = None
-        self._t.send_line(  # pyright: ignore[reportUnknownMemberType]
+        self._t.send_line(
             json.dumps(
                 {
                     "ack": "speak.end",

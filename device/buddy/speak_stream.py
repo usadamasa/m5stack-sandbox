@@ -7,6 +7,12 @@
 
 import time
 
+# 型検査だけの import。デバイスの上では `False` なので走らない。事情と
+# 使い方は `device/typings/buddy_types.pyi` の docstring にある。
+_TYPE_CHECKING = False
+if _TYPE_CHECKING:
+    from buddy_types import ByteStream, Closeable  # noqa: F401
+
 # 短く終わった最後のブロックを埋める無音。
 _PAD = b"\x00"
 
@@ -38,11 +44,10 @@ class StreamSource:
     """
 
     def __init__(self, stream, total, response=None):
-        # type: (object, int, object | None) -> None
-        # `stream`/`response` は duck-typed な socket かテストの double —
-        # MicroPython には両者の共通点を名指す `typing.Protocol` が無いので、
-        # 以下のメンバーアクセスは行ごとに ignore する。
-        self._stream = stream
+        # type: (ByteStream, int, Closeable | None) -> None
+        # `stream` はファームウェアの socket かテストの double。共通の base は
+        # 無いので、型は `.pyi` 側の Protocol で押さえる。
+        self._stream = stream  # type: ByteStream | None
         self._response = response
         self._acc = b""  # type: bytes
         self.left = total
@@ -96,29 +101,25 @@ class StreamSource:
         had = len(self._acc)
         ended = self._fill(stream, want)
 
-        if len(self._acc) > had:  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+        if len(self._acc) > had:
             self._last_progress = time.ticks_ms()
 
-        if len(self._acc) >= want:  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+        if len(self._acc) >= want:
             return self._take(want, size)
 
         self._give_up(ended)
         return None
 
     def _fill(self, stream, want):
-        # type: (object, int) -> bool
+        # type: (ByteStream, int) -> bool
         """`want` byte 貯まるまで読む。ストリームが終わっていたら True。
 
         `want` に届かないまま止まるのは失敗ではなく普通の場合で、呼び手は
         次の tick でまた来る。
         """
-        while len(self._acc) < want:  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+        while len(self._acc) < want:
             try:
-                # `stream` は duck-typed (__init__ を見よ) なので `.read()` の
-                # 結果はどうしても Unknown になり、それを下で `_acc` へ畳み
-                # 込むと、このメソッドの残り全部の `_acc` の読み出しが汚染
-                # される — 波及させずに行ごとに ignore する。
-                chunk = stream.read(want - len(self._acc))  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType, reportUnknownArgumentType, reportAttributeAccessIssue]
+                chunk = stream.read(want - len(self._acc))
             except OSError:
                 # タイムアウトしたか、ブロックするところだった。この層から
                 # は遅い AP と見分けが付かず、どちらも答えは同じ: 次の tick
@@ -129,22 +130,22 @@ class StreamSource:
                 return False
             if not chunk:
                 return True
-            self._acc += chunk  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType, reportUnknownArgumentType]
+            self._acc += chunk
         return False
 
     def _take(self, want, size):
         # type: (int, int) -> bytes
         """ブロックを 1 つ渡す。最後の 1 つなら無音で埋める。"""
-        block = self._acc[:want]  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+        block = self._acc[:want]
         # スライス削除ではなく再束縛: MicroPython の bytes は immutable で、
         # bytearray にも `del b[:n]` が無い。
-        self._acc = self._acc[want:]  # pyright: ignore[reportUnknownMemberType]
+        self._acc = self._acc[want:]
         # padding ではなく本物の bytes で数える — `pump()` に utterance の
         # 終わりを伝えているのはこれ。
         self.left -= want
-        if len(block) < size:  # pyright: ignore[reportUnknownArgumentType]
-            block = block + _PAD * (size - len(block))  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
-        return block  # pyright: ignore[reportUnknownVariableType]
+        if len(block) < size:
+            block = block + _PAD * (size - len(block))
+        return block
 
     def _give_up(self, ended):
         # type: (bool) -> None
@@ -164,7 +165,7 @@ class StreamSource:
             if obj is None:
                 continue
             try:
-                obj.close()  # pyright: ignore[reportUnknownMemberType]
+                obj.close()
             except Exception as e:
                 print("buddy.speak: close failed:", e)
         self._stream = None

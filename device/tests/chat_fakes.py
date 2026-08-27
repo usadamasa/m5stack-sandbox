@@ -47,9 +47,18 @@ BODY_PX = 240 - X0 - 4 - INDENT_PX  # 220
 
 
 class _FakeFonts:
+    """`M5.Lcd.FONTS`。どの名前が載っているかはビルドが決めるので、実機側も
+    ここも属性は動的に生える。"""
+
     def __init__(self, names: tuple[str, ...]) -> None:
         for name in names:
             setattr(self, name, f"<font {name}>")
+
+    def __getattr__(self, name: str) -> object:
+        # 既定の探索が空振りしたときだけ呼ばれるので、振る舞いは足していない。
+        # 書いてあるのは「名前は静的には決まらない」という宣言の方で、
+        # パネルが `getattr(fonts, name, None)` で探るのはそのため。
+        raise AttributeError(name)
 
 
 class FakeLcd:
@@ -83,16 +92,19 @@ class FakeLcd:
 
     # -- driver の面。M5GFX がそうなので camelCase のまま。
 
-    def setFont(self, font: str) -> None:
+    # 書体のハンドルが `object` なのは driver がそうだから。内蔵書体では
+    # `FONTS` から引いた不透明な値が、VLW ではパスの `str` が来る。この
+    # fake はどちらも `str` で表すが、受け口は本物と同じ広さにしておく。
+    def setFont(self, font: object) -> None:
         # 内蔵書体を選ぶと読み込み済みの VLW が外れる。実機と同じで、
         # パネルが読み直さなければならない理由でもある。
         self.loaded = None
-        self.font = font
-        self.font_calls.append(font)
+        self.font = str(font)
+        self.font_calls.append(self.font)
 
-    def loadFont(self, font: str) -> None:
-        self.loaded = font
-        self.load_calls.append(font)
+    def loadFont(self, font: object) -> None:
+        self.loaded = str(font)
+        self.load_calls.append(self.loaded)
 
     def unloadFont(self) -> None:
         self.loaded = None

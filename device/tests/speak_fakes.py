@@ -10,9 +10,14 @@
 """
 
 import unittest
+from typing import TYPE_CHECKING
 
 from buddy import speak_stream
 from buddy.speak import _BLOCK
+
+if TYPE_CHECKING:
+    # 型検査だけ。`device/typings/` の stub-only モジュールで、実体は無い。
+    from buddy_types import SpeechSource
 
 
 class FakeTime:
@@ -65,6 +70,22 @@ class FakeStream:
 
     def close(self) -> None:
         self.closed = True
+
+
+class FakeResponse:
+    """HTTP の response のうち、player が触る口だけ。"""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def unused_fetch(*_args: object) -> "SpeechSource":
+    """A `fetch` double for tests that never call it (see VolumeTest)."""
+    msg = "fetch should not have been called"
+    raise AssertionError(msg)
 
 
 def blk(ch: bytes) -> bytes:

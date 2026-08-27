@@ -30,6 +30,20 @@ import gc
 import json
 import sys
 
+# 型検査だけの import。デバイスの上では `False` なので走らない。事情と
+# 使い方は `device/typings/buddy_types.pyi` の docstring にある。
+_TYPE_CHECKING = False
+if _TYPE_CHECKING:
+    from buddy_types import (  # noqa: F401
+        Chat,
+        DebugModule,
+        Proto,
+        Speech,
+        State,
+        Transport,
+        Ui,
+    )
+
 _CHAT_TAG = b'"chat.'
 _SPEAK_TAG = b'"speak.'
 # debug の verb にも同じ手を使う。そしてこの前処理が、この機能の常駐コスト
@@ -79,16 +93,19 @@ class Router:
     """
 
     def __init__(self, ui, chat, state, chars):
-        # type: (object, object, object, object) -> None
+        # type: (Ui, Chat, State, object) -> None
         self.ui = ui
         self.chat = chat
         self.state = state
+        # `chars` はここでは何も呼ばれない。upstream の `BuddyProtocol` へ
+        # 渡すのと `dbg.eval` の名前空間へ載せるだけなので、面を宣言しても
+        # double へ要求が増えるだけになる。
         self.chars = chars
-        self.ble = None  # type: object
-        self.speech = None  # type: object
-        self.proto = None  # type: object
+        self.ble = None  # type: Transport | None
+        self.speech = None  # type: Speech | None
+        self.proto = None  # type: Proto | None
         # 一度でも dbg.* が来たら `buddy.debug` が入る 1 枠。
-        self.dbg = None  # type: object
+        self.dbg = None  # type: DebugModule | None
         # chat の表示を変える命令が来た、という印。描くのは main loop。
         self.chat_dirty = False
         # 状態変化のメールボックス。同じく描くのは main loop。
@@ -97,7 +114,12 @@ class Router:
     def _reply(self, ack):
         # type: (dict[str, object]) -> None
         """ack を 1 行にして返す。LCD には触らない。"""
-        self.ble.send_line(json.dumps(ack, separators=(",", ":")).encode("utf-8"))  # pyright: ignore[reportUnknownMemberType]
+        if self.ble is None:
+            # 呼ぶのは `_intercept` だけで、そちらは `on_line` が
+            # `self.ble` を確かめた後にしか走らない。それでも書くのは、
+            # 生成の後から差さる枠だという事実がここからは読めないため。
+            return
+        self.ble.send_line(json.dumps(ack, separators=(",", ":")).encode("utf-8"))
 
     def _intercept(self, raw):
         # type: (bytes) -> bool
@@ -109,18 +131,18 @@ class Router:
         先に弾く形は元のまま。
         """
         if _CHAT_TAG in raw:
-            ack = self.chat.handle_raw(raw)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            ack = self.chat.handle_raw(raw)
             if ack is not None:
-                self._reply(ack)  # pyright: ignore[reportUnknownArgumentType]
+                self._reply(ack)
                 self.chat_dirty = True
                 return True
         # speak.say は engine から音声を取り切ってから答えるので、合成の
         # あいだこのループが止まる。もともと同期でなければ困る作りでもある:
         # ack が載せる長さと rate は、engine の応答ヘッダが来るまで分からない。
         if _SPEAK_TAG in raw and self.speech is not None:
-            ack = self.speech.handle_raw(raw)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            ack = self.speech.handle_raw(raw)
             if ack is not None:
-                self._reply(ack)  # pyright: ignore[reportUnknownArgumentType]
+                self._reply(ack)
                 return True
         # 前処理の最後。debug の通信は稀なので、そうでない 2 つの後ろへ置いて
         # 普通の経路の負担を変えないようにする。
@@ -142,18 +164,11 @@ class Router:
         # 出ない。
         if self.ble is not None and self._intercept(raw):
             return
-        # `self.proto` は protocol ができるまで None を持てるよう `object`
-        # として宣言してあるので、読み戻すと BuddyProtocol という具体型は
-        # 落ちる。下の呼び出しを行単位で無視しているのはそのためで、
-        # 放っておいて連鎖させるよりこちらを取る。
         if self.proto is not None:
-            self.proto.on_line(raw)  # pyright: ignore[reportUnknownMemberType]
+            self.proto.on_line(raw)
 
     def on_dbg(self, raw):
         # type: (bytes | bytearray | str) -> dict[str, object] | None
-        # `self.dbg` は None か `buddy.debug` モジュールかのどちらかを持てる
-        # よう `object` として宣言してある。読み戻すと具体型が落ちるので、
-        # ここも連鎖させずに行単位で無視する。
         mod = self.dbg
         # モジュールを引き込んだそのフレームだけ True。ホスト側にはこれを
         # 自力で知る手立てが無い — 起ち上がったばかりの CLI プロセスには、
@@ -182,12 +197,12 @@ class Router:
                     "ui": self.ui,
                 }
             )
-        ack = mod.handle_raw(raw)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-        if ack is not None and entered and not ack.get("unload"):  # pyright: ignore[reportUnknownMemberType]
+        ack = mod.handle_raw(raw)
+        if ack is not None and entered and not ack.get("unload"):
             # 落とすためにモジュールを import せざるを得なかった `dbg.off`
             # は、何かへ入ったわけではないので、入ったとは言わない。
             ack["entered"] = True
-        if ack is not None and ack.get("unload"):  # pyright: ignore[reportUnknownMemberType]
+        if ack is not None and ack.get("unload"):
             # collect の前に参照を全部落とさないと、ack に載る数字が「その
             # モジュールがまだ居るヒープ」に対して測られる。`mod` が見落とし
             # やすい 1 つで、これはこの関数を抜けるまで他の 2 つより長生き
@@ -199,7 +214,7 @@ class Router:
             _forget_debug_module()
             gc.collect()
             ack["free"] = gc.mem_free()
-        return ack  # pyright: ignore[reportUnknownVariableType]
+        return ack
 
     def on_state(self, s: str) -> None:
         # BuddySerial には pairing の段が無いので、handshake で出す
@@ -211,4 +226,4 @@ class Router:
         print("claude_buddy: state", s, "->", effective)
         self.pending_state = effective
         if effective == "encrypted" and self.proto is not None:
-            self.proto.send_hello()  # pyright: ignore[reportUnknownMemberType]
+            self.proto.send_hello()

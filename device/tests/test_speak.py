@@ -23,19 +23,18 @@ This is also a whitebox test of `SpeechPlayer`'s private internals
 import json
 import os
 import unittest
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest import mock
 
 import buddy_verbs
 from buddy import speak as buddy_speak
 from buddy import speak_stream
 from buddy.speak import _BLOCK, SpeechPlayer
-from speak_fakes import FakeStream, FakeTime, TimeFrozen, blk
+from speak_fakes import FakeResponse, FakeStream, FakeTime, TimeFrozen, blk, unused_fetch
 
-
-def _unused_fetch(*_args: object) -> dict[str, object]:
-    """A `fetch` double for tests that never call it (see VolumeTest)."""
-    return {}
+if TYPE_CHECKING:
+    # 型検査だけ。`device/typings/` の stub-only モジュールで、実体は無い。
+    from buddy_types import SpeechSource
 
 
 class _FakeSpeaker:
@@ -91,13 +90,14 @@ class SpeechPlayerTest(TimeFrozen):
         self.t = _RecordingTransport()
         self.spk = _FakeSpeaker()
         self.stream = FakeStream()
+        self.response = FakeResponse()
         self.fetched: list[tuple[str, str, int, int]] = []
         self.player = SpeechPlayer(self.t, speaker=self.spk, fetch=self._fetch)
         self._rate = 16000
         self._bytes = 2 * _BLOCK
         self._error: Exception | None = None
 
-    def _fetch(self, url: str, text: str, speaker: int, rate: int) -> dict[str, Any]:
+    def _fetch(self, url: str, text: str, speaker: int, rate: int) -> "SpeechSource":
         self.fetched.append((url, text, speaker, rate))
         if self._error is not None:
             raise self._error
@@ -105,7 +105,7 @@ class SpeechPlayerTest(TimeFrozen):
             "stream": self.stream,
             "bytes": self._bytes,
             "rate": self._rate,
-            "response": None,
+            "response": self.response,
         }
 
     def say(self, **over: object) -> dict[str, Any]:
@@ -257,8 +257,8 @@ class VolumeTest(TimeFrozen):
         super().setUp()
         self.t = _RecordingTransport()
 
-    def build(self, spk: object) -> SpeechPlayer:
-        return SpeechPlayer(self.t, speaker=spk, fetch=_unused_fetch)
+    def build(self, spk: _FakeSpeaker) -> SpeechPlayer:
+        return SpeechPlayer(self.t, speaker=spk, fetch=unused_fetch)
 
     def test_the_speaker_is_turned_up_when_the_player_is_built(self) -> None:
         # From a quiet start, so the multiplication is what is being

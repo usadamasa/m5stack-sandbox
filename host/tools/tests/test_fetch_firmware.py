@@ -233,6 +233,7 @@ class FileFieldTest(unittest.TestCase):
         self.assertTrue(pattern.match("0123456789abcdef" * 2 + ".bin"))
 
     def test_rejects_traversal_and_url_tricks(self) -> None:
+        # 上と同じ理由で非公開シンボルに直接触る。
         pattern = fetch_firmware._FILE_FIELD_RE  # pyright: ignore[reportPrivateUsage]
         for bad in ("../etc/passwd", "a/b.bin", "a\r\nHost: evil", "", "x" * 257):
             with self.subTest(bad=bad):

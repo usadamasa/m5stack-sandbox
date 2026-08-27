@@ -5,6 +5,12 @@
 あちらの docstring にある。
 """
 
+# 型検査だけの import。デバイスの上では `False` なので走らない。事情と
+# 使い方は `device/typings/buddy_types.pyi` の docstring にある。
+_TYPE_CHECKING = False
+if _TYPE_CHECKING:
+    from buddy_types import Lcd  # noqa: F401
+
 # 生成された日本語の書体。`host/tools/src/make_vlw.py --port ...` が置く
 # もので、provisioning の一手であってデプロイの対象ではない — 930 KB あって
 # 中身も変わらない。一度も入れたことのない基板には無いので、以下の経路は
@@ -77,15 +83,19 @@ class ChatFont:
     キャッシュは丸ごと捨てる。
     """
 
-    # `lcd` は `M5.Lcd` か、それを模したテストダブル。MicroPython に
-    # `typing.Protocol` が無く、両者の共通面を名指しできないので注釈を
-    # 付けず、`self._lcd` 経由のアクセスは行ごとに ignore する。
+    # `lcd` は `M5.Lcd` か、それを模したテストダブル。両者に共通の base は
+    # 無いので、面は `.pyi` 側の Protocol で押さえる。注釈ではなく `# type:`
+    # コメントに書くのは、ここの注釈が組み込みの名前 1 つでなければならない
+    # ため (`device/tests/test_device_constraints.py`)。
     # `vlw_path` は設定であると同時に継ぎ目でもある: 実在するファイルを
     # 指せば実機なしで VLW の枝を通せるし、"" を渡せばフォールバックの枝に
-    # 入る。None ではなく空文字なのは、ここの注釈が組み込みの名前 1 つで
-    # なければならないため (`device/tests/test_device_constraints.py`)。
-    def __init__(self, lcd, vlw_path: str = VLW_PATH) -> None:  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType]
-        self._lcd = lcd  # pyright: ignore[reportUnknownMemberType]
+    # 入る。None ではなく空文字なのも同じ制約から。
+    def __init__(
+        self,
+        lcd,  # type: Lcd
+        vlw_path: str = VLW_PATH,
+    ) -> None:
+        self._lcd = lcd
 
         # いま選ばれている書体の名前と倍率。`chat.info()` がそのまま ack へ
         # 載せる。
@@ -108,7 +118,7 @@ class ChatFont:
         # driver が `setTextSize` を断ったら立てる。再試行せずラッチするのは、
         # そうしないと再描画ごとに traceback が 1 本出るため。数値は計算では
         # なく driver から読み戻すので、どちらに転んでも辻褄は合う。
-        self._can_scale = getattr(self._lcd, "setTextSize", None) is not None  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+        self._can_scale = getattr(self._lcd, "setTextSize", None) is not None
 
         # この基板に VLW があり、このビルドが読めるなら、そのパス。
         self.vlw = self._resolve_vlw(vlw_path)
@@ -141,7 +151,7 @@ class ChatFont:
         elif handle is not None:
             self._unload_vlw()
             try:
-                self._lcd.setFont(handle)  # pyright: ignore[reportUnknownMemberType]
+                self._lcd.setFont(handle)
             except Exception as e:
                 print("buddy.chat: setFont failed:", e)
         self._set_scale(scale)
@@ -153,7 +163,7 @@ class ChatFont:
         self._unload_vlw()
         if self._base_font is not None:
             try:
-                self._lcd.setFont(self._base_font)  # pyright: ignore[reportUnknownMemberType]
+                self._lcd.setFont(self._base_font)
             except Exception as e:
                 print("buddy.chat: font restore failed:", e)
         self._set_scale(BASE_SCALE)
@@ -163,9 +173,9 @@ class ChatFont:
     def advance(self, ch: str) -> int:
         w = self._char_w.get(ch)
         if w is None:
-            w = self._lcd.textWidth(ch)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            w = self._lcd.textWidth(ch)
             self._char_w[ch] = w
-        return w  # pyright: ignore[reportUnknownVariableType]
+        return w
 
     def measure(self, text: str) -> int:
         total = 0
@@ -182,7 +192,7 @@ class ChatFont:
     def line_height(self) -> int:
         line_h = self._line_h
         if line_h is None:
-            font_height = getattr(self._lcd, "fontHeight", None)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            font_height = getattr(self._lcd, "fontHeight", None)
             height = int(font_height()) if font_height is not None else 0
             line_h = (height + _LEADING) if height else _FALLBACK_LINE_H
             self._line_h = line_h
@@ -203,7 +213,7 @@ class ChatFont:
         """
         if not path:
             return None
-        if getattr(self._lcd, "loadFont", None) is None:  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+        if getattr(self._lcd, "loadFont", None) is None:
             return None
         try:
             import os
@@ -215,7 +225,7 @@ class ChatFont:
         return path
 
     def _resolve_fonts(self) -> None:
-        fonts = getattr(self._lcd, "FONTS", None)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+        fonts = getattr(self._lcd, "FONTS", None)
         if fonts is None:
             return
         self._base_font = getattr(fonts, _BASE_FONT, None)
@@ -267,7 +277,7 @@ class ChatFont:
         if self._vlw_loaded:
             return
         try:
-            self._lcd.loadFont(path)  # pyright: ignore[reportUnknownMemberType]
+            self._lcd.loadFont(path)
         except Exception as e:
             # ここに来たのは driver が呼び出しそのものを断ったということで、
             # `_resolve_vlw` が守っている「黙って失敗する」のとは別。次の
@@ -283,7 +293,7 @@ class ChatFont:
         if not self._vlw_loaded:
             return
         self._vlw_loaded = False
-        unload = getattr(self._lcd, "unloadFont", None)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+        unload = getattr(self._lcd, "unloadFont", None)
         if unload is None:
             return
         try:
@@ -295,7 +305,7 @@ class ChatFont:
         if not self._can_scale:
             return
         try:
-            self._lcd.setTextSize(scale)  # pyright: ignore[reportUnknownMemberType]
+            self._lcd.setTextSize(scale)
         except Exception as e:
             print("buddy.chat: setTextSize failed:", e)
             # キャッシュしてある値は全て、driver が一度も当てていない倍率で

@@ -171,14 +171,49 @@ class TuneQueryTest(unittest.TestCase):
         self.assertEqual(tuned["speedScale"], 1.0)
 
 
+class _FakeRaw:
+    """A socket-shaped object holding a fixed stream."""
+
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.pos = 0
+        self.closed = False
+        self.timeout: float | None = None
+
+    def read(self, n: int) -> bytes | None:
+        chunk = self.data[self.pos : self.pos + n]
+        self.pos += len(chunk)
+        return chunk
+
+    def settimeout(self, seconds: float) -> None:
+        # `_PrefixedStream` が無条件で転送する。本物の socket と同じで、
+        # 持っていないと player を組み立てた時点で落ちる。
+        self.timeout = seconds
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class _FakeResponse:
-    def __init__(self, payload: object = None, raw: object = None, status: int = 200) -> None:
+    """`buddy_types.HttpResponse` の面。
+
+    `raw` を省いた呼び出しには空のストリームが入る。audio_query の応答は
+    `.raw` を読まれないが、Protocol の側は response に必ず読み口があると
+    言っている — 本物の `requests.Response` がそうだから。
+    """
+
+    def __init__(
+        self,
+        payload: dict[str, object] | None = None,
+        raw: _FakeRaw | None = None,
+        status: int = 200,
+    ) -> None:
         self.status_code = status
-        self._payload = payload
-        self.raw = raw
+        self._payload: dict[str, object] = payload if payload is not None else {}
+        self.raw = raw if raw is not None else _FakeRaw(b"")
         self.closed = False
 
-    def json(self) -> object:
+    def json(self) -> dict[str, object]:
         return self._payload
 
     def close(self) -> None:
@@ -188,17 +223,17 @@ class _FakeResponse:
 class _FakeRequests:
     """Stands in for the firmware's frozen `requests` module."""
 
-    def __init__(self, *responses: object) -> None:
+    def __init__(self, *responses: _FakeResponse | Exception) -> None:
         self._queue = list(responses)
-        self.calls: list[tuple[str, object, object]] = []
+        self.calls: list[tuple[str, bytes | None, dict[str, str] | None]] = []
 
     def post(
         self,
         url: str,
-        data: object = None,
-        headers: object = None,
+        data: bytes | None = None,
+        headers: dict[str, str] | None = None,
         **_kw: object,
-    ) -> object:
+    ) -> _FakeResponse:
         self.calls.append((url, data, headers))
         nxt = self._queue.pop(0)
         if isinstance(nxt, Exception):
@@ -208,23 +243,6 @@ class _FakeRequests:
 
 def _wav_head(pcm_bytes: int = 81920, rate: int = 16000) -> bytes:
     return _wav(pcm_bytes, rate=rate)
-
-
-class _FakeRaw:
-    """A socket-shaped object holding a fixed stream."""
-
-    def __init__(self, data: bytes) -> None:
-        self.data = data
-        self.pos = 0
-        self.closed = False
-
-    def read(self, n: int) -> bytes:
-        chunk = self.data[self.pos : self.pos + n]
-        self.pos += len(chunk)
-        return chunk
-
-    def close(self) -> None:
-        self.closed = True
 
 
 class FetchSpeechTest(unittest.TestCase):

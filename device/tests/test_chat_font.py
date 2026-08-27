@@ -159,7 +159,7 @@ class VlwTest(unittest.TestCase):
             msg = "no"
             raise OSError(msg)
 
-        lcd.loadFont = explode  # pyright: ignore[reportAttributeAccessIssue]
+        lcd.loadFont = explode
         panel = ChatPanel(lcd=lcd, vlw_path=str(self.vlw))
         panel.say("claude", "テスト")
         self.assertEqual(panel.info()["font"], "EFontJA24")

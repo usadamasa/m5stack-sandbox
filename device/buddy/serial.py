@@ -83,6 +83,12 @@ import select
 import sys
 import time
 
+# 型検査だけの import。デバイスの上では `False` なので走らない。事情と
+# 使い方は `device/typings/buddy_types.pyi` の docstring にある。
+_TYPE_CHECKING = False
+if _TYPE_CHECKING:
+    from buddy_types import LineCallback, StateCallback  # noqa: F401
+
 try:
     import micropython
 except ImportError:  # pragma: no cover - host-side import for inspection
@@ -141,19 +147,17 @@ class BuddySerial:
     def __init__(
         self,
         name_prefix="Claude",  # type: str
-        # on_line/on_state are duck-typed callbacks. MicroPython has no
-        # `typing`, so there is no builtin name that spells a callable's
-        # signature (see tests/test_device_constraints.py) — both stay
-        # Unknown to basedpyright, and so does everything assigned from them
-        # below. Ignored per-line rather than left to cascade silently.
+        # 呼び出し可能な型は組み込みの名前 1 つでは綴れない
+        # (tests/test_device_constraints.py) ので、注釈ではなく `# type:`
+        # コメントで書く。名前は上の実行されない枝から来る。
         #
         # Upstream's BuddyBLE also took an `on_passkey`. There is no
         # pairing step on this transport, so nothing would ever call it.
-        on_line=None,  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType]
-        on_state=None,  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType]
+        on_line=None,  # type: LineCallback | None
+        on_state=None,  # type: StateCallback | None
     ) -> None:
-        self._on_line = on_line or _noop_line  # pyright: ignore[reportUnknownMemberType]
-        self._on_state = on_state or _noop_state  # pyright: ignore[reportUnknownMemberType]
+        self._on_line = on_line or _noop_line
+        self._on_state = on_state or _noop_state
 
         self._name = name_prefix + "_serial"
         self._rx_buf = bytearray()
@@ -237,8 +241,8 @@ class BuddySerial:
             # also the path a future transport that *did* disable it
             # would come through.
             micropython.kbd_intr(3)
-        self._on_line = _noop_line  # pyright: ignore[reportUnknownMemberType]
-        self._on_state = _noop_state  # pyright: ignore[reportUnknownMemberType]
+        self._on_line = _noop_line
+        self._on_state = _noop_state
         print("buddy.serial: down")
 
     # ----- inbound pump
@@ -300,11 +304,11 @@ class BuddySerial:
         if not self._host_seen:
             self._host_seen = True
             self._emit_state("connected")
-        self._on_line(payload)  # pyright: ignore[reportUnknownMemberType]
+        self._on_line(payload)
 
     def _emit_state(self, state: str) -> None:
         try:
-            self._on_state(state)  # pyright: ignore[reportUnknownMemberType]
+            self._on_state(state)
         except Exception as e:
             print("buddy.serial: on_state error:", e)
 
