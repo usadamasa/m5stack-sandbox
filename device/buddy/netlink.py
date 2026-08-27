@@ -37,6 +37,7 @@ USB と同じ平文で、しかも LAN の中の誰でも繋げる。`dbg.*` (`b
 """
 
 import errno
+import select
 import socket
 import time
 
@@ -120,7 +121,20 @@ class BuddyNet:
         self._ls.bind(("0.0.0.0", port))
         self._ls.listen(1)
         self._ls.setblocking(False)
+        # 読めるときだけ accept / recv を呼ぶための poller。`buddy/serial.py` が
+        # stdin に対してやっているのと同じ。素で呼ぶと、繋いでいる相手が居ない
+        # 間ずっと 40 ms ごとに OSError(EAGAIN) を確保することになり、実機では
+        # その churn が発話を詰まらせて最後にアプリを落とした。
+        self._lp = self._make_poller(self._ls)
+        self._cp = None  # type: select.Poller | None
         print("buddy.netlink: listening on", port)
+
+    @staticmethod
+    def _make_poller(sock):
+        # type: (Socket) -> select.Poller
+        poller = select.poll()
+        poller.register(sock, select.POLLIN)
+        return poller
 
     # ----- transport surface
 
@@ -191,24 +205,33 @@ class BuddyNet:
             return
         self._accept()
         client = self._client
-        if client is None:
-            return
+        watch = self._cp
+        # 2 つは accept で一緒に立ち、_drop で一緒に落ちる。
+        if client is not None and watch is not None:
+            self._drain(client, watch)
+        self._dispatch_lines()
+
+    def _drain(self, client, watch):
+        # type: (Socket, select.Poller) -> None
+        """届いているぶんを rx buffer へ。1 tick に `_MAX_DRAIN` まで。"""
         drained = 0
-        while drained < _MAX_DRAIN:
+        while drained < _MAX_DRAIN and watch.poll(0):
             try:
                 chunk = client.recv(_RECV)
             except OSError as e:
                 if not _would_block(e):
                     print("buddy.netlink: recv failed:", e)
                     self._drop()
-                break
+                return
             if not chunk:
                 # EOF。相手が閉じた。
                 self._drop()
-                break
+                return
             drained += len(chunk)
             self._rx_buf.extend(chunk)
 
+    def _dispatch_lines(self) -> None:
+        """揃った行を配り、溢れていたら resync する。"""
         while True:
             nl = self._rx_buf.find(b"\n")
             if nl < 0:
@@ -225,15 +248,21 @@ class BuddyNet:
     # ----- internals
 
     def _accept(self) -> None:
+        if not self._lp.poll(0):
+            # 待っている client が居ない。ここで素の accept を呼ばないことが、
+            # 何も起きていない tick を本当に何もしない tick にしている。
+            return
         try:
             client, addr = self._ls.accept()
-        except OSError:
-            # 待っている client が居ない (EAGAIN)。他のエラーも同じ扱いで、
-            # listener が壊れているなら次の tick も同じ答えになるだけ。
+        except OSError as e:
+            # poll が読めると言った直後に取れないのは稀。listener が壊れて
+            # いるなら次の tick も同じ答えになるだけなので、言うだけにする。
+            print("buddy.netlink: accept failed:", e)
             return
         client.setblocking(False)
         old = self._client
         self._client = client
+        self._cp = self._make_poller(client)
         self._rx_buf = bytearray()
         print("buddy.netlink: client", addr)
         if old is not None:
@@ -250,6 +279,7 @@ class BuddyNet:
         if client is None:
             return
         self._client = None
+        self._cp = None
         self._rx_buf = bytearray()
         try:
             client.close()

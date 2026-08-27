@@ -39,8 +39,14 @@ class FakeSock:
         self.send_error: OSError | None = None
         # 0 より大きければ、send はこのバイト数までしか受け取らない。
         self.send_limit = 0
+        self.recvs = 0
+
+    def readable(self) -> bool:
+        """poll が「読める」と答える条件。EOF (b"") も読めるうちに入る。"""
+        return bool(self.rx)
 
     def recv(self, n: int) -> bytes:
+        self.recvs += 1
         if not self.rx:
             raise OSError(errno.EAGAIN)
         item = self.rx.popleft()
@@ -76,6 +82,10 @@ class FakeListener(FakeSock):
         self.bound: tuple[str, int] | None = None
         self.backlog: int | None = None
         self.options: list[tuple[int, int, int]] = []
+        self.accepts = 0
+
+    def readable(self) -> bool:
+        return bool(self.pending)
 
     def setsockopt(self, level: int, opt: int, value: int) -> None:
         self.options.append((level, opt, value))
@@ -87,6 +97,7 @@ class FakeListener(FakeSock):
         self.backlog = backlog
 
     def accept(self) -> tuple[FakeSock, tuple[str, int]]:
+        self.accepts += 1
         if not self.pending:
             raise OSError(errno.EAGAIN)
         return self.pending.popleft(), ("192.168.0.155", 50000)
@@ -105,11 +116,44 @@ class FakeSocketModule:
         return self.listener
 
 
+class FakePoller:
+    """登録した socket のうち、読めるものだけを返す。本物の select.poll と同じ形。"""
+
+    def __init__(self) -> None:
+        self.registered: list[FakeSock] = []
+
+    def register(self, obj: FakeSock, _events: int) -> None:
+        self.registered.append(obj)
+
+    def unregister(self, obj: FakeSock) -> None:
+        if obj in self.registered:
+            self.registered.remove(obj)
+
+    def poll(self, _timeout: int = 0) -> list[tuple[FakeSock, int]]:
+        return [(o, 1) for o in self.registered if o.readable()]
+
+
+class FakeSelectModule:
+    POLLIN = 1
+
+    def __init__(self) -> None:
+        self.pollers: list[FakePoller] = []
+
+    def poll(self) -> FakePoller:
+        made = FakePoller()
+        self.pollers.append(made)
+        return made
+
+
 class BuddyNetTest(unittest.TestCase):
     def setUp(self) -> None:
         self._real_time = netlink.time
         netlink.time = _FakeTime()
         self.addCleanup(setattr, netlink, "time", self._real_time)
+
+        self._real_select = netlink.select
+        netlink.select = FakeSelectModule()
+        self.addCleanup(setattr, netlink, "select", self._real_select)
 
         self.sock = FakeSocketModule()
         self.lines: list[bytes] = []
@@ -151,6 +195,20 @@ class BuddyNetTest(unittest.TestCase):
         self.assertEqual(self.states, [])
         self.assertFalse(self.t.connected)
         self.assertFalse(self.t.send_line(b'{"ack":"x"}'))
+
+    def test_an_idle_tick_does_not_call_accept(self) -> None:
+        # accept を素で呼ぶと、繋いでいる相手が居ない間ずっと 40ms ごとに
+        # OSError(EAGAIN) を確保することになる。実機ではその churn が発話を
+        # 詰まらせ、最後にアプリを落とした。読めるときだけ呼ぶ。
+        for _ in range(10):
+            self.t.poll()
+        self.assertEqual(self.listener.accepts, 0)
+
+    def test_an_idle_client_does_not_call_recv(self) -> None:
+        client = self._connect()
+        for _ in range(10):
+            self.t.poll()
+        self.assertEqual(client.recvs, 0)
 
     # ----- a client
 

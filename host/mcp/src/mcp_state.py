@@ -94,6 +94,13 @@ def get_link(port: str | None = None) -> ResidentLink:
     if link is not None and link.connected and link.port != target:
         link.disconnect()
         link = None
+    if link is not None and link.dropped:
+        # デバイスが下で reboot すると USB が再列挙され、握っている fd は
+        # 以後 ENXIO しか返さない。`connected` は開いたつもりのまま True なので、
+        # ここで畳まないと同じ死んだ handle を配り続けることになる。
+        log.info("link dropped (device reset?); reopening %s", link.port)
+        link.disconnect()
+        link = None
     if link is None or not link.connected:
         link = ResidentLink(target)
         link.connect()
@@ -117,8 +124,18 @@ def live_link() -> ResidentLink | None:
 
     下の `connect_on_start` が唯一の例外だが、あれは起動時の 1 回きりの試行で
     あって、この関数から誘発できるものではない。
+
+    **死んだリンクは渡さない。** デバイスが下で reboot すると reader スレッドが
+    `dropped` を立てて降りるが、`connected` は開いたつもりのまま True になって
+    いる。それを渡すと chatter は書くたびに ENXIO で失敗し、台詞ごとに WARNING
+    を出し続ける (実機で 16 分そうなった)。ここで None を返せば chatter は
+    「繋がっていない」として数え、開き直すのは次の tool 呼び出し (`get_link`) か
+    daemon の再起動になる。ここで開き直さないのは、この関数がデバイスロックの
+    外から呼ばれるため。
     """
-    return link if link is not None and link.connected else None
+    if link is None or not link.connected or link.dropped:
+        return None
+    return link
 
 
 # `connect_on_start` がその 1 回の試行をどう思ったか。走らなかったなら None。

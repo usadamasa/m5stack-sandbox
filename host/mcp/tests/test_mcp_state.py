@@ -22,6 +22,23 @@ class ChatterWiringTest(McpTestCase):
         buddy_mcp.buddy_connect()
         self.assertIs(mcp_state.live_link(), StubLink.instances[0])
 
+    def test_a_link_that_died_under_us_is_not_offered(self) -> None:
+        # デバイスが reboot すると USB が再列挙され、握っている fd は ENXIO を
+        # 返すようになる。`connected` は開いたつもりのまま True なので、これを
+        # 見ないと chatter は死んだ fd へ書き続ける (実機で 16 分そうなった)。
+        buddy_mcp.buddy_connect()
+        StubLink.instances[0].dropped = True
+        self.assertIsNone(mcp_state.live_link())
+
+    def test_the_next_tool_call_opens_a_fresh_link(self) -> None:
+        buddy_mcp.buddy_connect()
+        first = StubLink.instances[0]
+        first.dropped = True
+        buddy_mcp.buddy_status()
+        self.assertEqual(len(StubLink.instances), 2)
+        self.assertFalse(first.connected, "the dead handle must be released")
+        self.assertIs(mcp_state.live_link(), StubLink.instances[1])
+
     def test_a_disconnected_link_is_not_offered(self) -> None:
         buddy_mcp.buddy_connect()
         buddy_mcp.buddy_disconnect()
