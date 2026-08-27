@@ -93,7 +93,7 @@ class RouterDebugTest(unittest.TestCase):
     def setUp(self) -> None:
         self.gc = FakeGc()
         self.addCleanup(setattr, buddy_router, "gc", buddy_router.gc)
-        buddy_router.gc = self.gc  # pyright: ignore[reportAttributeAccessIssue]
+        buddy_router.gc = self.gc
         # unload の経路は sys.modules と package の属性の両方を落とす。他の
         # テストが掴んでいるものを壊さないよう、どちらも戻す。
         self.package = importlib.import_module("buddy")

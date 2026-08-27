@@ -126,6 +126,12 @@ import json
 
 from buddy import chat_font, chat_wrap
 
+# 型検査だけの import。デバイスの上では `False` なので走らない。事情と
+# 使い方は `device/typings/buddy_types.pyi` の docstring にある。
+_TYPE_CHECKING = False
+if _TYPE_CHECKING:
+    from buddy_types import Lcd  # noqa: F401
+
 # Anthropic palette, inlined. Same values as buddy_ui_cp.py, duplicated
 # for the same reason it duplicates them: importing that module pulls in
 # `M5` at module scope, which does not exist off-device.
@@ -177,23 +183,39 @@ def _role_style(role):
     # `role` is whatever the wire handed us in a "role" field — dict.get()
     # works with any hashable key, so a malformed non-str value still
     # resolves to the default style rather than raising.
-    return _ROLE_STYLE.get(role, _ROLE_STYLE[_DEFAULT_ROLE])  # pyright: ignore[reportCallIssue, reportUnknownVariableType, reportArgumentType]
+    return _ROLE_STYLE.get(role, _ROLE_STYLE[_DEFAULT_ROLE])
+
+
+def _text_of(msg):
+    # type: (dict[str, object]) -> str
+    """メッセージの本文。
+
+    積むのは `say()` で、そこで str へ寄せてから入れているので実行時は
+    常に str。それでも絞り直すのは、dict の値の型が `object` だから —
+    `typing.cast` はここでは使えない。
+    """
+    text = msg.get("text", "")
+    return text if isinstance(text, str) else str(text)
 
 
 class ChatPanel:
     """A transcript rendered into the Buddy dashboard's main panel."""
 
     # `lcd`, when passed explicitly, is a test double standing in for
-    # M5.Lcd — no `typing.Protocol` on MicroPython to name what the two
-    # have in common — so it stays unannotated and every access through
-    # `self._lcd` below is ignored per-line.
+    # M5.Lcd. The two share no base class, so the surface is pinned by a
+    # Protocol in `device/typings/buddy_types.pyi` and named from a
+    # `# type:` comment — annotations here have to be plain builtin names
+    # (see `device/tests/test_device_constraints.py`).
     # `vlw_path` is a seam as much as a setting: pointing it at a real
     # file is how the host tests exercise the VLW branch without a board,
     # and passing "" is how they exercise the fallback. Empty rather than
-    # None because annotations here have to be plain builtin names —
-    # see `device/tests/test_device_constraints.py`.
-    def __init__(self, lcd=None, vlw_path: str = chat_font.VLW_PATH) -> None:  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType]
-        self._lcd = lcd if lcd is not None else _default_lcd()  # pyright: ignore[reportUnknownMemberType]
+    # None for the same constraint.
+    def __init__(
+        self,
+        lcd=None,  # type: Lcd | None
+        vlw_path: str = chat_font.VLW_PATH,
+    ) -> None:
+        self._lcd = lcd if lcd is not None else _default_lcd()
         self._messages = []  # type: list[dict[str, object]]
         self.active = False
 
@@ -202,7 +224,7 @@ class ChatPanel:
         # that message is in the transcript.
         self._has_wide = False
 
-        self._font = chat_font.ChatFont(self._lcd, vlw_path)  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
+        self._font = chat_font.ChatFont(self._lcd, vlw_path)
 
     # ----- transcript
 
@@ -267,12 +289,8 @@ class ChatPanel:
         would cost two rows for nothing.
         """
         for msg in self._messages:
-            # `text` is always a str on the wire; msg's value type is the
-            # generic `object` from dict[str, object], so the iteration
-            # below is ignored per-line rather than narrowed with a
-            # `typing.cast` MicroPython does not have.
-            for ch in msg.get("text", ""):  # pyright: ignore[reportUnknownVariableType, reportGeneralTypeIssues]
-                if chat_font.is_wide(ch):  # pyright: ignore[reportUnknownArgumentType]
+            for ch in _text_of(msg):
+                if chat_font.is_wide(ch):
                     self._has_wide = True
                     return
         self._has_wide = False
@@ -338,7 +356,7 @@ class ChatPanel:
         for msg in self._messages:
             prefix, prefix_color, body_color = _role_style(msg.get("role"))
             first = True
-            for row in chat_wrap.wrap(msg.get("text", ""), avail, self._font):  # pyright: ignore[reportArgumentType]
+            for row in chat_wrap.wrap(_text_of(msg), avail, self._font):
                 out.append((prefix if first else "", prefix_color, row, body_color))
                 first = False
         if max_rows > 0 and len(out) > max_rows:
@@ -347,22 +365,20 @@ class ChatPanel:
 
     def render(self) -> None:
         """Repaint the whole panel. Cheap enough to call unconditionally."""
-        # `self._lcd` is duck-typed (see __init__), so every call through
-        # `lcd` below is ignored per-line.
-        lcd = self._lcd  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+        lcd = self._lcd
         self._font.push(self._has_wide)
         try:
             rows = self.layout(self._max_rows())
-            lcd.fillRect(0, _Y0, _W, _Y1 - _Y0, _BLACK)  # pyright: ignore[reportUnknownMemberType]
+            lcd.fillRect(0, _Y0, _W, _Y1 - _Y0, _BLACK)
             y = _Y0
             line_h = self._font.line_height()
             indent = self._font.indent_width(_INDENT)
             for prefix, prefix_color, body, body_color in rows:
                 if prefix:
-                    lcd.setTextColor(prefix_color, _BLACK)  # pyright: ignore[reportUnknownMemberType]
-                    lcd.drawString(prefix, _X0, y)  # pyright: ignore[reportUnknownMemberType]
-                lcd.setTextColor(body_color, _BLACK)  # pyright: ignore[reportUnknownMemberType]
-                lcd.drawString(body, _X0 + indent, y)  # pyright: ignore[reportUnknownMemberType]
+                    lcd.setTextColor(prefix_color, _BLACK)
+                    lcd.drawString(prefix, _X0, y)
+                lcd.setTextColor(body_color, _BLACK)
+                lcd.drawString(body, _X0 + indent, y)
                 y += line_h
         finally:
             self._font.pop()

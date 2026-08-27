@@ -59,7 +59,13 @@ pythonVersion = "3.13"
 include = ["src", "tests"]
 exclude = ["**/__pycache__"]
 extraPaths = ["src", "../link/src"]
+# mpy-cross は py.typed を持たず stub パッケージも無いので、触る面だけを写した
+# 手書きのスタブを置いてある。既定値と同じ名前だが、device/ と揃えて明示する。
+stubPath = "typings"
 typeCheckingMode = "strict"
+# 腐った ignore を検査側から言わせる。意図は host/link/pyproject.toml の
+# 同じ設定に書いてある。
+reportUnnecessaryTypeIgnoreComment = "error"
 # host/link (buddy_bridge, device_repl, fake_repl) は同じ workspace の自前
 # パッケージだが、editable install は hatchling の import hook 経由なので
 # basedpyright からは見えない。extraPaths でソースを直接指すと import 解決先が

@@ -81,7 +81,7 @@ class ManifestResumeTest(unittest.TestCase):
             self.requests.append(url)
             return queue.pop(0)
 
-        firmware_manifest.open_https = fake_open  # pyright: ignore[reportAttributeAccessIssue]
+        firmware_manifest.open_https = fake_open
 
     def _range_headers(self) -> list[str | None]:
         return [
@@ -183,7 +183,7 @@ class DownloadTest(unittest.TestCase):
             self.requests.append(url)
             return queue.pop(0)
 
-        fetch_firmware.open_https = fake_open  # pyright: ignore[reportAttributeAccessIssue]
+        fetch_firmware.open_https = fake_open
 
     def test_writes_the_binary_and_its_sidecar(self) -> None:
         self._install([FakeResponse(self.body, headers={"Content-MD5": self.md5})])
@@ -233,6 +233,7 @@ class FileFieldTest(unittest.TestCase):
         self.assertTrue(pattern.match("0123456789abcdef" * 2 + ".bin"))
 
     def test_rejects_traversal_and_url_tricks(self) -> None:
+        # 上と同じ理由で非公開シンボルに直接触る。
         pattern = fetch_firmware._FILE_FIELD_RE  # pyright: ignore[reportPrivateUsage]
         for bad in ("../etc/passwd", "a/b.bin", "a\r\nHost: evil", "", "x" * 257):
             with self.subTest(bad=bad):

@@ -66,7 +66,7 @@ class McpTestCase(unittest.TestCase):
     def setUp(self) -> None:
         StubLink.instances = []
         real_cls: Any = mcp_state.ResidentLink
-        mcp_state.ResidentLink = StubLink  # pyright: ignore[reportAttributeAccessIssue]
+        mcp_state.ResidentLink = StubLink
         self.addCleanup(setattr, mcp_state, "ResidentLink", real_cls)
         # The module holds one link for the life of the server process.
         mcp_state.link = None

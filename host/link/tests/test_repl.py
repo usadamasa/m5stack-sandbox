@@ -14,8 +14,7 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-# mpremote は型スタブを配布していないサードパーティ製ライブラリ。
-from mpremote.transport import TransportError  # pyright: ignore[reportMissingTypeStubs]
+from mpremote.transport import TransportError
 
 import device_repl
 from device_repl import ReplError, connect_repl

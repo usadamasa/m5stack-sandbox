@@ -18,7 +18,8 @@ from deploy_spec import COMPILE_TIMEOUT_S, DEVICE_ROOT, LAUNCHER, OVERLAY, REPO,
 def _mpy_cross_binary() -> str:
     try:
         # PyPI 版の mpy-cross に型情報が無く、stub パッケージも存在しない。
-        import mpy_cross  # pyright: ignore[reportMissingTypeStubs]
+        # 触る面だけを写した手書きのスタブが `host/tools/typings/` にある。
+        import mpy_cross
     except ImportError:
         raise DeployError(
             "mpy-cross is not installed. It is in the dev dependency group: run `uv sync`."

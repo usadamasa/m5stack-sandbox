@@ -46,6 +46,12 @@ import time
 
 from buddy.router import Router
 
+# 型検査だけの import。デバイスの上では `False` なので走らない。事情と
+# 使い方は `device/typings/buddy_types.pyi` の docstring にある。
+_TYPE_CHECKING = False
+if _TYPE_CHECKING:
+    from buddy_types import M5Module, State, Ui, UiModule  # noqa: F401
+
 
 # ---- battery stub
 #
@@ -66,7 +72,7 @@ _FOOTER_INTERVAL = 3000
 
 
 def _redraw_dashboard(ui, state):
-    # type: (object, object) -> None
+    # type: (Ui, State) -> None
     """chat が panel を返してきた後の描き直し。
 
     chat は header まで覆っているので、dashboard には main panel だけで
@@ -78,9 +84,9 @@ def _redraw_dashboard(ui, state):
     if redraw is not None:
         redraw()
     else:
-        ui.update_heartbeat({})  # pyright: ignore[reportUnknownMemberType, reportAttributeAccessIssue]
-        ui.restore_button_hints()  # pyright: ignore[reportUnknownMemberType, reportAttributeAccessIssue]
-    ui.update_footer(state.stats(), _stub_battery())  # pyright: ignore[reportUnknownMemberType, reportAttributeAccessIssue]
+        ui.update_heartbeat({})
+        ui.restore_button_hints()
+    ui.update_footer(state.stats(), _stub_battery())
 
 
 def _serve_ui(router, last_footer_ms):
@@ -96,9 +102,6 @@ def _serve_ui(router, last_footer_ms):
     `speech`) ので、渡すのは router と時計だけ。tick ごとに増える呼び出しを
     この 1 つに抑えるため、描画の順も条件も 1 つの関数に畳んである。
     """
-    # `Router` はこれらを `object` として持っている (トランスポートより先に
-    # 組み立つので具体型が置けない)。呼び出しを行単位で無視しているのは
-    # そのためで、事情は `buddy/router.py` の側にも書いてある。
     ui = router.ui
     chat = router.chat
     state = router.state
@@ -106,16 +109,16 @@ def _serve_ui(router, last_footer_ms):
     new_state = router.pending_state
     if new_state is not None:
         router.pending_state = None
-        ui.set_connection(new_state)  # pyright: ignore[reportUnknownMemberType]
-        if chat.active:  # pyright: ignore[reportUnknownMemberType]
+        ui.set_connection(new_state)
+        if chat.active:
             # set_connection は main panel を描き直す。transcript が
             # 出ているあいだ、そこは chat のもの。
-            chat.render()  # pyright: ignore[reportUnknownMemberType]
+            chat.render()
 
     if router.chat_dirty:
         router.chat_dirty = False
-        if chat.active:  # pyright: ignore[reportUnknownMemberType]
-            chat.render()  # pyright: ignore[reportUnknownMemberType]
+        if chat.active:
+            chat.render()
         else:
             # chat.clear が panel を返してきた。
             _redraw_dashboard(ui, state)
@@ -123,18 +126,19 @@ def _serve_ui(router, last_footer_ms):
     now = time.ticks_ms()
     if time.ticks_diff(now, last_footer_ms) < _FOOTER_INTERVAL:
         return last_footer_ms
-    state.tick_nap()  # pyright: ignore[reportUnknownMemberType]
+    state.tick_nap()
     # stats の footer は y=96..110 に描く。そこは chat の領域の内側で、
     # これを飛ばすことが transcript を 3 秒ごとに打ち抜かないでいる理由に
     # なっている。SPI のトランザクション何本ぶんもあり、再生中の tick には
     # 余裕が無い — underrun は耳に付くが、3 秒古いバッテリ表示は付かない。
-    if not chat.active and not router.speech.active:  # pyright: ignore[reportUnknownMemberType]
-        ui.update_footer(state.stats(), _stub_battery())  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+    speech = router.speech
+    if not chat.active and not (speech is not None and speech.active):
+        ui.update_footer(state.stats(), _stub_battery())
     return now
 
 
 def _shutdown(router, buddy_ui, m5, to_repl):
-    # type: (Router, object, object, bool) -> None
+    # type: (Router, UiModule, M5Module, bool) -> None
     """main loop を抜けた後の畳み方。reboot するかどうかは呼び出し側。
 
     順は buddy_app.py に倣う: まずトランスポート、次に画面を黒で塗り潰し、
@@ -142,24 +146,28 @@ def _shutdown(router, buddy_ui, m5, to_repl):
     ポート越しの転送を切り、キューに 1 秒ぶんの音声を抱えたままのスピーカーを
     黙らせる唯一のもの。
     """
+    # `speech` と `ble` は生成の後から差さる枠なので、init がそこまで
+    # 進む前に落ちるとどちらも None のまま来る。
     try:
-        router.speech.stop()  # pyright: ignore[reportUnknownMemberType]
+        if router.speech is not None:
+            router.speech.stop()
     except Exception as e:
         print("claude_buddy: speech stop warning:", e)
     try:
-        router.ble.deinit()  # pyright: ignore[reportUnknownMemberType]
+        if router.ble is not None:
+            router.ble.deinit()
     except Exception as e:
         print("claude_buddy: deinit warning:", e)
     try:
-        m5.Lcd.fillScreen(buddy_ui.BLACK)  # pyright: ignore[reportUnknownMemberType, reportAttributeAccessIssue]
+        m5.Lcd.fillScreen(buddy_ui.BLACK)
     except Exception as e:
         print("claude_buddy: screen-clear warning:", e)
     if to_repl:
         # 黒い画面で reboot もしないのは、机の向こうから見れば文鎮化と
         # 区別が付かない。どちらなのかを言うには一語で足りる。
         try:
-            m5.Lcd.setTextColor(buddy_ui.GRAY_DIM, buddy_ui.BLACK)  # pyright: ignore[reportUnknownMemberType, reportAttributeAccessIssue]
-            m5.Lcd.drawString("REPL", 8, 8)  # pyright: ignore[reportUnknownMemberType, reportAttributeAccessIssue]
+            m5.Lcd.setTextColor(buddy_ui.GRAY_DIM, buddy_ui.BLACK)
+            m5.Lcd.drawString("REPL", 8, 8)
         except Exception as e:
             print("claude_buddy: repl banner warning:", e)
     # 短く待つのは、末尾の log 行が USB コンソールの上で行の途中から

@@ -46,9 +46,10 @@ import time
 from collections.abc import Callable, Sequence
 from typing import Any, Protocol
 
-# mpremote は型スタブを配布していないサードパーティ製ライブラリ。
-from mpremote.transport import TransportError  # pyright: ignore[reportMissingTypeStubs]
-from mpremote.transport_serial import SerialTransport  # pyright: ignore[reportMissingTypeStubs]
+# mpremote は型スタブを配布していない。触る面だけを写した手書きのスタブが
+# `host/link/typings/mpremote/` にある。
+from mpremote.transport import TransportError
+from mpremote.transport_serial import SerialTransport
 
 
 class ReplError(RuntimeError):

@@ -94,6 +94,9 @@ known-first-party = [
     "buddy_link",
     "buddy_mcp",
     "buddy_text",
+    # device/typings/ の stub-only モジュール。実体が無いので ruff の
+    # 自動判定では first-party にならない。
+    "buddy_types",
     "buddy_verbs",
     "buddy_wire",
     # tests/ 側の共有 stub。src ルートに居ないので ruff の自動判定では

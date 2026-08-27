@@ -72,6 +72,11 @@ exclude = ["**/__pycache__", "typings"]
 extraPaths = [".", "../host/link/src"]
 stubPath = "typings"
 typeCheckingMode = "strict"
+# 腐った ignore を検査側から言わせる。意図は host/link/pyproject.toml の
+# 同じ設定に書いてある。この tree では特に効く — 下の
+# `reportAttributeAccessIssue = "none"` のように群ごと黙らせている規則が
+# あり、そこに対する ignore は最初から意味を持たない。
+reportUnnecessaryTypeIgnoreComment = "error"
 # device/ imports firmware-provided modules (M5, hardware, micropython) and
 # upstream peers that live on the device's flash, none of which exist here.
 # Their absence is the expected state, not a finding. `typings/` carries

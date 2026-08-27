@@ -180,7 +180,7 @@ class RunTest(unittest.TestCase):
 
     def test_upstream_s_own_helper_wins_when_it_is_there(self) -> None:
         redraw = Recorder()
-        self.ui._redraw_chrome = lambda: redraw.record("_redraw_chrome")  # pyright: ignore[reportAttributeAccessIssue]
+        self.ui._redraw_chrome = lambda: redraw.record("_redraw_chrome")
 
         def poll(transport: FakeTransport, count: int) -> None:
             if count == 1:

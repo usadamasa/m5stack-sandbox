@@ -4,6 +4,10 @@
 `device/buddy/chat_font.py` は driver へ書体を載せて外し、載っている間の
 文字送りと行高を測る。見えるところは `ChatPanel.info()` に出る書体名・倍率・
 行数なので、テストもそこから見る。fake の尺度と幾何は `chat_fakes.py`。
+
+切り落としのテストが `buddy.chat._MAX_MESSAGES` を直接読むので、
+basedpyright の private-member の検査はこのファイルごと切ってある
+(冒頭の `reportPrivateUsage=false`)。
 """
 
 import tempfile
@@ -159,7 +163,7 @@ class VlwTest(unittest.TestCase):
             msg = "no"
             raise OSError(msg)
 
-        lcd.loadFont = explode  # pyright: ignore[reportAttributeAccessIssue]
+        lcd.loadFont = explode
         panel = ChatPanel(lcd=lcd, vlw_path=str(self.vlw))
         panel.say("claude", "テスト")
         self.assertEqual(panel.info()["font"], "EFontJA24")

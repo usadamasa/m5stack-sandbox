@@ -94,8 +94,10 @@ class FakeUi(Recorder):
     def set_connection(self, state: str) -> None:
         self.record("set_connection", state)
 
-    def update_heartbeat(self, payload: dict[str, object]) -> None:
-        self.record("update_heartbeat", payload)
+    # 引数の名前は upstream (`device/typings/buddy_ui_cp.pyi`) に合わせる。
+    # Protocol は名前まで見るので、ここがずれると fake が面から外れる。
+    def update_heartbeat(self, hb: dict[str, object]) -> None:
+        self.record("update_heartbeat", hb)
 
     def restore_button_hints(self) -> None:
         self.record("restore_button_hints")
@@ -256,10 +258,20 @@ def firmware_modules(
     }
 
 
-def make_router(**bound: object) -> Router:
-    """振り分けだけを見るための Router。差さっていないものは既定の fake。"""
-    router = Router(FakeUi(), bound.get("chat") or FakeChat(), FakeState(), Recorder())
-    router.ble = bound.get("ble") or FakeBle()
-    router.speech = bound.get("speech") or FakeSpeech()
-    router.proto = bound.get("proto") or FakeProto()
+def make_router(
+    chat: FakeChat | None = None,
+    ble: FakeBle | None = None,
+    speech: FakeSpeech | None = None,
+    proto: FakeProto | None = None,
+) -> Router:
+    """振り分けだけを見るための Router。差さっていないものは既定の fake。
+
+    `**bound: object` ではなく名前を並べてあるのは、`Router` が受け口ごとに
+    面を宣言するようになったため。`object` で受けると、そこへ渡せるものが
+    型としては何も無くなる。
+    """
+    router = Router(FakeUi(), chat or FakeChat(), FakeState(), Recorder())
+    router.ble = ble or FakeBle()
+    router.speech = speech or FakeSpeech()
+    router.proto = proto or FakeProto()
     return router
