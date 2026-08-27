@@ -38,11 +38,23 @@ if TYPE_CHECKING:
 
 
 class _FakeSpeaker:
-    """M5.Speaker with a bounded queue, as measured: eight and no more."""
+    """M5.Speaker のうち player が触る面。実測に合わせてある。
 
-    def __init__(self, depth: int = 8, volume: int = 64) -> None:
-        self.depth = depth
+    1 チャンネルの枠は 2 つ (再生中 + 次)。`isPlaying(ch)` はその埋まり具合を
+    0 / 1 / 2 で返す。本物の `playRaw` は満杯だと**待つ** (False は返さない)
+    ので、fake は満杯で呼ばれたら `overfilled` を立てて False を返す —
+    player がそこへ渡した時点で、実機なら UI が止まっている。
+
+    `channel=-1` は「空いているチャンネルを探す」で、ブロックが並列に鳴る。
+    fake は渡されたチャンネルを全部記録して、テストがそれを検査する。
+    """
+
+    def __init__(self, volume: int = 64) -> None:
         self.queued: list[bytes] = []
+        self.handed: list[bytes] = []
+        self.channels: list[int] = []
+        self.overfilled = 0
+        self.refuse = False
         self.stopped = 0
         # M5Unified's own default, which is what the player multiplies.
         self.volume = volume
@@ -53,21 +65,30 @@ class _FakeSpeaker:
     def setVolume(self, master_volume: int) -> None:
         self.volume = master_volume
 
+    def isPlaying(self, _channel: int) -> int:
+        return len(self.queued)
+
     def playRaw(
         self,
         data: bytes,
         _rate: int,
         _stereo: bool,
         _repeat: int,
-        _channel: int,
+        channel: int,
         _stop_current: bool,
     ) -> bool:
-        if len(self.queued) >= self.depth:
+        self.channels.append(channel)
+        if self.refuse:
+            return False
+        if len(self.queued) >= 2:
+            self.overfilled += 1
             return False
         self.queued.append(bytes(data))
+        self.handed.append(data)
         return True
 
     def drain(self, n: int = 1) -> None:
+        """再生が進んだことにする。n ブロックぶん鳴り終わる。"""
         self.queued = self.queued[n:]
 
     def stop(self) -> None:
@@ -137,21 +158,63 @@ class SpeechPlayerTest(TimeFrozen):
         self._rate = 24000
         self.assertEqual(self.say()["rate"], 24000)
 
-    def test_one_block_per_pump(self) -> None:
-        # Draining in a loop here would freeze the UI for the length of
-        # the utterance, so the pump takes one bite a tick.
+    def test_every_block_goes_to_the_same_fixed_channel(self) -> None:
+        # channel=-1 は「空いているチャンネルを探す」。64 ms のブロックを
+        # 45 ms おきに渡すと別チャンネルで重なって鳴る (実測: 8 ブロックが
+        # 133 ms で終わった)。1 本に固定して初めて順に鳴る。
         self.say()
-        self.stream.feed(blk(b"a") + blk(b"b"))
-        self.player.pump()
-        self.assertEqual(self.spk.queued, [blk(b"a")])
+        self.stream.feed(blk(b"a") + blk(b"b") + blk(b"c"))
+        for _ in range(3):
+            self.player.pump()
+            self.spk.drain()
+        self.assertEqual(len(self.spk.channels), 3)
+        self.assertEqual(set(self.spk.channels), {buddy_speak._CHANNEL})
+        self.assertGreaterEqual(buddy_speak._CHANNEL, 0)
+
+    def test_fills_the_free_slots_and_no_more_in_one_tick(self) -> None:
+        # 枠は 2 つ。最初の tick で両方埋める — 頭のクッションはこれしか
+        # 無い。3 つ目は枠が空くまで socket に置いたままにする。
+        self.say()
+        self.stream.feed(blk(b"a") + blk(b"b") + blk(b"c"))
         self.player.pump()
         self.assertEqual(self.spk.queued, [blk(b"a"), blk(b"b")])
+        self.player.pump()
+        self.assertEqual(self.spk.queued, [blk(b"a"), blk(b"b")])
+        self.assertEqual(self.spk.overfilled, 0)
+        self.spk.drain()
+        self.player.pump()
+        self.assertEqual(self.spk.queued, [blk(b"b"), blk(b"c")])
+
+    def test_never_hands_a_block_to_a_full_queue(self) -> None:
+        # 本物の playRaw は満杯だと待つ。待たされた tick は UI が止まる。
+        self.say()
+        self.stream.feed(blk(b"a") * 6)
+        for _ in range(6):
+            self.player.pump()
+        self.assertEqual(self.spk.overfilled, 0)
+        self.assertEqual(len(self.spk.handed), 2)
+
+    def test_keeps_handed_blocks_referenced_until_played(self) -> None:
+        # binding は buffer のポインタをそのまま渡す (複製しない)。参照を
+        # 落とすと GC がその領域を次の bytes に回し、鳴っている途中で中身が
+        # 変わる。渡した最後の数ブロックは player が持ち続ける。
+        self.say()
+        self.stream.feed(blk(b"a") + blk(b"b") + blk(b"c") + blk(b"d"))
+        for _ in range(4):
+            self.player.pump()
+            self.spk.drain()
+        kept = self.player._recent
+        self.assertTrue(kept)
+        self.assertLessEqual(len(kept), buddy_speak._KEEP)
+        for handed, held in zip(self.spk.handed[-len(kept) :], kept):
+            self.assertIs(handed, held)
 
     def test_finishes_and_acks_when_the_payload_runs_out(self) -> None:
         self.say()
         self.stream.feed(blk(b"a") + blk(b"b"))
         for _ in range(4):
             self.player.pump()
+            self.spk.drain()
         self.assertFalse(self.player.active)
         self.assertEqual(len(self.t.sent), 1)
         sent = json.loads(self.t.sent[0])
@@ -159,18 +222,30 @@ class SpeechPlayerTest(TimeFrozen):
         self.assertTrue(sent["ok"])
         self.assertEqual(sent["blocks"], 2)
 
-    def test_holds_a_block_the_speaker_refused(self) -> None:
-        # playRaw returns False rather than blocking once its queue is
-        # full. A block dropped here is a gap in the audio.
-        self.spk.depth = 1
+    def test_speak_end_waits_for_the_speaker_to_drain(self) -> None:
+        # 最後のブロックを渡した時点ではまだ 2 枠ぶん鳴り残っている。
+        # ホストは speak.end を「鳴り終わった」として扱うので、そこまで待つ。
         self.say()
         self.stream.feed(blk(b"a") + blk(b"b"))
         self.player.pump()
         self.player.pump()
-        self.assertEqual(self.spk.queued, [blk(b"a")])
-        self.spk.drain()
+        self.assertTrue(self.player.active)
+        self.assertEqual(self.t.sent, [])
+        self.spk.drain(2)
         self.player.pump()
-        self.assertEqual(self.spk.queued, [blk(b"b")])
+        self.assertFalse(self.player.active)
+        self.assertEqual(json.loads(self.t.sent[0])["ack"], "speak.end")
+
+    def test_holds_a_block_the_speaker_refused(self) -> None:
+        # 断られたブロックは次の tick でもう一度渡す。落とすと音が抜ける。
+        self.say()
+        self.stream.feed(blk(b"a") + blk(b"b"))
+        self.spk.refuse = True
+        self.player.pump()
+        self.assertEqual(self.spk.queued, [])
+        self.spk.refuse = False
+        self.player.pump()
+        self.assertEqual(self.spk.queued, [blk(b"a"), blk(b"b")])
 
     def test_a_stalled_stream_ends_not_ok(self) -> None:
         self.say()
@@ -181,17 +256,59 @@ class SpeechPlayerTest(TimeFrozen):
         sent = json.loads(self.t.sent[0])
         self.assertFalse(sent["ok"])
 
-    def test_waiting_for_bytes_counts_as_a_stall_not_an_end(self) -> None:
-        # The stalls counter is the diagnostic for "the supply could not
-        # keep up", and it is the only signal the host gets about it.
+    def test_a_stalled_stream_still_plays_out_what_it_has(self) -> None:
+        # 途中で切れても、渡し終えたぶんは鳴らし切ってから not-ok を返す。
+        self.say()
+        self.stream.feed(blk(b"a"))
+        self.player.pump()
+        FakeTime.now = speak_stream._STALL_MS + 1
+        self.player.pump()
+        self.assertTrue(self.player.active)
+        self.spk.drain()
+        self.player.pump()
+        self.assertFalse(self.player.active)
+        self.assertFalse(json.loads(self.t.sent[0])["ok"])
+
+    def test_stalls_count_the_times_the_speaker_ran_dry(self) -> None:
+        # stalls はホストが「音が途切れた」を知る唯一の値。socket を待った
+        # tick ではなく、鳴り始めた後に speaker が空になった回数で数える —
+        # 続けて空いていた tick は 1 回。
+        self.say()
+        self.stream.feed(blk(b"a"))
+        self.player.pump()
+        self.assertEqual(self.player._stalls, 0)
+        self.spk.drain()
+        for _ in range(3):
+            self.player.pump()
+        self.assertEqual(self.player._stalls, 1)
+        self.stream.feed(blk(b"b"))
+        self.player.pump()
+        self.spk.drain()
+        self.player.pump()
+        self.assertFalse(self.player.active)
+        self.assertEqual(json.loads(self.t.sent[0])["stalls"], 1)
+
+    def test_waiting_before_the_first_block_is_not_a_stall(self) -> None:
+        # 鳴り始める前に socket を待つのは普通のこと。音は途切れていない。
         self.say()
         self.player.pump()
         self.player.pump()
-        self.assertTrue(self.player.active)
         self.stream.feed(blk(b"a") + blk(b"b"))
         for _ in range(4):
             self.player.pump()
-        self.assertGreater(json.loads(self.t.sent[0])["stalls"], 0)
+            self.spk.drain()
+        self.assertEqual(json.loads(self.t.sent[0])["stalls"], 0)
+
+    def test_block_size_follows_the_rate(self) -> None:
+        # 1 tick (40 ms + 読み取り) に 1〜2 ブロックしか渡せず、枠は 2 つ。
+        # ブロックが tick より短いと再生が追い越す。64 ms 以上になる最小の
+        # 2 の冪。
+        self.assertEqual(buddy_speak._block_for(16000), 2048)
+        self.assertEqual(buddy_speak._block_for(24000), 4096)
+        self.assertEqual(buddy_speak._block_for(48000), 8192)
+        self._rate = 24000
+        self.say()
+        self.assertEqual(self.player._block, 4096)
 
     def test_a_failed_fetch_is_answered_not_raised(self) -> None:
         # The app's on_line calls this synchronously. An exception here
@@ -225,9 +342,8 @@ class SpeechPlayerTest(TimeFrozen):
         self.assertTrue(self.stream.closed)
 
     def test_say_silences_whatever_was_already_playing(self) -> None:
-        # The speaker queue holds about a second. Without this, a new
-        # utterance would be heard behind the tail of the last one — and
-        # synthesis takes seconds, so the overlap would be long.
+        # 枠 2 つぶんの尻尾が残る。止めないと、合成の数秒の後に前の台詞の
+        # 尻尾が鳴ってから次が始まる。
         self.assertEqual(self.spk.stopped, 0)
         self.say()
         self.assertEqual(self.spk.stopped, 1)
