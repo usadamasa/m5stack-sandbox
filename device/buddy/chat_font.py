@@ -1,8 +1,75 @@
 """チャットパネルが使う書体と、その書体で測った値。
 
 `buddy/chat.py` から切り出した。driver へ書体を載せて外し、載っている間の
-文字送りと行高を測る係。どの書体をなぜ選ぶか、VLW が何者かという経緯は
-あちらの docstring にある。
+文字送りと行高を測る係。
+
+### Fonts
+
+Measured on the installed UIFlow 2.0 build. Re-measure after a firmware
+change with `uv run python host/tools/src/probe_device.py`:
+
+    font              fontHeight()   "あ"   "A"
+    EFontJA24              27         23    17
+    AlibabaSansJA24        27         23    17
+    DejaVu12               16         --    12
+    DejaVu9                15         --    10
+
+24 px is the *only* size at which this build has Japanese glyphs, and at
+1:1 it costs three quarters of the panel: four rows of nine characters.
+Neither built-in face can do better, so the panel brings its own.
+
+### The VLW face
+
+`M5.Lcd.loadFont()` reads a VLW — the Processing smooth-font format that
+M5GFX supports — off flash, and `host/tools/src/make_vlw.py` generates
+one from a TTF. The installed file is BIZ UDGothic at 16 px, and it is
+what the panel draws Japanese with:
+
+    face                 fontHeight()   "あ"   "A"   panel
+    VLW (16 px)               18         16     8    6 rows x 13 chars
+    EFontJA24 @0.75           20         17    12    5 rows x 12 chars
+    EFontJA24 @1.0            27         23    17    4 rows x  9 chars
+    DejaVu12  @0.75           12         --     9    9 rows x 24 chars
+
+Measured on the device: loading it takes 57 ms, costs 19.5 KB of heap
+while it is loaded, and the file itself is 930 KB of the 1.6 MB that was
+free on flash. The glyph bitmaps stay in the file — M5GFX keeps only the
+per-glyph attribute arrays in memory and reads pixels as it draws — which
+is what makes 3476 glyphs affordable on a board with 99 KB of heap.
+
+Antialiased 16 px is legible in a way that a decimated 24 px bitmap is
+not, which is the whole reason for the detour: `setTextSize` scales the
+built-in faces by dropping pixel rows, and kanji fill in as it does.
+
+### Choosing a face
+
+Still chosen per repaint from the content. Japanese pulls the panel onto
+the VLW; an all-ASCII transcript stays on DejaVu12, which at 0.75 packs
+216 characters against the VLW's 162. A file path wrapped every twelve
+characters is not readable, and that is what pinning a CJK face would do
+to every ASCII message.
+
+`WIDE_SCALE` and `NARROW_SCALE` exist for the built-in faces, which
+have one size each. `setTextSize` takes a float and the driver reports
+the scaled metrics back through `fontHeight()` and `textWidth()`, so
+nothing below does the arithmetic itself — it just measures. The VLW is
+already the right size and draws at 1:1.
+
+A board with no VLW on it falls back to EFontJA24 at `WIDE_SCALE`. That
+is the pre-VLW behaviour and it still reads; it just fits less. Run
+`make_vlw.py --port ...` to install the font.
+
+### Bracketing
+
+`setFont`, `setTextSize` and the loaded VLW are all sticky on this
+driver, so every entry point that measures or draws brackets itself with
+`ChatFont.push` / `ChatFont.pop` and hands DejaVu9 at 1:1 back to
+`BuddyUI`. Restoring the base font is what drops the VLW, so `push`
+reloads it — 57 ms, paid per bracketed section rather than per glyph.
+
+Widths are measured per character and cached — the proportional-font
+warning in `buddy_ui_cp` applies doubly here — and the cache is dropped
+whenever the selected face *or* its scale changes.
 """
 
 # 型検査だけの import。デバイスの上では `False` なので走らない。事情と

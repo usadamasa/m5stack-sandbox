@@ -27,9 +27,10 @@ uv run python host/tools/src/buddy_deploy.py --compile-only   # MicroPython の�
 
 # チャットパネル (`buddy/chat.py`)
 
-3 つに割れている。パネルの幾何・transcript・verb の振り分けと描画が `buddy/chat.py`、
-書体の選択と読み込みと計測が `buddy/chat_font.py` (`ChatFont`)、行の折り返しが
-`buddy/chat_wrap.py` (`wrap`)。テストも同じ継ぎ目で `test_chat.py` / `test_chat_font.py` /
+4 つに割れている。パネルの幾何・verb の振り分けと描画が `buddy/chat.py`、
+書体の選択と読み込みと計測が `buddy/chat_font.py` (`ChatFont`)、transcript の保持が
+`buddy/chat_log.py` (`Transcript`)、行の折り返しが `buddy/chat_wrap.py` (`wrap`)。
+テストも同じ継ぎ目で `test_chat.py` / `test_chat_font.py` / `test_chat_log.py` /
 `test_chat_wrap.py` に割れていて、fake の LCD は `device/tests/chat_fakes.py`。
 
 `chat.say` / `chat.clear` / `chat.info` は upstream の `buddy_protocol.py` が知らない verb。

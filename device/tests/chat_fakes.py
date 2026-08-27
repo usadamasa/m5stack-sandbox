@@ -1,6 +1,7 @@
 """チャットパネルのテストが使う LCD の fake と、その fake の幾何。
 
-`test_chat.py` / `test_chat_font.py` / `test_chat_wrap.py` が使う。
+`test_chat.py` / `test_chat_font.py` / `test_chat_wrap.py` が使う
+(`test_chat_log.py` は LCD を要らないので使わない)。
 
 `device/buddy/chat.py` は MicroPython で走るが、面白いところ — どこで行が
 折り返るか、どの行が切り落とされるか、どの書体を選ぶか — は注入された LCD
@@ -11,7 +12,8 @@
 この fake はわざと粗い尺度を使う — 倍率を掛ける前でラテン文字 1 字 6 px、
 wide な字 12 px — ので、期待する行の中身はコードを走らせて出てきたものを
 追認するのではなく手で出せる。実機の尺度では **ない**。本物の数値は
-`device/buddy/chat.py` にあり、`host/tools/src/probe_device.py` が測る。
+`device/buddy/chat_font.py` の docstring にあり、
+`host/tools/src/probe_device.py` が測る。
 
 fake が `setTextSize` と `loadFont` を実装しているのは、パネルのキャッシュ
 破棄がその 2 つで起きるため。測った幅を落とさない書体切り替えは、少しだけ
