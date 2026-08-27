@@ -111,11 +111,11 @@ class FakeChat(Recorder):
         self.active = False
         self.ack: dict[str, object] | None = {"ack": "chat.say", "ok": True}
 
-    def handle_raw(self, raw: bytes) -> dict[str, object] | None:
-        self.record("handle_raw", raw)
+    def handle(self, msg: dict[str, object]) -> dict[str, object] | None:
+        self.record("handle", msg)
         if self.ack is None:
             return None
-        self.active = b"clear" not in raw
+        self.active = msg.get("cmd") != "chat.clear"
         return self.ack
 
     def render(self) -> None:
@@ -131,8 +131,8 @@ class FakeSpeech(Recorder):
         self.active = False
         self.ack: dict[str, object] | None = {"ack": "speak.say", "ok": True}
 
-    def handle_raw(self, raw: bytes) -> dict[str, object] | None:
-        self.record("handle_raw", raw)
+    def handle(self, msg: dict[str, object]) -> dict[str, object] | None:
+        self.record("handle", msg)
         return self.ack
 
     def pump(self) -> None:

@@ -103,15 +103,6 @@ class DebugModuleTest(unittest.TestCase):
         # what lets a non-dbg line fall through to it.
         self.assertIsNone(buddy_debug.handle({"cmd": "status"}))
 
-    def test_handle_raw_parses_a_json_frame(self) -> None:
-        ack = buddy_debug.handle_raw(b'{"cmd":"dbg.gc"}')
-        assert ack is not None
-        self.assertEqual(ack["ack"], "dbg.gc")
-
-    def test_handle_raw_ignores_malformed_input(self) -> None:
-        self.assertIsNone(buddy_debug.handle_raw(b"not json at all"))
-        self.assertIsNone(buddy_debug.handle_raw(b'"a bare string"'))
-
     def test_id_is_echoed(self) -> None:
         ack = buddy_debug.handle({"cmd": "dbg.gc", "id": "abc"})
         assert ack is not None

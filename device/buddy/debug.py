@@ -43,7 +43,6 @@ not more easily press BtnRST.
 """
 
 import gc
-import json
 import sys
 
 try:
@@ -92,23 +91,6 @@ def bind(ns):
     """Hand over the app's live objects. Called once after import."""
     global _ns
     _ns = ns
-
-
-def handle_raw(raw):
-    # type: (bytes | bytearray | str) -> dict[str, object] | None
-    """Parse one wire line and dispatch it. None if it is not ours."""
-    try:
-        msg = json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
-    except (ValueError, UnicodeError):
-        return None
-    if not isinstance(msg, dict):
-        return None
-    # json.loads() is untyped, so isinstance() only narrows `msg` to
-    # dict[Unknown, Unknown] rather than the dict[str, object] handle()
-    # declares — the same gap `typing.cast` papers over elsewhere, not
-    # available here. Runtime-safe regardless: the isinstance check above
-    # already guarantees this is a dict.
-    return handle(msg)  # pyright: ignore[reportUnknownArgumentType]
 
 
 def handle(msg):

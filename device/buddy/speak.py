@@ -224,18 +224,6 @@ class SpeechPlayer:
 
     # ----- command dispatch
 
-    def handle_raw(self, raw):
-        # type: (bytes | bytearray | str) -> dict[str, object] | None
-        """Parse one wire line and dispatch it. None if it is not ours."""
-        try:
-            msg = json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
-        except (ValueError, UnicodeError):
-            return None
-        if not isinstance(msg, dict):
-            return None
-        # isinstance は dict[Unknown, Unknown] までしか絞れない。実行時は dict。
-        return self.handle(msg)  # pyright: ignore[reportUnknownArgumentType]
-
     def handle(self, msg):
         # type: (dict[str, object]) -> dict[str, object] | None
         """Dispatch one parsed command. None if the cmd is not ours."""

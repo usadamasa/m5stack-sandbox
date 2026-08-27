@@ -74,7 +74,7 @@ class DispatchTest(unittest.TestCase):
         self.panel = panel_without_vlw(FakeLcd())
 
     def test_say_acks_and_activates(self) -> None:
-        ack = self.panel.handle_raw(b'{"cmd":"chat.say","text":"hi","id":"say-0"}')
+        ack = self.panel.handle({"cmd": "chat.say", "text": "hi", "id": "say-0"})
         assert ack is not None
         self.assertEqual(ack["ack"], "chat.say")
         self.assertTrue(ack["ok"])
@@ -99,11 +99,6 @@ class DispatchTest(unittest.TestCase):
         # buddy_protocol still has to see everything that is not ours,
         # or status/name/owner stop working the moment chat is wired in.
         self.assertIsNone(self.panel.handle({"cmd": "status"}))
-        self.assertIsNone(self.panel.handle_raw(b'{"cmd":"status"}'))
-
-    def test_malformed_input_is_not_ours_either(self) -> None:
-        self.assertIsNone(self.panel.handle_raw(b"not json"))
-        self.assertIsNone(self.panel.handle_raw(b"[1,2,3]"))
 
 
 class NormalizeTest(unittest.TestCase):
