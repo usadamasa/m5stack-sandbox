@@ -68,7 +68,14 @@ _RECV = 256
 _SEND_TRIES = 20
 _SEND_WAIT_MS = 5
 
-_WOULD_BLOCK = (errno.EAGAIN, errno.EWOULDBLOCK, errno.EINPROGRESS)
+# non-blocking の socket が「まだ無い」と言うときの errno。MicroPython の errno は
+# CPython より小さく、`EWOULDBLOCK` は無い (実機で AttributeError になり、アプリが
+# 起動しなかった)。名前で引いて、あるものだけ使う。
+_WOULD_BLOCK = tuple(
+    code
+    for code in (getattr(errno, name, None) for name in ("EAGAIN", "EWOULDBLOCK", "EINPROGRESS"))
+    if code is not None
+)
 
 
 def _noop_line(_line):
