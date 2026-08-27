@@ -1,24 +1,20 @@
-# pyright: reportPrivateUsage=false
 """発話のテストが共有する fake。`test_speak_stream.py` / `test_speak.py` /
-`test_speak_volume.py` が使う。
+`test_speak_out.py` が使う。
 
-ストリームを読む側 (`buddy.speak_stream`) と鳴らす側 (`buddy.speak`) で
-テストを割ったが、時計とバイト列の口はどちらも同じものを要る。片方だけに
-置くともう片方が import しに行くことになるので、ここに置く。
+ストリームを読む側 (`buddy.speak_stream`)、鳴らす側 (`buddy.speak`)、
+speaker へ渡す側 (`buddy.speak_out`) でテストを割ったが、時計とバイト列の口と
+speaker の口はどれも同じものを要る。片方だけに置くともう片方が import しに
+行くことになるので、ここに置く。
 
 `TimeFrozen` は `buddy.speak_stream.time` (stall の期限) と `buddy.speak.time`
 (途切れの診断) の両方を差し替える。
-
-ブロックの大きさを `buddy.speak._BLOCK` から直接引くので、basedpyright の
-private-member の検査はこのファイルごと切ってある
-(冒頭の `reportPrivateUsage=false`)。
 """
 
 import unittest
 from typing import TYPE_CHECKING
 
 from buddy import speak, speak_stream
-from buddy.speak import _BLOCK
+from buddy.speak_out import BLOCK
 
 if TYPE_CHECKING:
     # 型検査だけ。`device/typings/` の stub-only モジュールで、実体は無い。
@@ -94,7 +90,7 @@ def unused_fetch(*_args: object) -> "SpeechSource":
 
 
 def blk(ch: bytes) -> bytes:
-    return ch * _BLOCK
+    return ch * BLOCK
 
 
 class FakeSpeaker:
