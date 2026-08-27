@@ -1,7 +1,7 @@
 """チャットパネルのテストが使う LCD の fake と、その fake の幾何。
 
 `test_chat.py` / `test_chat_font.py` / `test_chat_wrap.py` が使う
-(`test_chat_log.py` は LCD を要らないので使わない)。
+(`test_chat_log.py` は LCD が要らないので使わない)。
 
 `device/buddy/chat.py` は MicroPython で走るが、面白いところ — どこで行が
 折り返るか、どの行が切り落とされるか、どの書体を選ぶか — は注入された LCD
