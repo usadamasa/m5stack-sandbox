@@ -61,7 +61,7 @@ member とファイルの一覧は [CLAUDE.md](CLAUDE.md#構成) にある。
 | `README.md` / `libs/` / `res/` / `certificate/` | UIFlow のユーザー FS の雛形 | 触らない |
 | `boot.py` | UIFlow | 触らない (`uiflow/boot_option` が 2 なので `main.py` へ素通しする) |
 | `buddy_protocol.mpy` / `buddy_ui_cp.mpy` / `buddy_state.mpy` / `buddy_chars.mpy` | upstream | **読んで `.mpy` にして書き戻す。** 中身は変えない |
-| `buddy/` (`app` / `router` / `chat` / `chat_font` / `chat_wrap` / `debug` / `serial` / `speak` / `tts` / `wav`) | 本リポジトリ | 追加 |
+| `buddy/` (`app` / `router` / `chat` / `chat_font` / `chat_log` / `chat_wrap` / `debug` / `serial` / `speak` / `speak_out` / `speak_stream` / `tts` / `wav`) | 本リポジトリ | 追加 |
 | `apps/claude_buddy.mpy` | upstream 派生 | 置き換え (中身は `buddy/app.py` へ移し、ここは `run()` を渡す起動口だけ) |
 | `main.py` | 本リポジトリ | **置き換え。** upstream のランチャーは捨てた |
 | `buddy_ble` / `burst_frames.py` / `apps/snake.py` / `apps/hello_cardputer.py` | upstream | **消す。** NimBLE が確保する ESP-IDF heap が発話のソケットに要る |

@@ -5,19 +5,19 @@
 about it — which rows survive the clip, what an ack carries — is plain
 Python over an injected LCD.
 
-書体の選択と VLW は `test_chat_font.py`、行の折り返しは
-`test_chat_wrap.py`。fake の LCD と、その尺度から出る幾何の定数は
-`chat_fakes.py` にある。
+書体の選択と VLW は `test_chat_font.py`、transcript の有界リストは
+`test_chat_log.py`、行の折り返しは `test_chat_wrap.py`。fake の LCD と、
+その尺度から出る幾何の定数は `chat_fakes.py` にある。
 
-This is also a whitebox test of `ChatPanel`'s private transcript
-buffer, hence the file-level `reportPrivateUsage=false` above.
+This is also a whitebox test of the panel's private transcript handle,
+hence the file-level `reportPrivateUsage=false` above.
 """
 
 import unittest
 from unittest import mock
 
 import buddy_verbs
-from buddy import chat as buddy_chat
+from buddy import chat_log
 from buddy_text import (
     MAX_SAY_CHARS,
     MAX_SAY_CHARS_WIDE,
@@ -52,7 +52,7 @@ class LayoutTest(unittest.TestCase):
         # Japanese, so the tall face is selected and the panel holds
         # only ROWS rows.
         count = ROWS + 3
-        self.assertLessEqual(count, buddy_chat._MAX_MESSAGES, "overflow test outgrew the buffer")
+        self.assertLessEqual(count, chat_log.MAX_MESSAGES, "overflow test outgrew the buffer")
         for i in range(count):
             self.panel.say("claude", f"行{i}")
         self.panel.render()
@@ -62,11 +62,6 @@ class LayoutTest(unittest.TestCase):
         self.panel.say("claude", "hi")
         self.panel.render()
         self.assertEqual(self.lcd.rects, [(0, 0, 240, 110, 0x000000)])
-
-    def test_transcript_is_bounded(self) -> None:
-        for i in range(buddy_chat._MAX_MESSAGES + 5):
-            self.panel.say("claude", str(i))
-        self.assertEqual(len(self.panel._messages), buddy_chat._MAX_MESSAGES)
 
 
 class DispatchTest(unittest.TestCase):
@@ -87,7 +82,7 @@ class DispatchTest(unittest.TestCase):
         ack = self.panel.handle({"cmd": "chat.clear"})
         assert ack is not None
         self.assertFalse(ack["active"])
-        self.assertEqual(self.panel._messages, [])
+        self.assertEqual(self.panel._log.messages, [])
 
     def test_info_does_not_activate(self) -> None:
         ack = self.panel.handle({"cmd": "chat.info"})

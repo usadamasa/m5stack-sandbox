@@ -1,5 +1,5 @@
 # pyright: reportPrivateUsage=false
-"""The speech path: playback sequencing, volume, and the sender.
+"""The speech path: playback sequencing and the sender.
 
 The audio no longer arrives over the cable. The device fetches it from a
 VOICEVOX engine over WiFi, which changes what can go wrong: the host
@@ -7,17 +7,16 @@ used to declare a length and write padded whole blocks, and now a socket
 delivers bytes when it feels like it, ends the last block short, and can
 stop altogether.
 
-ブロックを切り出す側の失敗は `test_speak_stream.py` にある。こちらは
-`SpeechPlayer` がそれをどう鳴らし、どう speak.end へ写すか — 1 本の
-チャンネルに枠が空いたぶんだけ渡すこと、渡したブロックを手放さないこと、
-speaker が断ったブロックを落とさないこと、途中で切れたストリームを成功
-として報告しないこと。ホスト側から見た `buddy_verbs.speak` の契約は
-`test_speak_host.py`。
+ブロックを切り出す側の失敗は `test_speak_stream.py`、speaker へ渡す側は
+`test_speak_out.py` にある。こちらは `SpeechPlayer` がそれをどう鳴らし、どう
+speak.end へ写すか — 枠が空いたぶんだけ渡すこと、speaker が断ったブロックを
+落とさないこと、途中で切れたストリームを成功として報告しないこと。ホスト側
+から見た `buddy_verbs.speak` の契約は `test_speak_host.py`。
 
 All of it runs without a board, a speaker or an engine.
 
 This is also a whitebox test of `SpeechPlayer`'s private internals
-(`_BLOCK`, `_VOLUME_GAIN`, etc.), hence the file-level
+(`_stalls`, `_block`, etc.), hence the file-level
 `reportPrivateUsage=false` above.
 """
 
@@ -25,9 +24,9 @@ import json
 import unittest
 from typing import TYPE_CHECKING, Any
 
-from buddy import speak as buddy_speak
 from buddy import speak_stream
-from buddy.speak import _BLOCK, SpeechPlayer
+from buddy.speak import SpeechPlayer
+from buddy.speak_out import BLOCK
 from speak_fakes import (
     FakeResponse,
     FakeSpeaker,
@@ -53,7 +52,7 @@ class SpeechPlayerTest(TimeFrozen):
         self.fetched: list[tuple[str, str, int, int]] = []
         self.player = SpeechPlayer(self.t, speaker=self.spk, fetch=self._fetch)
         self._rate = 16000
-        self._bytes = 2 * _BLOCK
+        self._bytes = 2 * BLOCK
         self._error: Exception | None = None
 
     def _fetch(self, url: str, text: str, speaker: int, rate: int) -> "SpeechSource":
@@ -83,7 +82,7 @@ class SpeechPlayerTest(TimeFrozen):
     def test_say_fetches_and_starts_playing(self) -> None:
         ack = self.say()
         self.assertTrue(ack["ok"])
-        self.assertEqual(ack["bytes"], 2 * _BLOCK)
+        self.assertEqual(ack["bytes"], 2 * BLOCK)
         self.assertTrue(self.player.active)
         self.assertEqual(
             self.fetched, [("http://192.168.0.156:50021", "ずんだもんなのだ", 3, 16000)]
@@ -96,23 +95,15 @@ class SpeechPlayerTest(TimeFrozen):
         self._rate = 24000
         self.assertEqual(self.say()["rate"], 24000)
 
-    def test_every_block_goes_to_the_same_fixed_channel(self) -> None:
-        # channel=-1 は「空いているチャンネルを探す」で、64 ms のブロックを
-        # 45 ms おきに渡すと重なって鳴る (実測: 8 ブロックが 133 ms で終わった)。
-        self._bytes = 3 * _BLOCK
-        self.say()
-        self.stream.feed(blk(b"a") + blk(b"b") + blk(b"c"))
-        for _ in range(3):
-            self.player.pump()
-            self.spk.drain()
-        self.assertEqual(len(self.spk.channels), 3)
-        self.assertEqual(set(self.spk.channels), {buddy_speak._CHANNEL})
-        self.assertGreaterEqual(buddy_speak._CHANNEL, 0)
+    def test_the_speaker_is_turned_up_when_the_player_is_built(self) -> None:
+        # 上げるのは `SpeakerOut` の仕事 (`test_speak_out.py`)。ここで見るのは
+        # その結果が player の `volume` に写ること — ホストが読む値。
+        self.assertEqual(self.player.volume, self.spk.volume)
 
     def test_fills_the_free_slots_and_no_more_in_one_tick(self) -> None:
         # 枠は 2 つ。最初の tick で両方埋める — 頭のクッションはこれしか
         # 無い。3 つ目は枠が空くまで socket に置いたままにする。
-        self._bytes = 3 * _BLOCK
+        self._bytes = 3 * BLOCK
         self.say()
         self.stream.feed(blk(b"a") + blk(b"b") + blk(b"c"))
         self.player.pump()
@@ -132,21 +123,6 @@ class SpeechPlayerTest(TimeFrozen):
             self.player.pump()
         self.assertEqual(self.spk.overfilled, 0)
         self.assertEqual(len(self.spk.handed), 2)
-
-    def test_keeps_handed_blocks_referenced_until_played(self) -> None:
-        # binding は buffer のポインタを渡すだけ (複製しない)。参照を落とすと
-        # GC がその領域を次の bytes に回し、鳴っている途中で中身が変わる。
-        self._bytes = 4 * _BLOCK
-        self.say()
-        self.stream.feed(blk(b"a") + blk(b"b") + blk(b"c") + blk(b"d"))
-        for _ in range(4):
-            self.player.pump()
-            self.spk.drain()
-        kept = self.player._recent
-        self.assertTrue(kept)
-        self.assertLessEqual(len(kept), buddy_speak._KEEP)
-        for handed, held in zip(self.spk.handed[-len(kept) :], kept, strict=True):
-            self.assertIs(handed, held)
 
     def test_finishes_and_acks_when_the_payload_runs_out(self) -> None:
         self.say()
@@ -238,11 +214,8 @@ class SpeechPlayerTest(TimeFrozen):
         self.assertEqual(json.loads(self.t.sent[0])["stalls"], 0)
 
     def test_block_size_follows_the_rate(self) -> None:
-        # 枠は 2 つで tick に 1〜2 ブロックしか渡せない。tick (40 ms + 読み
-        # 取り) より短いブロックだと再生が追い越す。80 ms 以上の最小の 2 の冪。
-        self.assertEqual(buddy_speak._block_for(16000), 4096)
-        self.assertEqual(buddy_speak._block_for(24000), 4096)
-        self.assertEqual(buddy_speak._block_for(48000), 8192)
+        # engine が declined したレートで鳴らすので、ブロック長も engine の
+        # 言い値から引く。長さの決め方そのものは `test_speak_out.py`。
         self._rate = 48000
         self.say()
         self.assertEqual(self.player._block, 8192)
