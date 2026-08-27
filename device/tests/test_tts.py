@@ -148,8 +148,8 @@ class QuoteTest(unittest.TestCase):
 
 class TuneQueryTest(unittest.TestCase):
     def test_asks_for_the_rate_we_want(self) -> None:
-        # 16 kHz over 24 kHz is a third off both the transfer and the
-        # heap, on a board with 61 KB of the latter.
+        # The rate is the host's call (`buddy_verbs.DEFAULT_RATE`), not the
+        # engine's default — whatever the query came back with is replaced.
         self.assertEqual(
             tune_query({"outputSamplingRate": 24000}, 16000)["outputSamplingRate"], 16000
         )

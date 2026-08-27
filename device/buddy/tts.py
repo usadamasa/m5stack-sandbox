@@ -11,9 +11,9 @@ The public VOICEVOX-compatible hosts are HTTPS-only, and a TLS handshake
 costs this chip about 40 KB of heap it would rather spend on audio. They
 also answer with a job to poll rather than a stream, and their download
 URLs 404 until synthesis finishes. A local engine is plain HTTP, answers
-immediately, and — the part that matters most here — lets us ask for
-16 kHz instead of the default 24 kHz, which is a third off both the
-transfer and the memory.
+immediately, and — the part that matters most here — takes
+`outputSamplingRate`, so the rate is the host's choice rather than the
+engine's (`buddy_verbs.DEFAULT_RATE` says which and why).
 
 ### Who brings the radio up
 
@@ -325,7 +325,7 @@ def _read_exactly(stream, n):
     return buf
 
 
-def fetch_speech(url, text, speaker=3, rate=16000, requests_mod=None):
+def fetch_speech(url, text, speaker=3, rate=24000, requests_mod=None):
     # type: (str, str, int, int, HttpClient | None) -> SpeechSource
     """Ask VOICEVOX for `text` and return a stream of its samples.
 

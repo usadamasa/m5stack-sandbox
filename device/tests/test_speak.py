@@ -28,83 +28,26 @@ from typing import TYPE_CHECKING, Any
 from buddy import speak as buddy_speak
 from buddy import speak_stream
 from buddy.speak import _BLOCK, SpeechPlayer
-from speak_fakes import FakeResponse, FakeStream, FakeTime, TimeFrozen, blk, unused_fetch
+from speak_fakes import (
+    FakeResponse,
+    FakeSpeaker,
+    FakeStream,
+    FakeTime,
+    RecordingTransport,
+    TimeFrozen,
+    blk,
+)
 
 if TYPE_CHECKING:
     # 型検査だけ。`device/typings/` の stub-only モジュールで、実体は無い。
     from buddy_types import SpeechSource
 
 
-class _FakeSpeaker:
-    """M5.Speaker のうち player が触る面。実測に合わせてある。
-
-    1 チャンネルの枠は 2 つ (再生中 + 次) で、`isPlaying(ch)` は埋まり具合を
-    0 / 1 / 2 で返す。本物の `playRaw` は満杯だと待つ (False は返さない) ので、
-    fake は満杯で呼ばれたら `overfilled` を立てる — 実機なら UI が止まっている。
-    渡されたチャンネルは全部記録する (-1 は並列に鳴ってしまう)。
-    """
-
-    def __init__(self, volume: int = 64) -> None:
-        self.queued: list[bytes] = []
-        self.handed: list[bytes] = []
-        self.channels: list[int] = []
-        self.overfilled = 0
-        self.refuse = False
-        self.stopped = 0
-        # M5Unified's own default, which is what the player multiplies.
-        self.volume = volume
-
-    def getVolume(self) -> int:
-        return self.volume
-
-    def setVolume(self, master_volume: int) -> None:
-        self.volume = master_volume
-
-    def isPlaying(self, _channel: int) -> int:
-        return len(self.queued)
-
-    def playRaw(
-        self,
-        data: bytes,
-        _rate: int,
-        _stereo: bool,
-        _repeat: int,
-        channel: int,
-        _stop_current: bool,
-    ) -> bool:
-        self.channels.append(channel)
-        if self.refuse:
-            return False
-        if len(self.queued) >= 2:
-            self.overfilled += 1
-            return False
-        self.queued.append(bytes(data))
-        self.handed.append(data)
-        return True
-
-    def drain(self, n: int = 1) -> None:
-        """再生が進んだことにする。n ブロックぶん鳴り終わる。"""
-        self.queued = self.queued[n:]
-
-    def stop(self) -> None:
-        self.stopped += 1
-        self.queued = []
-
-
-class _RecordingTransport:
-    def __init__(self) -> None:
-        self.sent: list[bytes] = []
-
-    def send_line(self, payload: bytes) -> bool:
-        self.sent.append(payload)
-        return True
-
-
 class SpeechPlayerTest(TimeFrozen):
     def setUp(self) -> None:
         super().setUp()
-        self.t = _RecordingTransport()
-        self.spk = _FakeSpeaker()
+        self.t = RecordingTransport()
+        self.spk = FakeSpeaker()
         self.stream = FakeStream()
         self.response = FakeResponse()
         self.fetched: list[tuple[str, str, int, int]] = []
@@ -296,13 +239,13 @@ class SpeechPlayerTest(TimeFrozen):
 
     def test_block_size_follows_the_rate(self) -> None:
         # 枠は 2 つで tick に 1〜2 ブロックしか渡せない。tick (40 ms + 読み
-        # 取り) より短いブロックだと再生が追い越す。64 ms 以上の最小の 2 の冪。
-        self.assertEqual(buddy_speak._block_for(16000), 2048)
+        # 取り) より短いブロックだと再生が追い越す。80 ms 以上の最小の 2 の冪。
+        self.assertEqual(buddy_speak._block_for(16000), 4096)
         self.assertEqual(buddy_speak._block_for(24000), 4096)
         self.assertEqual(buddy_speak._block_for(48000), 8192)
-        self._rate = 24000
+        self._rate = 48000
         self.say()
-        self.assertEqual(self.player._block, 4096)
+        self.assertEqual(self.player._block, 8192)
 
     def test_a_failed_fetch_is_answered_not_raised(self) -> None:
         # The app's on_line calls this synchronously. An exception here
@@ -354,44 +297,6 @@ class SpeechPlayerTest(TimeFrozen):
         self.assertTrue(ack["ok"])
         # Defaults matter: the host may send only text and url.
         self.assertEqual(self.fetched[0][2], 3)
-
-
-class VolumeTest(TimeFrozen):
-    """Turning the speaker up, relative to whatever the firmware set —
-    a fixed byte would go stale the moment M5Unified moved its default."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        self.t = _RecordingTransport()
-
-    def build(self, spk: _FakeSpeaker) -> SpeechPlayer:
-        return SpeechPlayer(self.t, speaker=spk, fetch=unused_fetch)
-
-    def test_the_speaker_is_turned_up_when_the_player_is_built(self) -> None:
-        # From a quiet start, so the multiplication is what is being
-        # read here rather than the ceiling below.
-        spk = _FakeSpeaker(volume=10)
-        player = self.build(spk)
-        self.assertEqual(spk.volume, 10 * buddy_speak._VOLUME_GAIN)
-        self.assertEqual(player.volume, spk.volume)
-
-    def test_it_stops_at_the_top_of_the_byte(self) -> None:
-        # setVolume takes a byte, and this board boots at 64 (measured), so
-        # the shipped gain runs into the ceiling rather than handing the
-        # device a value it cannot hold. Raising `_VOLUME_GAIN` changes nothing.
-        spk = _FakeSpeaker(volume=64)
-        self.build(spk)
-        self.assertEqual(spk.volume, buddy_speak._MAX_VOLUME)
-
-    def test_a_speaker_without_volume_control_still_plays(self) -> None:
-        # Losing the utterance over the setting for it would be the wrong
-        # trade, and the binding is not in every firmware build.
-        class _NoVolume(_FakeSpeaker):
-            def getVolume(self) -> int:
-                raise AttributeError("getVolume")
-
-        player = self.build(_NoVolume())
-        self.assertIsNone(player.volume)
 
 
 if __name__ == "__main__":

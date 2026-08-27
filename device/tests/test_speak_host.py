@@ -11,6 +11,14 @@ from typing import Any
 from unittest import mock
 
 import buddy_verbs
+from buddy import speak as buddy_speak
+
+
+class RateContractTest(unittest.TestCase):
+    def test_both_ends_default_to_the_same_rate(self) -> None:
+        # ホストが rate を省いたときと、デバイスが msg に rate を見つけなかった
+        # ときで違う音が出ないように。
+        self.assertEqual(buddy_speak._DEFAULT_RATE, buddy_verbs.DEFAULT_RATE)  # pyright: ignore[reportPrivateUsage]
 
 
 class _FakeLink:

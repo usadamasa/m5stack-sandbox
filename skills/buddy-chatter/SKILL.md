@@ -204,7 +204,7 @@ hook は plugin の `hooks/hooks.json` が登録する。plugin を入れ替え�
 | `BUDDY_CHATTER_MODEL` | `sonnet` | `claude -p --model` に渡す。alias でも id でもよい |
 | `BUDDY_CHATTER_EFFORT` | `low` | `claude -p --effort`。空なら CLI の既定に任せる |
 | `BUDDY_CHATTER_CLAUDE_TIMEOUT` | `120` | `claude -p` を諦めるまで (秒) |
-| `BUDDY_CHATTER_SPEAKER` / `_RATE` | ずんだもん / 16kHz | VOICEVOX の style id とサンプルレート |
+| `BUDDY_CHATTER_SPEAKER` / `_RATE` | ずんだもん / 24kHz | VOICEVOX の style id とサンプルレート |
 
 値が壊れていても既定に落ちるだけで起動は止まらない。chatter は装飾なので、設定の誤りが
 daemon を落とす理由にはならない。socket のパスだけは `config.toml` に置けない —

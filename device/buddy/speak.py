@@ -9,20 +9,17 @@ sound.
 ### Protocol
 
     host -> {"cmd":"speak.say","text":"...","url":"http://host:50021",
-             "speaker":3,"rate":16000}
-    dev  <- {"ack":"speak.say","ok":true,"bytes":81920,"rate":16000}
-    dev  <- {"ack":"speak.end","ok":true,"blocks":40,"stalls":0}
+             "speaker":3,"rate":24000}
+    dev  <- {"ack":"speak.say","ok":true,"bytes":122880,"rate":24000}
+    dev  <- {"ack":"speak.end","ok":true,"blocks":30,"stalls":0}
 
 The `speak.say` ack goes out once synthesis is done and playback has
-begun, not when the request was accepted — the two POSTs to the engine
-block for seconds and the app's loop stops for that time. Everything
-after that ack runs from `pump()`, a tick at a time, so the UI comes back.
+begun — the two POSTs to the engine block for seconds and the app's loop
+stops for that time. After that ack `pump()` runs a tick at a time.
 
 `speak.end` は最後のブロックが鳴り終わってから (`isPlaying` が 0)。`stalls`
 は鳴り始めた後に speaker が空になった回数 — 音が途切れた回数で、socket を
-待っただけの tick は数えない。
-
-`speak.stop` abandons whatever is in flight.
+待っただけの tick は数えない。`speak.stop` abandons whatever is in flight.
 
 ### Timing (実測、Cardputer-Adv)
 
@@ -41,11 +38,15 @@ after that ack runs from `pump()`, a tick at a time, so the UI comes back.
   落とすと GC がその領域を次の bytes に回し、鳴っている途中で中身が変わる。
   渡した最後の `_KEEP` 個は持ち続ける
 
-1 ブロックは 16 kHz で 2048 byte = 64 ms。app のループは 40 ms + 読み取り
-(~11 ms) なので枠は tick ごとに空き、`pump()` が読むのは普通 1 ブロック。
+1 ブロックは 24 kHz で 4096 byte = 85 ms。app のループは 40 ms + 読み取り
+(~20 ms) なので枠は tick ごとに空き、`pump()` が読むのは普通 1 ブロック。
 最初の tick だけ 2 つ読んで両方の枠を埋める — 頭のクッションはこれしか無い。
-レートを上げるとブロックも伸びる (`_block_for`): tick より短いブロックだと
-再生が読み取りを追い越す。
+ブロックはレートによらず `_MIN_BLOCK_MS` 以上 (`_block_for`): tick より短い
+ブロックだと再生が読み取りを追い越す。
+
+再起動後の最初の `playRaw` は、無音を渡しても 10 ms のポップが鳴る —
+M5Unified がそこで `begin()` を呼び、ES8311 を起こす。player は生成時に
+`begin()` を呼んで、そのポップを台詞の頭から引き離す。
 
 socket が bytes をくれる形とブロックの差 (途中までしか来ない、最後が短い、
 止まる) は `buddy/speak_stream.py` が吸収する。ここは丸ごとのブロックか
@@ -54,9 +55,7 @@ socket が bytes をくれる形とブロックの差 (途中までしか来な�
 ### MicroPython
 
 No `typing`, no `__future__`, no slice deletion, no exception chaining.
-The speaker, the transport and the fetch are all injectable so the
-sequencing is testable on the host without a board — see
-`device/tests/test_speak.py`.
+Speaker, transport and fetch are injectable — `device/tests/test_speak.py`.
 """
 
 import json
@@ -69,18 +68,19 @@ _TYPE_CHECKING = False
 if _TYPE_CHECKING:
     from buddy_types import AckSink, Fetch, Speaker  # noqa: F401
 
-# Refuse anything longer than this in one utterance. 16 kHz 16-bit で
-# 30 秒、24 kHz なら 20 秒 — a notification is seconds, and this is far
-# less than enough to wedge the device for a noticeable time. `buddy.tts`
-# carries the same number for the same reason.
+# Refuse anything longer than this in one utterance: 24 kHz 16-bit で
+# 20 秒 (16 kHz で 30 秒)。`buddy.tts` carries the same number.
 _MAX_BYTES = 960000
 
-_DEFAULT_RATE = 16000
+# ホスト側の `buddy_verbs.DEFAULT_RATE` と同じ値。理由はそちら。
+_DEFAULT_RATE = 24000
 _DEFAULT_SPEAKER = 3
 
-# 16 kHz の 1 ブロック = 64 ms。`_block_for` はこれを基準に伸ばす。
-_BLOCK = 2048
-_BLOCK_RATE = 16000
+# ブロックが覆う時間の下限: 枠は 2 つしか無いので、tick が 1 つ遅れても
+# 鳴り続けるには tick 2 つぶん要る。実測: 64 ms (16 kHz で 2048 byte) は
+# dbg.eval を撃つ tick で 3 回途切れ、85 ms (24 kHz で 4096) は途切れなかった。
+_MIN_BLOCK_MS = 80
+_BYTES_PER_SAMPLE = 2
 
 # 渡し先のチャンネル。-1 は使わない (module docstring の Timing)。
 _CHANNEL = 0
@@ -94,10 +94,9 @@ _MONO = False
 _ONCE = 1
 
 # How much louder than the firmware's own setting the speaker is driven:
-# M5Unified starts the Cardputer-Adv's small speaker too quiet to make
-# out across a desk. Relative, not a fixed byte, so it keeps saying what
-# was wanted when the firmware moves its default. Measured, the default
-# is 64 of 255, so this lands on the cap below — as loud as it goes.
+# M5Unified starts it too quiet to make out across a desk. Relative, so
+# it survives the firmware moving its default (measured: 64 of 255, so
+# this lands on the cap below — as loud as it goes).
 _VOLUME_GAIN = 4
 
 # setVolume takes a byte.
@@ -105,14 +104,19 @@ _MAX_VOLUME = 255
 
 
 def _block_for(rate: int) -> int:
-    """`rate` で 64 ms 以上になる最小の 2 の冪 (2048 の倍数)。
+    """`rate` で `_MIN_BLOCK_MS` 以上になる最小の 2 の冪。
 
-    16 kHz は 2048、24 kHz は 4096、48 kHz は 8192。
+    16 kHz と 24 kHz は 4096、48 kHz は 8192。
     """
-    block = _BLOCK
-    while block * _BLOCK_RATE < _BLOCK * rate:
+    need = rate * _BYTES_PER_SAMPLE * _MIN_BLOCK_MS // 1000
+    block = 1024
+    while block < need:
         block *= 2
     return block
+
+
+# 既定レートのブロック。テストの単位でもある。
+_BLOCK = _block_for(_DEFAULT_RATE)
 
 
 def _default_speaker():
@@ -122,16 +126,24 @@ def _default_speaker():
     return M5.Speaker
 
 
+def _wake_speaker(spk):
+    # type: (Speaker) -> None
+    """`begin()` を先に呼び、ES8311 を起こすポップを台詞から引き離す (Timing)。
+    Never raises: 無い build でも最初の `playRaw` が代わりに起こす。"""
+    try:
+        spk.begin()
+    except Exception as e:
+        print("buddy.speak: begin failed:", e)
+
+
 def _boost_volume(spk):
     # type: (Speaker) -> int | None
     """Turn `spk` up by `_VOLUME_GAIN`. Returns the volume now set.
 
-    Called once, when the player is built — once per boot, which is what
-    makes multiplying safe: the firmware resets the volume on every reset,
-    and re-importing the app in a live session fails on memory first.
-
-    Never raises: a build without volume control still plays audio, and
-    losing the utterance over the setting would be the wrong trade.
+    Once per boot (the firmware resets the volume on every reset), which is
+    what makes multiplying safe. Never raises: a build without volume
+    control still plays audio, and losing the utterance over the setting
+    would be the wrong trade.
     """
     try:
         before = spk.getVolume()
@@ -173,8 +185,7 @@ def _str_of(msg, key):
 
 def _int_of(msg, key, default):
     # type: (dict[str, object], str, int) -> int
-    """`int(msg[key])`。数にならない値では投げる — 黙って既定へ落とすと、
-    ホストは頼んだ rate と違う音を聞くまで間違いに気付けない。"""
+    """`int(msg[key])`。数にならない値では投げる — 黙って既定へ落とすと気付けない。"""
     value = msg.get(key, default)
     if isinstance(value, (int, float, str)):
         return int(value)
@@ -196,6 +207,7 @@ class SpeechPlayer:
         self._t = transport
         self._spk = speaker if speaker is not None else _default_speaker()
         self._fetch = fetch
+        _wake_speaker(self._spk)
         self.volume = _boost_volume(self._spk)
 
         self.active = False
@@ -225,8 +237,7 @@ class SpeechPlayer:
             return None
         if not isinstance(msg, dict):
             return None
-        # json.loads() は untyped で、isinstance は dict[Unknown, Unknown] まで
-        # しか絞れない。実行時は上の検査で dict と分かっている。
+        # isinstance は dict[Unknown, Unknown] までしか絞れない。実行時は dict。
         return self.handle(msg)  # pyright: ignore[reportUnknownArgumentType]
 
     def handle(self, msg):
@@ -249,9 +260,8 @@ class SpeechPlayer:
 
         fetch = self._fetch if self._fetch is not None else _default_fetch()
 
-        # Whatever was playing loses; the host asked for something new.
-        # Done before the fetch so the speaker is not still working
-        # through the tail of the last line while this one synthesises.
+        # Whatever was playing loses. Before the fetch, so the tail of the
+        # last line is not still sounding while this one synthesises.
         self.stop()
 
         try:
@@ -287,11 +297,8 @@ class SpeechPlayer:
         return {"ack": "speak.say", "ok": True, "bytes": total, "rate": self._rate}
 
     def stop(self) -> None:
-        """Silence the speaker and abandon any transfer in flight.
-
-        `_recent` は残す: `spk.stop()` の直後も task は数 ms は読んでいる。
-        次の `_say` か `_finish` が手放す。
-        """
+        """Silence the speaker and abandon any transfer in flight. `_recent`
+        は残す (`spk.stop()` の直後も task は数 ms 読む) — 次の `_say` が手放す。"""
         if self._source is not None:
             self._source.close()
             self._source = None
@@ -307,10 +314,7 @@ class SpeechPlayer:
     # ----- main-loop pump
 
     def pump(self) -> None:
-        """Feed the speaker what its queue has room for. Called every tick.
-
-        普通は 1 ブロック、最初の tick だけ 2 つ (module docstring の Timing)。
-        """
+        """Feed the speaker what its queue has room for. Called every tick."""
         source = self._source
         if not self.active or source is None:
             return
@@ -328,8 +332,7 @@ class SpeechPlayer:
         try:
             return int(self._spk.isPlaying(_CHANNEL))
         except Exception as e:
-            # 無いなら 0 を返して渡す。満杯なら playRaw が待つので、音は
-            # 出るが tick が止まる。音を落とすよりはそちら。
+            # 無いなら渡す。満杯なら playRaw が待つ — 音を落とすよりはそちら。
             print("buddy.speak: isPlaying failed:", e)
             return 0
 
@@ -358,11 +361,9 @@ class SpeechPlayer:
         block = self._held[0]
         if not self._play(block):
             return False
-        # Rebind rather than pop(0): consistency with the bytearray
-        # idiom this bundle uses everywhere, since MicroPython has
-        # no slice deletion and mixing the two reads badly.
+        # Rebind rather than pop(0) / `[*a, b]`: MicroPython has no slice
+        # deletion and mpy-cross rejects the star form.
         self._held = self._held[1:]
-        # `[*a, b]` は mpy-cross が通さない。連結で書く。
         self._recent = (self._recent + [block])[-_KEEP:]  # noqa: RUF005
         self._blocks_done += 1
         self._starved = False
