@@ -25,6 +25,7 @@ from device_fakes import (
     FakeChat,
     FakeGc,
     FakeLcd,
+    FakeNetModule,
     FakeSerialModule,
     FakeSpeech,
     FakeState,
@@ -100,6 +101,7 @@ class RunTest(unittest.TestCase):
         self.speech = FakeSpeech()
         self.gc = FakeGc()
         self.time = FakeTime()
+        self.net: FakeTransport | None = None
 
         for name, fake in (("gc", self.gc), ("time", self.time)):
             self.addCleanup(setattr, buddy_app, name, getattr(buddy_app, name))
@@ -126,12 +128,19 @@ class RunTest(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
 
-    def _run(self, poll: Poll) -> FakeTransport:
+    def _run(self, poll: Poll, net_error: OSError | None = None) -> FakeTransport:
+        """USB の leg を返す。net の leg は `self.net` に残る (bind に失敗させたなら None)。"""
         serial = FakeSerialModule(poll)
-        transport = importlib.import_module("buddy.serial")
-        with mock.patch.object(transport, "BuddySerial", serial.BuddySerial):
+        net = FakeNetModule(net_error)
+        with (
+            mock.patch.object(
+                importlib.import_module("buddy.serial"), "BuddySerial", serial.BuddySerial
+            ),
+            mock.patch.object(importlib.import_module("buddy.netlink"), "BuddyNet", net.BuddyNet),
+        ):
             buddy_app.run()
         assert serial.made is not None
+        self.net = net.made
         return serial.made
 
     def test_a_pass_through_the_loop_and_out_at_the_interrupt(self) -> None:
@@ -159,6 +168,26 @@ class RunTest(unittest.TestCase):
         self.assertEqual(transport.deinits, 1)
         self.assertEqual(self.speech.names().count("stop"), 1)
         self.assertIn("drawString", self.lcd.names())
+        self.assertEqual(self.machine.names(), [])
+        # WiFi の leg も同じループで汲まれ、同じ去り際で畳まれる。ack は
+        # 繋がっている相手にだけ届く — こちらは繋がっていない。
+        assert self.net is not None
+        # USB が先で、その最後の poll が KeyboardInterrupt を投げるので 1 回少ない。
+        self.assertEqual(self.net.polls, transport.polls - 1)
+        self.assertEqual(self.net.deinits, 1)
+        self.assertEqual(self.net.lines, [])
+
+    def test_the_app_runs_on_usb_alone_when_the_listener_cannot_bind(self) -> None:
+        def poll(transport: FakeTransport, count: int) -> None:
+            if count == 1:
+                transport.on_state("connected")
+                transport.on_line(b'{"cmd":"chat.say","text":"hi"}')
+            elif count >= 2:
+                raise KeyboardInterrupt
+
+        transport = self._run(poll, net_error=OSError(98, "EADDRINUSE"))
+        self.assertIsNone(self.net)
+        self.assertEqual(transport.acks(), [{"ack": "chat.say", "ok": True}])
         self.assertEqual(self.machine.names(), [])
 
     def test_the_chrome_is_repainted_when_the_panel_comes_back(self) -> None:

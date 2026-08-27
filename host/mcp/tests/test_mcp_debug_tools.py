@@ -13,6 +13,7 @@ import buddy_mcp
 import buddy_verbs
 import mcp_debug_tools
 from buddy_wire import Message
+from device_repl import ReplError
 from mcp_stubs import McpTestCase, StubLink
 
 
@@ -111,6 +112,13 @@ class DebugToolTest(McpTestCase):
         result = mcp_debug_tools.buddy_interrupt(settle=0.0)
         self.assertEqual(StubLink.instances[0].interrupts, 1)
         self.assertEqual(result["logs"], ["claude_buddy: at the REPL."])
+
+    def test_interrupt_over_tcp_is_refused_as_a_result_not_an_exception(self) -> None:
+        buddy_mcp.buddy_connect()
+        StubLink.instances[0].interrupt_error = ReplError("interrupt needs the USB console")
+        result = mcp_debug_tools.buddy_interrupt(settle=0.0)
+        self.assertFalse(result["ok"])
+        self.assertIn("USB console", result["error"])
 
     def test_interrupt_does_not_open_a_port_of_its_own(self) -> None:
         # Interrupting a device nobody is connected to would open the

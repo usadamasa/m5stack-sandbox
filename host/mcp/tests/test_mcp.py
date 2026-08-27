@@ -31,6 +31,14 @@ class ProbeSerialTest(unittest.TestCase):
         result = buddy_mcp.probe_serial("/dev/definitely-not-a-device")
         self.assertEqual(result["port"], "/dev/definitely-not-a-device")
 
+    def test_a_tcp_target_has_nothing_to_probe(self) -> None:
+        # ioctl は serial の話。tcp:// なら sandbox の外に出る必要も無い。
+        result = buddy_mcp.probe_serial("tcp://192.168.0.227")
+        self.assertEqual(result["port"], "tcp://192.168.0.227")
+        self.assertFalse(result["open"])
+        self.assertIn("tcp", result["verdict"])
+        self.assertNotIn("error", result)
+
 
 class LinkCacheTest(McpTestCase):
     def test_connect_opens_the_default_port(self) -> None:

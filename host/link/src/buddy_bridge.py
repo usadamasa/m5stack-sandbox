@@ -227,6 +227,10 @@ def main() -> int:
             if args.watch:
                 print(f"watching for {args.watch:.1f}s...")
                 _dump(*link.pump(args.watch))
+        except ReplError as e:
+            # `--interrupt` を `tcp://` で頼まれたとき。console が無いと断られる。
+            sys.stderr.write(f"{e}\n")
+            return 1
         finally:
             _dump(*link.drain())
             if link.dropped:

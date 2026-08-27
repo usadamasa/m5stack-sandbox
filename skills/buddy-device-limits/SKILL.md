@@ -41,6 +41,10 @@ REPL が要る (走っているアプリはハンドシェイクの Ctrl-C で�
   前に実物を見る。これが無いとストリーミングができず、`content` で全体を heap に載せる
   しかなくなる
 - **socket の既定はブロッキング。** アプリの 40ms tick に載せるには `settimeout` が要る
+- **`errno` は CPython より小さい。** `EWOULDBLOCK` が無く、モジュール読み込みの時点で
+  `AttributeError` になってアプリが起動しない (`--compile-only` では捕まらない)。
+  `EAGAIN` / `EINPROGRESS` / `ECONNRESET` / `ETIMEDOUT` はある。名前で引くなら
+  `getattr(errno, name, None)` (`device/buddy/netlink.py`)
 - **`buddy_status` の `sys.heap` は probe の `heap` より小さい。** transport と UI を上げた
   後の値だから。同じ量として比べない
 - **WAV は `fmt ` の後に `data` が来て、PCM は 1ch/16bit。** 通常は本体が offset 44 から

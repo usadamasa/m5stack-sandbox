@@ -15,6 +15,7 @@ from typing import Any
 
 import mcp_state
 from buddy_verbs import DEBUG_OPS, announce_debug_entry, debug
+from device_repl import ReplError
 from mcp_state import server
 
 
@@ -86,7 +87,11 @@ def buddy_interrupt(settle: float = 1.0) -> dict[str, Any]:
         link = mcp_state.live_link()
         if link is None:
             return {"ok": False, "error": "not connected; nothing to interrupt"}
-        link.interrupt()
+        try:
+            link.interrupt()
+        except ReplError as e:
+            # `tcp://` の link。console が無いので Ctrl-C の届く先が無い。
+            return {"ok": False, "error": str(e)}
         if settle:
             time.sleep(settle)
         _msgs, logs = link.events()

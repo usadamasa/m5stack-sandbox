@@ -162,16 +162,24 @@ class FakeState(Recorder):
 
 
 class FakeBle(Recorder):
-    """BuddySerial のうち、ack を返す口だけ。"""
+    """BuddySerial のうち、ack を返す口と、mux が読む状態だけ。"""
 
     advertised_name = "Claude_serial"
 
     def __init__(self) -> None:
         super().__init__()
         self.lines: list[bytes] = []
+        self.connected = False
 
-    def send_line(self, data: bytes) -> None:
+    def send_line(self, data: bytes) -> bool:
         self.lines.append(data)
+        return True
+
+    def disconnect(self) -> None:
+        self.record("disconnect")
+
+    def forget_bonds(self) -> None:
+        self.record("forget_bonds")
 
     def acks(self) -> list[dict[str, object]]:
         return [json.loads(line.decode("utf-8")) for line in self.lines]
@@ -201,10 +209,22 @@ class FakeTransport(FakeBle):
     def __init__(self, on_line: LineCallback, on_state: StateCallback, poll: Poll) -> None:
         super().__init__()
         self.on_line = on_line
-        self.on_state = on_state
+        self._on_state = on_state
         self._poll = poll
         self.polls = 0
         self.deinits = 0
+
+    def on_state(self, state: str) -> None:
+        # 本物と同じ順: 自分の状態を変えてから知らせる。mux はこの順を
+        # 当てにして `connected` を読む。
+        self.connected = state == "connected"
+        self._on_state(state)
+
+    def send_line(self, data: bytes) -> bool:
+        # 本物と同じで、繋がっていない相手には何も出ない。
+        if not self.connected:
+            return False
+        return super().send_line(data)
 
     def poll(self) -> None:
         self.polls += 1
@@ -212,6 +232,10 @@ class FakeTransport(FakeBle):
 
     def deinit(self) -> None:
         self.deinits += 1
+
+
+def _idle(_transport: "FakeTransport", _count: int) -> None:
+    return None
 
 
 class FakeSerialModule:
@@ -223,6 +247,21 @@ class FakeSerialModule:
 
     def BuddySerial(self, on_line: LineCallback, on_state: StateCallback) -> FakeTransport:
         self.made = FakeTransport(on_line, on_state, self._poll)
+        return self.made
+
+
+class FakeNetModule:
+    """`buddy.netlink` の代わり。`error` があれば組み立てで投げる (bind 失敗)。"""
+
+    def __init__(self, error: OSError | None = None) -> None:
+        self.error = error
+        self.made: FakeTransport | None = None
+
+    def BuddyNet(self, on_line: LineCallback, on_state: StateCallback) -> FakeTransport:
+        if self.error is not None:
+            raise self.error
+        self.made = FakeTransport(on_line, on_state, _idle)
+        self.made.advertised_name = "Claude_net:8788"
         return self.made
 
 

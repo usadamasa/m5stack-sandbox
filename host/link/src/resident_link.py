@@ -13,9 +13,8 @@ import threading
 import time
 from collections import deque
 
-import serial
-
-from buddy_link import DEFAULT_READ_TIMEOUT, launch_app
+from buddy_link import DEFAULT_READ_TIMEOUT, launch_app, refuse_tcp
+from buddy_net import open_port
 from buddy_wire import (
     LineDemux,
     Message,
@@ -86,9 +85,13 @@ class ResidentLink:
             return
         if adopt is not None:
             ser = adopt
-        else:
-            factory: SerialFactory = self._serial_factory or serial.Serial
+        elif self._serial_factory is not None:
+            factory: SerialFactory = self._serial_factory
             ser = factory(self.port, self.baud, timeout=self.read_timeout)
+        else:
+            # `tcp://` ならデバイスの listener へ、それ以外はシリアル。どちらも
+            # 同じ `SerialPort` で返るので、reader はどちらか知らずに済む。
+            ser = open_port(self.port, self.baud, self.read_timeout)
         self._ser = ser
         self.dropped = False
         self._stop.clear()
@@ -156,7 +159,11 @@ class ResidentLink:
         途中のフレームに割り込むことは無い。reader スレッドはポートに付いた
         まま: アプリの去り際の出力と、その後ろの REPL バナーが、効いたことを
         教えてくれる。
+
+        TCP の向こうに console は無い。0x03 は行の途中のごみとして捨てられる
+        だけなので、送る前に断る。
         """
+        refuse_tcp(self.port, "interrupt")
         with self._write_lock:
             self._io.write(b"\x03")
             self._io.flush()
@@ -204,6 +211,7 @@ class ResidentLink:
         あるのは意図的: BtnRST が押されるのを 3 分待ってブロックするツール
         呼び出しは、押してくれと言って戻るツール呼び出しより悪い。
         """
+        refuse_tcp(self.port, "start_app")
         if self.connected:
             # best-effort。既に REPL に居るデバイスはこれを無視するし、居なく
             # なったポートはどのみち起動側が報告する。
