@@ -27,9 +27,10 @@ uv run python host/tools/src/buddy_deploy.py --compile-only   # MicroPython の�
 
 # チャットパネル (`buddy/chat.py`)
 
-3 つに割れている。パネルの幾何・transcript・verb の振り分けと描画が `buddy/chat.py`、
-書体の選択と読み込みと計測が `buddy/chat_font.py` (`ChatFont`)、行の折り返しが
-`buddy/chat_wrap.py` (`wrap`)。テストも同じ継ぎ目で `test_chat.py` / `test_chat_font.py` /
+4 つに割れている。パネルの幾何・verb の振り分けと描画が `buddy/chat.py`、
+書体の選択と読み込みと計測が `buddy/chat_font.py` (`ChatFont`)、transcript の保持が
+`buddy/chat_log.py` (`Transcript`)、行の折り返しが `buddy/chat_wrap.py` (`wrap`)。
+テストも同じ継ぎ目で `test_chat.py` / `test_chat_font.py` / `test_chat_log.py` /
 `test_chat_wrap.py` に割れていて、fake の LCD は `device/tests/chat_fakes.py`。
 
 `chat.say` / `chat.clear` / `chat.info` は upstream の `buddy_protocol.py` が知らない verb。
@@ -71,20 +72,38 @@ uv run python host/tools/src/buddy_deploy.py --compile-only   # MicroPython の�
 
 # 発話 (`buddy/speak.py`)
 
-3 つに割れている。発話のライフサイクル (`speak.say` / `speak.stop` の振り分け、fetch、
-tick ごとの pump、`speak.end` の ack) が `buddy/speak.py` (`SpeechPlayer`)、speaker への
-出口が `buddy/speak_out.py` (`SpeakerOut`)、socket から来るバイト列をブロックに均すのが
-`buddy/speak_stream.py` (`StreamSource`)。依存は `speak` -> `speak_out` /
-`speak_stream` の一方向で、後ろ 2 つは player を知らない。テストも同じ継ぎ目で
-`test_speak.py` / `test_speak_out.py` / `test_speak_stream.py` に割れていて、fake の
-speaker とストリームと時計は `device/tests/speak_fakes.py`。ホスト側から見た
-`buddy_verbs.speak` の契約は `test_speak_host.py` が両側の定数を突き合わせる。
+デバイスは自分で音声を取りに行く。5 つに割れている。
+
+| モジュール | 担当 |
+| --- | --- |
+| `buddy/speak.py` (`SpeechPlayer`) | 発話のライフサイクル。`speak.say` / `speak.stop` の振り分け、fetch、tick ごとの pump、`speak.end` の ack |
+| `buddy/speak_out.py` (`SpeakerOut`) | `M5.Speaker` への出口。起こす・音量・枠の確認・`playRaw`・渡したブロックの保持 |
+| `buddy/speak_stream.py` (`StreamSource`) | socket から届くバイト列を player が欲しがる大きさのブロックに均す |
+| `buddy/tts.py` (`fetch_speech`) | Mac の VOICEVOX ENGINE との HTTP のやりとり |
+| `buddy/wav.py` (`open_pcm` / `parse_wav_header` / `PrefixedStream`) | 返ってきた WAV を解いて samples の頭を見つける |
+
+依存は `speak` -> `speak_out` / `speak_stream` と `speak` -> `tts` -> `wav` の一方向。
+`speak_out` / `speak_stream` は player を知らず、`wav` はネットワークも speaker も知らない。
+
+テストも同じ継ぎ目で `test_speak.py` / `test_speak_out.py` / `test_speak_stream.py` /
+`test_tts.py` / `test_wav.py` に割れている。fake は `device/tests/speak_fakes.py` (時計と
+speaker とストリーム) と `device/tests/wav_fakes.py` (engine が返すバイト列の組み立てと、
+socket の形をした読み口)。ホスト側から見た `buddy_verbs.speak` の契約は
+`test_speak_host.py` が両側の定数を突き合わせる。実機も engine も要らない。
 
 音まわりで踏みやすい点:
 
 - **合成はデバイスがやっていない。** ESP32-S3 には日本語の音声を置く flash も回す
   サイクルも無い。WiFi 越しに VOICEVOX engine を叩いて PCM を取ってくるのが
   `buddy/tts.py` で、`speak.say` の ack はその往復 (数秒) が終わってから出る
+- **WiFi を繋ぐのはこの経路ではない。** `/flash/main.py` が boot で繋ぐ。アプリの中から
+  `connect()` すると受け付けられたまま完了しない (ESP-IDF heap が足りない)。ラジオが
+  落ちていれば最初の POST が OSError になり、その台詞は失われる — それが正しい結末
+- **rate はヘッダから採る。** `outputSamplingRate` は engine が断れる要求で、24 kHz の
+  samples を 16 kHz で鳴らすのは全編ずれた音程になる。`fetch_speech` が返す `rate` は
+  頼んだ値ではなく WAV が名乗った値
+- **ヘッダを探すと samples を読み過ぎる。** 読み過ぎたぶんは `PrefixedStream` が抱えて
+  次の読み手へ先に返す。捨てると毎回の台詞の頭がクリックになる
 - **チャンネルは 1 本に固定する。** `channel=-1` は空きチャンネルを探すので、ブロックが
   重なって鳴る (実測)。枠は 2 つ (再生中 + 次) で、渡す前に `isPlaying(ch)` を見る —
   満杯の `playRaw` は False を返さずに**待つ**ので、待たされた tick は UI が止まる

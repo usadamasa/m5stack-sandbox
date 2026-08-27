@@ -1,126 +1,21 @@
-"""The device's own fetch path: WAV framing and the VOICEVOX call.
+"""The device's own fetch path: the VOICEVOX call.
 
 Nothing here needs a board, a speaker or a running engine. What it
-protects is the seam where a stream of bytes off a socket becomes
-something `M5.Speaker.playRaw` will accept, and every failure in that
-seam sounds the same from the far end of a USB cable: silence, or a
-device parked inside a read.
+protects is the round trip to the engine — the two POSTs, what goes in
+the query, and what happens when the engine is up but answering
+something other than audio.
 
-The header numbers are not invented. `tmp/voicevox_probe.py` measured
-VOICEVOX 0.25.2 answering on this LAN: `audio/wav`, a 44-byte header of
-`fmt ` then `data` with nothing in between, 1ch/16-bit, and 81920 bytes
-of PCM for a 2.56 s utterance at `outputSamplingRate=16000`.
+WAV そのものを解くところは `buddy/wav.py` へ割れていて、テストも
+`test_wav.py` にある。engine が返すバイト列の組み立ては両方が要るので
+`wav_fakes.py` にある。
 """
 
 import json
-import struct
 import unittest
 from typing import Any, cast
 
-from buddy.tts import (
-    FetchError,
-    WavError,
-    fetch_speech,
-    parse_wav_header,
-    quote,
-    tune_query,
-)
-
-
-def _chunk(cid: bytes, body: bytes) -> bytes:
-    """One RIFF chunk, padded to an even length as the spec requires."""
-    return cid + struct.pack("<I", len(body)) + body + (b"\x00" if len(body) & 1 else b"")
-
-
-def _fmt(rate: int = 16000, channels: int = 1, bits: int = 16) -> bytes:
-    return struct.pack(
-        "<HHIIHH",
-        1,  # PCM
-        channels,
-        rate,
-        rate * channels * bits // 8,
-        channels * bits // 8,
-        bits,
-    )
-
-
-def _wav(
-    pcm_bytes: int,
-    before_data: bytes = b"",
-    rate: int = 16000,
-    channels: int = 1,
-    bits: int = 16,
-) -> bytes:
-    """A header describing `pcm_bytes` of samples. The samples themselves
-    are not appended: the parser only ever sees the head of the stream."""
-    body = b"WAVE" + _chunk(b"fmt ", _fmt(rate, channels, bits)) + before_data
-    body += b"data" + struct.pack("<I", pcm_bytes)
-    return b"RIFF" + struct.pack("<I", len(body) + pcm_bytes) + body
-
-
-class WavHeaderTest(unittest.TestCase):
-    def test_reads_what_voicevox_actually_sends(self) -> None:
-        # The measured case: fmt then data, PCM starting at 44.
-        head = _wav(81920)
-        self.assertEqual(len(head), 44)
-        got = parse_wav_header(head)
-        self.assertEqual(got["offset"], 44)
-        self.assertEqual(got["bytes"], 81920)
-        self.assertEqual(got["rate"], 16000)
-        self.assertEqual(got["channels"], 1)
-        self.assertEqual(got["bits"], 16)
-
-    def test_takes_the_rate_from_the_file_not_from_what_we_asked_for(self) -> None:
-        # `outputSamplingRate` is a request, not a guarantee. Playing
-        # 24 kHz samples at 16 kHz is not a subtle failure — it is the
-        # wrong pitch for the whole utterance — so the header wins.
-        self.assertEqual(parse_wav_header(_wav(4096, rate=24000))["rate"], 24000)
-
-    def test_finds_data_behind_a_chunk_we_do_not_care_about(self) -> None:
-        # VOICEVOX 0.25.2 emits none, but a fixed 44-byte skip would be
-        # betting the whole audio path on that staying true.
-        head = _wav(2048, before_data=_chunk(b"LIST", b"INFOsoftware"))
-        got = parse_wav_header(head)
-        self.assertEqual(got["bytes"], 2048)
-        self.assertEqual(head[got["offset"] - 8 : got["offset"] - 4], b"data")
-
-    def test_skips_the_pad_byte_after_an_odd_chunk(self) -> None:
-        # RIFF pads odd-sized chunks to even boundaries and does not
-        # count the pad in the size field. Miss it and every following
-        # chunk id is read one byte late, which finds nothing.
-        head = _wav(2048, before_data=_chunk(b"LIST", b"odd"))
-        self.assertEqual(parse_wav_header(head)["bytes"], 2048)
-
-    def test_rejects_something_that_is_not_a_wav(self) -> None:
-        # An engine that answers an error as JSON, or a captive portal
-        # answering HTML, both arrive here as a stream of bytes.
-        with self.assertRaises(WavError):
-            parse_wav_header(b'{"detail":"speaker not found"}')
-
-    def test_rejects_a_truncated_head(self) -> None:
-        with self.assertRaises(WavError):
-            parse_wav_header(b"RIFF")
-
-    def test_rejects_data_that_arrives_before_fmt(self) -> None:
-        # Without fmt there is no sample rate, and guessing one is the
-        # wrong-pitch failure again.
-        head = b"RIFF" + struct.pack("<I", 4) + b"WAVE" + b"data" + struct.pack("<I", 2048)
-        with self.assertRaises(WavError):
-            parse_wav_header(head)
-
-    def test_rejects_a_head_with_no_data_chunk_in_it(self) -> None:
-        # The caller reads a bounded prefix; a data chunk past the end
-        # of it has to be an error rather than a silent zero-length read.
-        head = b"RIFF" + struct.pack("<I", 4) + b"WAVE" + _chunk(b"fmt ", _fmt())
-        with self.assertRaises(WavError):
-            parse_wav_header(head)
-
-    def test_rejects_a_format_the_speaker_cannot_play(self) -> None:
-        # playRaw takes signed 16-bit mono. Handing it stereo or 8-bit
-        # would play as noise at double speed rather than fail.
-        for channels, bits in ((2, 16), (1, 8)):
-            with self.assertRaises(WavError, msg=f"{channels}ch/{bits}-bit"):
-                parse_wav_header(_wav(2048, channels=channels, bits=bits))
+from buddy.tts import FetchError, fetch_speech, quote, tune_query
+from wav_fakes import FakeRaw, wav_head
 
 
 class QuoteTest(unittest.TestCase):
@@ -171,29 +66,6 @@ class TuneQueryTest(unittest.TestCase):
         self.assertEqual(tuned["speedScale"], 1.0)
 
 
-class _FakeRaw:
-    """A socket-shaped object holding a fixed stream."""
-
-    def __init__(self, data: bytes) -> None:
-        self.data = data
-        self.pos = 0
-        self.closed = False
-        self.timeout: float | None = None
-
-    def read(self, n: int) -> bytes | None:
-        chunk = self.data[self.pos : self.pos + n]
-        self.pos += len(chunk)
-        return chunk
-
-    def settimeout(self, seconds: float) -> None:
-        # `_PrefixedStream` が無条件で転送する。本物の socket と同じで、
-        # 持っていないと player を組み立てた時点で落ちる。
-        self.timeout = seconds
-
-    def close(self) -> None:
-        self.closed = True
-
-
 class _FakeResponse:
     """`buddy_types.HttpResponse` の面。
 
@@ -205,12 +77,12 @@ class _FakeResponse:
     def __init__(
         self,
         payload: dict[str, object] | None = None,
-        raw: _FakeRaw | None = None,
+        raw: FakeRaw | None = None,
         status: int = 200,
     ) -> None:
         self.status_code = status
         self._payload: dict[str, object] = payload if payload is not None else {}
-        self.raw = raw if raw is not None else _FakeRaw(b"")
+        self.raw = raw if raw is not None else FakeRaw(b"")
         self.closed = False
 
     def json(self) -> dict[str, object]:
@@ -241,10 +113,6 @@ class _FakeRequests:
         return nxt
 
 
-def _wav_head(pcm_bytes: int = 81920, rate: int = 16000) -> bytes:
-    return _wav(pcm_bytes, rate=rate)
-
-
 class FetchSpeechTest(unittest.TestCase):
     def _ok(self, rate: int = 16000, pcm_bytes: int = 81920) -> _FakeRequests:
         # The body carries real samples up to a cap, so a test can read
@@ -253,7 +121,7 @@ class FetchSpeechTest(unittest.TestCase):
         body = b"\x00" * min(pcm_bytes, 8192)
         return _FakeRequests(
             _FakeResponse(payload={"outputSamplingRate": 24000, "outputStereo": True}),
-            _FakeResponse(raw=_FakeRaw(_wav_head(pcm_bytes, rate) + body)),
+            _FakeResponse(raw=FakeRaw(wav_head(pcm_bytes, rate=rate) + body)),
         )
 
     def test_calls_audio_query_then_synthesis(self) -> None:
@@ -299,7 +167,7 @@ class FetchSpeechTest(unittest.TestCase):
         req = _FakeRequests(
             OSError("ECONNRESET"),
             _FakeResponse(payload={"outputSamplingRate": 24000}),
-            _FakeResponse(raw=_FakeRaw(_wav_head() + b"\x00" * 64)),
+            _FakeResponse(raw=FakeRaw(wav_head(81920) + b"\x00" * 64)),
         )
         got = fetch_speech("http://host:50021", "あ", speaker=3, rate=16000, requests_mod=req)
         self.assertEqual(got["rate"], 16000)
@@ -329,25 +197,10 @@ class FetchSpeechTest(unittest.TestCase):
         # WavError escaping from here would reach the app unhandled.
         req = _FakeRequests(
             _FakeResponse(payload={"outputSamplingRate": 24000}),
-            _FakeResponse(raw=_FakeRaw(b'{"detail":"speaker not found"}')),
+            _FakeResponse(raw=FakeRaw(b'{"detail":"speaker not found"}')),
         )
         with self.assertRaises(FetchError):
             fetch_speech("http://host:50021", "あ", speaker=99, rate=16000, requests_mod=req)
-
-    def test_the_stream_crosses_from_the_held_bytes_into_the_socket(self) -> None:
-        # The header probe over-reads, so the first samples arrive in a
-        # buffer and the rest come off the wire. A reader that lost the
-        # seam would drop or repeat audio exactly once per utterance.
-        req = self._ok(pcm_bytes=4096)
-        got = fetch_speech("http://host:50021", "あ", speaker=3, rate=16000, requests_mod=req)
-        stream = cast(Any, got["stream"])
-        first = b""
-        while len(first) < 600:
-            chunk = stream.read(600 - len(first))
-            if not chunk:
-                break
-            first += chunk
-        self.assertEqual(first, b"\x00" * 600)
 
     def test_rejects_blank_text_without_touching_the_network(self) -> None:
         req = _FakeRequests()
