@@ -103,7 +103,8 @@ jobs:
   # workspace を分けた意味がここで回帰する。member 単体で sync したときに
   # 他 member の依存が漏れて入っていないこと、そしてそれで足りることを見る。
   # MCP server は Claude Code が起動のたびに走らせる経路で、デプロイ用の
-  # mpy-cross も esptool も、フォント生成用の Pillow も要らない。
+  # mpy-cross も、フォント生成用の Pillow も要らない。esptool は workspace の
+  # どこにも無いはずのもので、ここで見ているのは誰かが依存に戻していないか。
   isolation:
     runs-on: ubuntu-latest
     steps:
@@ -125,8 +126,9 @@ jobs:
           PY
 
   # trivy は .venv の site-packages を読むので、sync が先に要る。
-  # `--all-groups` を付けるのはここだけ。flash グループ (esptool とその依存) は
-  # opt-in で入るぶん、他のジョブからは見えない。
+  # 見るのは他のジョブと同じ `--all-packages` の環境。group を足して見る範囲を
+  # 広げる代わりに、ライセンスの都合で入れられないもの (esptool) は依存から
+  # 外してある。
   license:
     runs-on: ubuntu-latest
     steps:
@@ -139,7 +141,7 @@ jobs:
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
-      - run: uv sync --locked --all-packages --all-groups
+      - run: uv sync --locked --all-packages
       - run: uv run poe license
 
   # The single required status check. Branch protection points at this

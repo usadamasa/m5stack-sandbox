@@ -178,8 +178,8 @@ overlay が何に何を重ねているかは [README の「overlay とは」](RE
 - テストは全て実機不要。`device` の dev グループに host-link が入っているのは、
   `device/tests/test_chat.py` と `test_speak.py` が両側の定数を突き合わせる契約テストだから
 - 依存を足したら `poe license` が弾くことがある。copyleft や分類不能のライセンスが来たら、
-  除外に足す前にそれを使ってよいかを先に決める。GPL-2.0+ の `esptool` だけは既に除外済みで、
-  理由は `[tool.poe.tasks.license]` の上に書いてある
+  除外に足す前にそれを使ってよいかを先に決める。GPL-2.0+ の `esptool` は依存に入れず
+  `uvx esptool@5.3.1` で呼ぶ。理由は `host/tools/pyproject.toml` に書いてある
 
 ## デバイスを触るときの前提
 
