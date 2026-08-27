@@ -44,7 +44,7 @@ transcript has to repaint the chrome we covered.
 書体の選択・読み込み・計測は `buddy/chat_font.py`、transcript の保持は
 `buddy/chat_log.py`、行の折り返しは `buddy/chat_wrap.py`。ここに残るのは
 パネルの幾何、verb の振り分けと描画。どの書体をなぜ選ぶか、VLW が何者かと
-いう経緯は `chat_font.py` の docstring にある。
+いう経緯は `chat_font.py` にある。
 
 ### MicroPython
 
