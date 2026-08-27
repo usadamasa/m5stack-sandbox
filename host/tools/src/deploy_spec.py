@@ -44,7 +44,12 @@ OVERLAY: tuple[str, ...] = (
     # router にある。
     "buddy/app.py",
     "buddy/router.py",
+    # トランスポート。USB が `serial`、WiFi の TCP が `netlink`、2 本を 1 つに
+    # 見せるのが `mux`。app が 3 つとも import するので、揃っていないと起動時に
+    # ImportError になる。
     "buddy/serial.py",
+    "buddy/netlink.py",
+    "buddy/mux.py",
     # チャットパネル。パネルの幾何と verb の振り分けが `chat`、書体の選択と
     # 計測が `chat_font`、transcript の保持が `chat_log`、行の折り返しが
     # `chat_wrap`。4 つとも `chat` から import されるので、揃っていないと

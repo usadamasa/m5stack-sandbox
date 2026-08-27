@@ -19,7 +19,8 @@
 
 ### 入力
 
-無い。キーボードは読まず、入力はホストからのシリアルだけ。upstream は
+無い。キーボードは読まず、入力はホストからの行だけ — USB シリアルと、WiFi の
+TCP (`buddy/netlink.py`) を `buddy/mux.py` で束ねたもの。upstream は
 Y / N / Q を approve / deny / quit に割り当てていたが、この build には
 答えるべき permission prompt が無く (ホストが送らない)、戻る launcher も
 無い。デバイス側の入力が戻ってくるのは issue #33 で、向きはキーではなく
@@ -198,6 +199,8 @@ def run():
 
     # こちらは device/buddy/ の下、このリポジトリのもの。
     from buddy import chat as buddy_chat
+    from buddy import mux as buddy_mux
+    from buddy import netlink as buddy_netlink
     from buddy import serial as buddy_serial
     from buddy import speak as buddy_speak
 
@@ -235,10 +238,18 @@ def run():
     gc.collect()
     print("claude_buddy: gc done, free=", gc.mem_free())
     # `ble` はトランスポートに対する upstream の名前で、`dbg.eval` がそれを
-    # 束ねる名前でもある。ここで入っているのは BuddySerial。
-    ble = buddy_serial.BuddySerial(on_line=router.on_line, on_state=router.on_state)
+    # 束ねる名前でもある。ここで入っているのは USB (BuddySerial) と WiFi
+    # (BuddyNet) を束ねた mux。子は `on_state=ble.child_state` で作るので
+    # mux が先 — 集約した state だけが router へ届く。
+    ble = buddy_mux.TransportMux(on_state=router.on_state)
+    ble.add(buddy_serial.BuddySerial(on_line=router.on_line, on_state=ble.child_state))
+    try:
+        ble.add(buddy_netlink.BuddyNet(on_line=router.on_line, on_state=ble.child_state))
+    except OSError as e:
+        # bind できなくても USB だけで動く。WiFi が無い机でも起動は止めない。
+        print("claude_buddy: netlink unavailable:", e)
     router.ble = ble
-    print("claude_buddy: transport ready")
+    print("claude_buddy: transport ready", ble.advertised_name)
 
     # speech は WiFi 越しに engine へ届く。その WiFi は main.py が boot で
     # 上げたもの。トランスポートが絡むのは ack だけ。

@@ -37,17 +37,19 @@ USB と同じ平文で、しかも LAN の中の誰でも繋げる。`dbg.*` (`b
 """
 
 import errno
+import socket
 import time
-
-try:
-    import socket
-except ImportError:  # pragma: no cover - どの CPython にも socket はある
-    socket = None
 
 # 型検査だけの import。デバイスの上では `False` なので走らない。
 _TYPE_CHECKING = False
 if _TYPE_CHECKING:
-    from buddy_types import LineCallback, StateCallback  # noqa: F401
+    from buddy_types import (  # noqa: F401
+        LineCallback,
+        Listener,
+        Socket,
+        SocketModule,
+        StateCallback,
+    )
 
 # `buddy.serial._SENTINEL` と同じ。ホストの `buddy_wire.SENTINEL` とも。
 _SENTINEL = b"\x1eBUDDY1 "
@@ -96,17 +98,17 @@ class BuddyNet:
         on_line=None,  # type: LineCallback | None
         on_state=None,  # type: StateCallback | None
         port=PORT,  # type: int
-        socket_mod=None,
+        socket_mod=None,  # type: SocketModule | None
     ) -> None:
         self._on_line = on_line or _noop_line
         self._on_state = on_state or _noop_state
         self._name = "Claude_net:%d" % port
         self._rx_buf = bytearray()
-        self._client = None
+        self._client = None  # type: Socket | None
         self._shutting_down = False
 
-        s = socket_mod if socket_mod is not None else socket
-        self._ls = s.socket()
+        s = socket_mod if socket_mod is not None else socket  # type: SocketModule
+        self._ls = s.socket()  # type: Listener
         self._ls.setsockopt(s.SOL_SOCKET, s.SO_REUSEADDR, 1)
         self._ls.bind(("0.0.0.0", port))
         self._ls.listen(1)

@@ -11,6 +11,7 @@ import unittest
 from collections import deque
 
 import buddy_net
+
 from buddy import netlink
 from buddy.netlink import PORT, BuddyNet
 
