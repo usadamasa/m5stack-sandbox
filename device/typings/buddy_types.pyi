@@ -118,6 +118,17 @@ class Speaker(Protocol):
         /,
     ) -> bool: ...
 
+# ------------------------------------------------------------ 無線
+
+class Radio(Protocol):
+    """`network.WLAN` のうち、再生の間だけ省電力を切るのに触るぶん。
+
+    `config("pm")` で読み、`config(pm=...)` で書く。MicroPython の流儀で、
+    読みは位置引数 1 つ、書きはキーワード。
+    """
+
+    def config(self, *args: str, **kwargs: object) -> object: ...
+
 # ------------------------------------------------------ バイト列の口
 
 class ByteStream(Protocol):

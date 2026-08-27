@@ -80,9 +80,15 @@ tick ごとに繰り返す (16 KB の確保は既に失敗する heap)。上げ�
 
 ## WiFi
 
-**デバイスもホストも、実行時には WiFi を一切扱わない。** `/flash/main.py` がブート時に
-`/flash/wifi_event.py` の認証情報で接続し、アプリはその link を継承するだけ。書き込みは
-`host/tools/src/provision_wifi.py` が一度だけ行う ([buddy-deploy](../buddy-deploy/SKILL.md))。
+**デバイスもホストも、実行時には WiFi を繋いだり切ったりしない。** `/flash/main.py` が
+ブート時に `/flash/wifi_event.py` の認証情報で接続し、アプリはその link を継承するだけ。
+書き込みは `host/tools/src/provision_wifi.py` が一度だけ行う
+([buddy-deploy](../buddy-deploy/SKILL.md))。
+
+触るのは省電力 (`WLAN.config(pm=...)`) だけ。既定の `PM_PERFORMANCE` だと socket が
+300ms 止まることがあり (実測: 9.5 秒の台詞 7 回中 2 回、325ms 待って 1.2KB しか来ない)、
+枠 2 つぶんのクッション (170ms) では覆えない。`StreamSource` が生成時に `PM_NONE` にして
+`close()` で戻す。切った 6 回は途切れ 0。
 
 なぜアプリ側で繋げないか (実測):
 
