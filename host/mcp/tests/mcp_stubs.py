@@ -75,3 +75,7 @@ class McpTestCase(unittest.TestCase):
         # The module holds one link for the life of the server process.
         mcp_state.link = None
         self.addCleanup(setattr, mcp_state, "link", None)
+        # 「ポートを持っているつもりか」も同じく 1 つきり。supervisor が
+        # 開き直す先なので、テストの間に残っていると次のテストが拾い直す。
+        mcp_state.wanted = None
+        self.addCleanup(setattr, mcp_state, "wanted", None)

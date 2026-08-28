@@ -45,6 +45,42 @@ class ChatterWiringTest(McpTestCase):
         self.assertIsNone(mcp_state.live_link())
 
 
+class WantedPortTest(McpTestCase):
+    """「ポートを持っているつもりか」— supervisor が開き直す先。
+
+    bool ではなくポート文字列にしてある。開き直す対象がここにしか残らない
+    ため。
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        mcp_state.startup_connect = None
+        self.addCleanup(setattr, mcp_state, "startup_connect", None)
+
+    def test_nothing_is_wanted_before_anyone_asks(self) -> None:
+        self.assertIsNone(mcp_state.wanted)
+
+    def test_opening_a_port_records_which_one(self) -> None:
+        buddy_mcp.buddy_connect()
+        self.assertEqual(mcp_state.wanted, mcp_state.DEFAULT_PORT)
+
+    def test_a_port_that_would_not_open_is_still_wanted(self) -> None:
+        # 起動時にポートを開けなかった run は、そのままだと最後まで黙る
+        # (log で 18 回)。ボードを挿し直せば直る類の失敗なので、意図の方を
+        # 残して supervisor に拾わせる。
+        mcp_state.ResidentLink = _RefusingLink
+        mcp_state.connect_on_start()
+        self.assertEqual(mcp_state.wanted, mcp_state.DEFAULT_PORT)
+
+    def test_letting_go_on_purpose_clears_it(self) -> None:
+        # これが `buddy_disconnect` を最後の言葉のままにしている。supervisor
+        # は「持っているつもりのポート」しか開き直さないので、手放した後に
+        # 取り返す道が構造として無い。
+        buddy_mcp.buddy_connect()
+        buddy_mcp.buddy_disconnect()
+        self.assertIsNone(mcp_state.wanted)
+
+
 class _LockWatchingLink(StubLink):
     """Records whether the device lock was held as the port opened."""
 

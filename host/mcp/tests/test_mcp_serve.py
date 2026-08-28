@@ -16,7 +16,10 @@ from unittest import mock
 
 import buddy_mcp
 import buddy_mcp_serve
+import mcp_health
 import mcp_state
+import mcp_supervisor
+from mcp_health import Check
 from mcp_stubs import McpTestCase, StubLink
 
 
@@ -103,6 +106,41 @@ class ShutdownTest(McpTestCase):
         ):
             buddy_mcp_serve.main([])
         self.assertFalse(mcp_state.chatter_service().running)
+
+
+class SupervisorWiringTest(McpTestCase):
+    """疏通確認の後に supervisor が回り始め、止めるときは先に止まること。"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        mcp_state.chatter = None
+        self.addCleanup(setattr, mcp_state, "chatter", None)
+        # daemon に 1 つきりの singleton。テストの間に残すと次のテストが
+        # 前のスレッドを掴む。
+        mcp_supervisor.current = None
+        self.addCleanup(setattr, mcp_supervisor, "current", None)
+
+    def test_the_startup_checks_become_the_supervisors_baseline(self) -> None:
+        # supervisor は `serial` の 1 項目だけを書き直す。土台が無いと
+        # 周期 health は config も VOICEVOX も落とした形になる。
+        checks = [Check("config", True, "port=/dev/fake"), Check("serial", True, "answered")]
+        with mock.patch.object(mcp_health, "check_on_start", return_value=checks) as done:
+            buddy_mcp_serve.check_then_supervise({}, cast(Any, None), connect=False)
+        done.assert_called_once()
+        supervisor = mcp_supervisor.current
+        assert supervisor is not None
+        self.addCleanup(supervisor.stop)
+        self.assertTrue(supervisor.running)
+
+    def test_it_stops_before_the_port_is_handed_back(self) -> None:
+        # `_shutdown` の後に tick が走ると、手放したポートを取り返しに行く
+        # 形になる。`wanted` が None なので実際には取り返さないが、止める
+        # 順番でも守っておく。
+        supervisor = mcp_supervisor.Supervisor(cast(Any, None), lambda _check: None)
+        supervisor.start()
+        mcp_supervisor.current = supervisor
+        buddy_mcp_serve._shutdown()
+        self.assertFalse(supervisor.running)
 
 
 class LoggingTest(unittest.TestCase):

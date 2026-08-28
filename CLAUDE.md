@@ -191,8 +191,13 @@ overlay が何に何を重ねているかは [README の「overlay とは」](RE
   LAN の中の誰でも `dbg.exec` を撃てる (README の「USB を挿さずに使う」)
 - **ポートは 1 プロセスしか掴めない。** 掴んでいるのは常駐 daemon で、起動直後に
   ポートを開く (chatter を最初から動かすため)。`buddy_deploy.py` や `esptool` を使う前に
-  MCP の `buddy_disconnect` を呼ぶか `buddy-mcpd stop`。一度手放したポートを
+  MCP の `buddy_disconnect` を呼ぶか `buddy-mcpd stop`。**明示的に手放した**ポートを
   取り返す経路は無い
+- **落ちたリンクは daemon が自分で拾い直す。** デバイスが reboot して USB が再列挙されると
+  握っている fd は ENXIO しか返さなくなるが、`mcp_supervisor` が 60 秒ごとにデバイスロックを
+  取って開き直す。`buddy_disconnect` で手放したぶんは対象外 (`mcp_state.wanted` が `None` に
+  なる)。同じ tick で `status` を 1 往復するので、`~/.local/state/buddy/health.json` の
+  `serial` は「今デバイスが答えるか」になる
 - **アプリ起動は片道ではない。** Ctrl-C は有効なままで、アプリがそれを捕まえて reboot せずに
   REPL で止まる。MCP なら `buddy_interrupt`、CLI なら `--interrupt`。REPL を要求するツールは
   自分で Ctrl-C を打ってから入る。BtnRST は、それでも応答しないときの最後の手段

@@ -123,6 +123,10 @@ def buddy_disconnect() -> dict[str, Any]:
     # Under the lock: closing the port while the chatter is mid-utterance
     # would surface as an ENXIO on a write it is in the middle of.
     with mcp_state.device_lock:
+        # 意図の方を先に消す。これが `mcp_supervisor` に「もう要らない」を
+        # 伝える唯一の手段で、消し忘れると次の tick がポートを取り返して
+        # しまう — この tool は deploy と esptool のために在るのに。
+        mcp_state.wanted = None
         if mcp_state.link is None:
             return {"connected": False, "note": "was not connected"}
         mcp_state.link.disconnect()
