@@ -146,9 +146,12 @@ def live_link() -> ResidentLink | None:
     `dropped` を立てて降りるが、`connected` は開いたつもりのまま True になって
     いる。それを渡すと chatter は書くたびに ENXIO で失敗し、台詞ごとに WARNING
     を出し続ける (実機で 16 分そうなった)。ここで None を返せば chatter は
-    「繋がっていない」として数え、開き直すのは次の tool 呼び出し (`get_link`) か
-    daemon の再起動になる。ここで開き直さないのは、この関数がデバイスロックの
-    外から呼ばれるため。
+    「繋がっていない」として数える。
+
+    ここで開き直さないのは、この関数がデバイスロックの外から呼ばれるため。
+    開き直すのは `mcp_supervisor` の周期処理で、あちらはロックを取ってから開く。
+    tool 呼び出し (`get_link`) と daemon の再起動もそうするが、待っていたのは
+    それだけだった頃、誰も tool を呼ばない 4 時間まるごと黙ったことがある。
     """
     if link is None or not link.connected or link.dropped:
         return None
