@@ -5,6 +5,8 @@
 時点では `mcp_state.server` への登録が全部済んでいる。
 
 依存は serve → tools → state の一方向。下の 2 層はここを import しない。
+周期処理 (`mcp_supervisor`) を起こして止めるのもここで、それは配線であって
+health の仕事ではないため。
 """
 
 from __future__ import annotations
@@ -29,6 +31,8 @@ import mcp_chatter_tools
 import mcp_debug_tools
 import mcp_health
 import mcp_state
+import mcp_supervisor
+from buddy_chatter import ChatterService
 from mcp_state import DEFAULT_PORT, HTTP_HOST, HTTP_PATH, SHUTDOWN_TIMEOUT, server
 
 # tool を並べた 3 つのモジュール。import すること自体が `server` への登録を
@@ -141,6 +145,19 @@ def serve_http(options: Mapping[str, Any]) -> None:
     uvicorn.Server(config).run()
 
 
+def check_then_supervise(env: Mapping[str, str], service: ChatterService, *, connect: bool) -> None:
+    """起動時の疏通確認をして、その結果を土台に supervisor を回し始める。
+
+    順番に意味がある。supervisor は起動時の Check を持ち回って `serial` の
+    1 項目だけを書き直すので、土台が揃うまでは回せない。
+
+    ここに置いているのは配線だから: `mcp_health` は supervisor を知らないし、
+    知る必要も無い。
+    """
+    checks = mcp_health.check_on_start(env, service, connect=connect)
+    mcp_supervisor.start(mcp_state, checks)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """server を走らせる。コンソールスクリプト `buddy-mcp` がここに着地する。"""
     env = buddy_paths.environment()
@@ -169,7 +186,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ).start()
     else:
         threading.Thread(
-            target=mcp_health.check_on_start,
+            target=check_then_supervise,
             args=(env, service),
             kwargs={"connect": connect},
             name="buddy-health",
@@ -196,6 +213,11 @@ def _shutdown() -> None:
     socket よりポートの方が重い: 次にそれを欲しがるのは大抵
     `buddy_deploy.py` で、`buddy-mcpd stop` はまさにそれを渡すために在る。
     """
+    # supervisor が先。回ったままだと、この後の `buddy_disconnect` が手放した
+    # ポートを次の tick が取り返しに行く。`wanted` を見ているので実際には
+    # 取り返さないが、止める順番でも守っておく。
+    with contextlib.suppress(Exception):
+        mcp_supervisor.stop()
     if mcp_state.chatter is not None:
         with contextlib.suppress(Exception):
             mcp_state.chatter.stop()

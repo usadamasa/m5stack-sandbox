@@ -87,9 +87,25 @@ device_lock = threading.Lock()
 
 chatter: ChatterService | None = None
 
+# ポートを持っているつもりかどうか。持っているつもりなら、その対象。
+#
+# bool ではなくポート文字列なのは、`mcp_supervisor` が開き直す先がここにしか
+# 残らないため。`link` は死ぬと畳まれてしまうので、そこからは「何を開いて
+# いたか」を取り返せない。
+#
+# 誰が書くか: `connect_on_start` は**試行の時点で**、`get_link` は開いた後に、
+# `buddy_disconnect` は `None` を。試行の時点で書くのは、起動時にポートを
+# 開けなかった run がそのまま最後まで黙っていたから — ボードを挿し直せば
+# 直る類の失敗で、意図の方を残しておけば supervisor が拾える。
+#
+# `None` を書くのは `buddy_disconnect` だけ。それが「`buddy_disconnect` が
+# 最後の言葉」を構造として守っている: 手放したポートを supervisor が取り返す
+# 道が無い。
+wanted: str | None = None
+
 
 def get_link(port: str | None = None) -> ResidentLink:
-    global link
+    global link, wanted
     target = port or DEFAULT_PORT
     if link is not None and link.connected and link.port != target:
         link.disconnect()
@@ -104,6 +120,7 @@ def get_link(port: str | None = None) -> ResidentLink:
     if link is None or not link.connected:
         link = ResidentLink(target)
         link.connect()
+    wanted = link.port
     return link
 
 
@@ -129,9 +146,12 @@ def live_link() -> ResidentLink | None:
     `dropped` を立てて降りるが、`connected` は開いたつもりのまま True になって
     いる。それを渡すと chatter は書くたびに ENXIO で失敗し、台詞ごとに WARNING
     を出し続ける (実機で 16 分そうなった)。ここで None を返せば chatter は
-    「繋がっていない」として数え、開き直すのは次の tool 呼び出し (`get_link`) か
-    daemon の再起動になる。ここで開き直さないのは、この関数がデバイスロックの
-    外から呼ばれるため。
+    「繋がっていない」として数える。
+
+    ここで開き直さないのは、この関数がデバイスロックの外から呼ばれるため。
+    開き直すのは `mcp_supervisor` の周期処理で、あちらはロックを取ってから開く。
+    tool 呼び出し (`get_link`) と daemon の再起動もそうするが、待っていたのは
+    それだけだった頃、誰も tool を呼ばない 4 時間まるごと黙ったことがある。
     """
     if link is None or not link.connected or link.dropped:
         return None
@@ -172,12 +192,16 @@ def connect_on_start(port: str | None = None) -> dict[str, Any]:
     スレッドとハンドシェイクであってデバイスとの往復ではないが、その最中に
     落ちてきた tool 呼び出しは組み立て途中のリンクを掴むことになる。
 
-    試行は 1 回。ここで失敗するのはボードが挿さっていないか別プロセスが
-    ポートを持っているかで、どちらも再試行では直らない — 直ったらエージェントが
-    `buddy_connect` を呼べばよい。この結果を待っている者も居ないので、例外は
-    黙ってスレッドを終わらせるだけになる。だから記録する。
+    ここでの試行は 1 回だけ。失敗するのはボードが挿さっていないか別プロセスが
+    ポートを持っているかで、どちらもその場での再試行では直らない。代わりに
+    `wanted` へ意図を残すので、後で挿し直されたぶんは `mcp_supervisor` が
+    拾い直す。この結果を待っている者は居ないので、例外は黙ってスレッドを
+    終わらせるだけになる。だから記録する。
     """
-    global startup_connect
+    global startup_connect, wanted
+    # 開けたかどうかではなく、開こうとしたことを残す。開けなかった run が
+    # そのまま最後まで黙っていたのがこれが無かったときの姿。
+    wanted = port or DEFAULT_PORT
     try:
         with device(port) as opened:
             startup_connect = {"ok": True, "port": opened.port}

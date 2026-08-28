@@ -74,7 +74,13 @@ SDK を直接叩くと認証の解決を再実装して追随し続けること�
 2. **リンクが上がっているか。** `buddy_chatter_status` の `skipped_offline` が増えていたら
    これ。chatter は自分からポートを開けない。daemon は起動直後に一度だけ開くので、
    その一度がどうだったかは同じ status の `connect_on_start` に出る (`ok: false` なら
-   `error`)。試行は一度きりなので、途中で挿したデバイスには `buddy_connect` で繋ぐ
+   `error`)。
+
+   開けなかったぶんと、開いた後に落ちたぶんは `mcp_supervisor` が 60 秒ごとに拾い直す。
+   拾えているかは daemon の log の `buddy.supervisor` の行 (結末が変わったときだけ出る)
+   と、`buddy-mcpd status` の `health` の `serial` — こちらは毎 tick 書き直されるので
+   `checked_at` が 1 分以内なら生きている値。`buddy_disconnect` で手放したポートだけは
+   対象外なので、そのときは `buddy_connect` で繋ぐ
 3. **hook が届いているか。** `queued` と各カウンタが全部 0 のままなら socket に何も
    来ていない。手で叩ける:
    `echo '{"hook_event_name":"Stop"}' | python3 scripts/buddy_chatter_notify.py`
@@ -179,9 +185,12 @@ hook は plugin の `hooks/hooks.json` が登録する。plugin を入れ替え�
   `buddy_paths` と同じ答えにする数行だけを複製し、一致は `test_hook.py` の契約テストで縛る
 - **worker は `_device_lock` を `blocking=False` でしか取らない。** ブロッキングにすると
   chatter が本物のツール呼び出しを待たせる側になる
-- **起動時の接続は一度きりで、再試行しない。** ここをループにすると `buddy_disconnect` が
-  意味を失い、deploy のために手放したポートを取り返してしまう。開けなかったときは
-  `_startup_connect` に理由を残して黙る
+- **起動時の接続は一度きり。その場では再試行しない。** 開けなかったときは
+  `startup_connect` に理由を残して黙る (`buddy_chatter_status` に出る)
+- **拾い直すのは chatter ではなく `mcp_supervisor`。** 60 秒ごとにデバイスロックを取り、
+  リンクが死んでいれば開き直す。chatter 自身がループで開きに行くと `buddy_disconnect` が
+  意味を失うが、supervisor は `mcp_state.wanted` — 持っているつもりのポート — しか開かず、
+  `buddy_disconnect` はそれを `None` にする。deploy のために手放したポートは取り返されない
 - **台詞の生成はロックの外。** `claude -p` はプロセスを 1 つ起こす。ロックを持ったまま
   やるとそのままツール呼び出しの待ち時間になる。生成済みの行は `_pending` に置いて、
   デバイスが空くまで持ち越す

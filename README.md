@@ -427,9 +427,17 @@ UUID として検められる `session_id` だけで、パスは daemon が組�
 デバイスは電源が入っていればアプリまで自分で立ち上がる (`device/main.py`) ので、これだけで
 `buddy-mcpd start` の直後から独り言が始まる。
 
-試行は一度きりで、失敗しても再試行しない。`buddy_disconnect` がポートの所有権について
-最後の一言であり続けるため — deploy の前に手放したポートを、あとから勝手に取り返す経路は
-無い。セッションの途中でデバイスを挿したときは `buddy_connect` を呼ぶ。開いたかどうかは
+**落ちたリンクは 60 秒ごとに拾い直す。** デバイスが reboot すると USB が再列挙され、daemon が
+握っている fd は ENXIO しか返さなくなる。以前はこれを開き直す経路が MCP tool の中にしか無く、
+誰も tool を呼ばない間はデバイスが元気でも daemon が黙り続けた (2026-08-28 に 4 時間)。今は
+`mcp_supervisor` が周期的にデバイスロックを取って開き直す。同じ tick で `status` を 1 往復
+するので、`~/.local/state/buddy/health.json` の `serial` は起動時の遺言ではなく「今デバイスが
+答えるか」になる。
+
+拾い直す対象は「持っているつもりのポート」だけ。`buddy_disconnect` はそれを消すので、
+**deploy の前に手放したポートを、あとから勝手に取り返す経路は無い** — ポートの所有権について
+`buddy_disconnect` が最後の一言であり続ける、という約束はそのまま。起動時に開けなかった
+ぶんは意図が残るので、ボードを挿し直せば次の tick で開く。開いたかどうかは
 `buddy_chatter_status` の `connect_on_start` に出る。
 
 **喋る内容を変えたいときは `host/mcp/src/chatter_prompt.md` を直す。** コードは触らなくてよい。

@@ -169,9 +169,11 @@ def describe_status(ack: Mapping[str, Any]) -> str:
 def serial_check(timeout: float = STATUS_TIMEOUT) -> Check:
     """ポートが開いたか、開いたならデバイスが何と答えるか。
 
-    ここからポートを開き直すことはしない。`connect_on_start` の試行は 1 回
-    きりで、それが失敗したということはボードが挿さっていないか他のプロセスが
-    ポートを持っているかで、どちらも再試行では直らない。
+    ここからポートを開き直すことはしない。ここは起動時の 1 回きりの確認で、
+    `connect_on_start` の試行がどうなったかを報告するのが仕事だから。開けな
+    かったぶんを拾い直すのは `mcp_supervisor` の周期処理で、`mcp_state.wanted`
+    に残った意図を見て次の tick で開く — ボードを挿し直せば直るので、その場で
+    再試行しないことと「二度と直らない」ことは別。
     """
     attempt = mcp_state.startup_connect
     if attempt is None:
