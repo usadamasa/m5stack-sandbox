@@ -24,6 +24,11 @@ description: 走っている Buddy アプリの中を覗く、アプリを止め
 `buddy_debug` tool は両方返す。CLI は ack を 1 行、log を `log |` 付きで出す。
 ack だけ見て「ok: true」で終わらせないこと。**欲しい情報は log の側にあることが多い**。
 
+log の行は daemon 経由なら `~/.local/state/buddy/buddy-mcpd.log` にも
+`buddy.device:` として届いた時点で書かれる。tool を呼ばずに落ちた traceback や、
+`buddy_events` で回収する前に流れたものはそちらで読める (USB 経由のみ。
+デバイスの `print()` は TCP には出ない)。
+
 ## verb
 
 ```bash

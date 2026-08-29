@@ -123,6 +123,9 @@ buddy-mcpd stop                      # deploy や esptool の前に
   疏通確認 (config / serial / socket / chatter / voicevox / claude) と、chatter が
   喋った台詞・喋れなかった理由も同じファイルに出る。確認の結果は
   `~/.local/state/buddy/health.json` にも残り、`buddy-mcpd status` の `health` に出る
+- デバイスが USB へ `print()` した行も同じ log に `buddy.device:` で届いた時点で出る。
+  落ちる直前の traceback と、リンクが ENXIO で切れた瞬間 (`buddy.link:`) は
+  ここで時刻ごと読める。TCP 経由のリンクにはデバイスの `print()` が流れないので出ない
 
 ## 設定と状態の置き場
 
@@ -205,7 +208,8 @@ overlay が何に何を重ねているかは [README の「overlay とは」](RE
   デバイス側のモジュールは使うまで import されないので、覗いていない間の heap は減らない。
   初回の `dbg.*` でデバイスが喋る。詳細は `buddy-debug` skill
 - **大きい出力は ack ではなく log に出る。** `dbg.frag` のヒープマップも traceback も
-  `print()` 経由。ack の `ok: true` だけ見て終わらせない
+  `print()` 経由。ack の `ok: true` だけ見て終わらせない。daemon 経由なら
+  `buddy_events` で回収しなくても `buddy-mcpd.log` に `buddy.device:` で残っている
 - **daemon は起動時に host のコードを import 済み。** `host/` の下を直しても
   走っている daemon には反映されない。`buddy-mcpd restart` する
   (セッションの再起動は要らない)

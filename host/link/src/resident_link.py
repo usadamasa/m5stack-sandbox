@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import threading
 import time
 from collections import deque
@@ -23,6 +24,12 @@ from buddy_wire import (
     decode,
     encode,
 )
+
+# リンク自身の出来事 (reader が死んだ等) と、デバイスが print() した行は
+# 別の logger に分ける。後者は daemon の log で `buddy.device:` として
+# 並び、grep で切り出せる。
+log = logging.getLogger("buddy.link")
+device_log = logging.getLogger("buddy.device")
 
 
 class ResidentLink:
@@ -122,9 +129,14 @@ class ResidentLink:
             try:
                 waiting = ser.in_waiting
                 data = ser.read(waiting if waiting else 1)
-            except OSError:
+            except OSError as exc:
                 # SerialException は OSError の派生なので、閉じたポートと
                 # reset したデバイスの ENXIO の両方をこれで拾う。
+                # disconnect() で閉じたときは報せない。デバイスが下で消えた
+                # ときだけ、その瞬間の時刻を log に残す — 次に誰かが
+                # `dropped` を読むのは最大で supervisor の周期ぶん後になる。
+                if not self._stop.is_set():
+                    log.warning("%s: reader stopped: %s", self.port, exc)
                 with self._cv:
                     self.dropped = True
                     self._cv.notify_all()
@@ -134,15 +146,31 @@ class ResidentLink:
             items = self._demux.feed(data)
             if not items:
                 continue
+            # decode と logging は lock の外で済ませ、lock の中では溜めて
+            # 起こすだけにする。logging の handler は何をするか分からない
+            # (ファイルへの書き込みで待つこともある) ので、request() を
+            # 待たせる側に置かない。
+            msgs: list[Message] = []
+            logs: list[bytes] = []
+            for kind, payload in items:
+                if kind != "protocol":
+                    # デバイスの print() は events() で回収されるまで deque に
+                    # 眠る。落ちる直前の traceback がそこで終わると daemon の
+                    # log には何も残らないので、届いた時点で logger へも流す。
+                    device_log.info("%s", payload.decode("utf-8", errors="replace"))
+                    logs.append(payload)
+                    continue
+                try:
+                    msgs.append(decode(payload))
+                except ValueError:
+                    device_log.warning(
+                        "undecodable protocol line: %s",
+                        payload.decode("utf-8", errors="replace"),
+                    )
+                    logs.append(b"<undecodable protocol line> " + payload)
             with self._cv:
-                for kind, payload in items:
-                    if kind == "protocol":
-                        try:
-                            self._msgs.append(decode(payload))
-                        except ValueError:
-                            self._logs.append(b"<undecodable protocol line> " + payload)
-                    else:
-                        self._logs.append(payload)
+                self._msgs.extend(msgs)
+                self._logs.extend(logs)
                 self._cv.notify_all()
 
     # ----- トラフィック
