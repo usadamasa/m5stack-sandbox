@@ -232,6 +232,19 @@ def run():
     # `on_line` が protocol を要る、という循環をこれで解く。
     router = Router(ui, chat, state, chars)
 
+    # 読むのは今。後で読んでも同じ値だが、boot の理由がこの run() のもので
+    # あることを、読んだ場所で言っておく。値は 1 PWRON / 2 HARD / 3 WDT /
+    # 4 DEEPSLEEP / 5 SOFT。ただし esp32 port では下の `finally` が呼ぶ
+    # `machine.reset()` も 2 で来る (2026-08-29 実測)。RST 線と区別が付か
+    # ないので、例外で落ちた回はその前に流れる traceback が唯一の証拠。
+    reset_cause = machine.reset_cause()
+
+    def _boot_note():
+        # type: () -> str
+        return "reset_cause=%d up=%ds" % (reset_cause, time.ticks_ms() // 1000)
+
+    router.boot_note = _boot_note
+
     # トランスポートと speech player がバッファを確保する前に、一度通しで
     # 集める。ここまでの UI・chat panel のフォント・state ファイルがヒープを
     # かき混ぜていて、断片を返せる最後の静かな瞬間がここ。
