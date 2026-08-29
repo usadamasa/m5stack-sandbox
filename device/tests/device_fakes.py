@@ -283,7 +283,10 @@ def firmware_modules(
     chars = Recorder()
     return {
         "M5": module("M5", Lcd=lcd),
-        "machine": module("machine", reset=lambda: machine.record("reset")),
+        # `reset_cause` は問い合わせで、命令ではない。記録すると「reboot
+        # しなかった」ことを `names() == []` で確かめるテストが濁る。
+        # 2 は HARD_RESET (RST 線)。traceback の無い reboot の代表。
+        "machine": module("machine", reset=lambda: machine.record("reset"), reset_cause=lambda: 2),
         "buddy_ui_cp": module(
             "buddy_ui_cp", BuddyUI=lambda: ui, BLACK=FakeUi.BLACK, GRAY_DIM=FakeUi.GRAY_DIM
         ),

@@ -40,6 +40,8 @@ import sys
 # 使い方は `device/typings/buddy_types.pyi` の docstring にある。
 _TYPE_CHECKING = False
 if _TYPE_CHECKING:
+    from collections.abc import Callable  # noqa: F401
+
     from buddy_types import (  # noqa: F401
         Chat,
         DebugModule,
@@ -143,6 +145,10 @@ class Router:
         self.chat_dirty = False
         # 状態変化のメールボックス。同じく描くのは main loop。
         self.pending_state = None  # type: str | None
+        # host が繋いだときに 1 行言う「この boot は何で始まって、いつから
+        # 動いているか」。`run()` が machine と time を束ねて差す。ここで
+        # 作らないのは、このモジュールがファームウェアを import しないため。
+        self.boot_note = None  # type: Callable[[], str] | None
 
     def _reply(self, ack):
         # type: (dict[str, object]) -> None
@@ -264,5 +270,12 @@ class Router:
             effective = "encrypted"
         print("claude_buddy: state", s, "->", effective)
         self.pending_state = effective
-        if effective == "encrypted" and self.proto is not None:
-            self.proto.send_hello()
+        if effective == "encrypted":
+            # boot 時の print は誰も聞いていない — reboot で USB が再列挙
+            # されると host は開き直すまで読めない。繋がった今なら届く。
+            # 例外を伴わない reboot (RST 線、brownout) は traceback を残さ
+            # ないので、daemon の log で理由が読めるのはこの行だけになる。
+            if self.boot_note is not None:
+                print("claude_buddy: boot", self.boot_note())
+            if self.proto is not None:
+                self.proto.send_hello()
