@@ -13,7 +13,9 @@ footer と chat の重なりが依存している「transcript が出ている�
 """
 
 import ast
+import contextlib
 import importlib
+import io
 import sys
 import types
 import unittest
@@ -176,6 +178,23 @@ class RunTest(unittest.TestCase):
         self.assertEqual(self.net.polls, transport.polls - 1)
         self.assertEqual(self.net.deinits, 1)
         self.assertEqual(self.net.lines, [])
+
+    def test_the_boot_note_carries_the_reset_cause_and_the_uptime(self) -> None:
+        # 例外を伴わない reboot (RST 線、brownout) には traceback が無い。
+        # host が繋いだ瞬間に reset_cause と稼働時間を言えば、daemon の log
+        # 1 行で「いつ何で reboot したか」が読める (issue #92)。
+        def poll(transport: FakeTransport, count: int) -> None:
+            if count == 2:
+                transport.on_state("connected")
+            elif count >= 3:
+                raise KeyboardInterrupt
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self._run(poll)
+
+        # FakeTime は sleep_ms のたびに 4 秒進む。2 周目なら 1 回寝ている。
+        self.assertIn("claude_buddy: boot reset_cause=2 up=4s\n", out.getvalue())
 
     def test_the_app_runs_on_usb_alone_when_the_listener_cannot_bind(self) -> None:
         def poll(transport: FakeTransport, count: int) -> None:

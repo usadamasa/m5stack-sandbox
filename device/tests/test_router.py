@@ -8,7 +8,9 @@
 何かがおかしいときなので、間に fake を挟まない方が意味がある。
 """
 
+import contextlib
 import importlib
+import io
 import sys
 import unittest
 from unittest import mock
@@ -212,6 +214,31 @@ class RouterStateTest(unittest.TestCase):
         router.on_state("disconnected")
         self.assertEqual(router.pending_state, "disconnected")
         self.assertEqual(proto.names(), [])
+
+    def test_the_boot_note_is_said_when_the_host_connects(self) -> None:
+        # boot 時の print は誰も聞いていない (host はまだポートを開き直して
+        # いない)。reboot の理由が daemon の log に届くのは、繋がった瞬間に
+        # もう一度言うから。閉じたときには言わない。
+        router = make_router(proto=FakeProto())
+        router.boot_note = lambda: "reset_cause=2 up=15035s"
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            router.on_state("connected")
+        self.assertIn("claude_buddy: boot reset_cause=2 up=15035s\n", out.getvalue())
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            router.on_state("disconnected")
+        self.assertNotIn("boot", out.getvalue())
+
+    def test_without_a_boot_note_the_connect_is_still_reported(self) -> None:
+        # `boot_note` は `run()` が後から差す枠。差さっていなくても handshake
+        # は進む。
+        router = make_router(proto=FakeProto())
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            router.on_state("connected")
+        self.assertEqual(router.pending_state, "encrypted")
+        self.assertNotIn("boot", out.getvalue())
 
 
 if __name__ == "__main__":
