@@ -143,6 +143,51 @@ class ResidentLinkTest(unittest.TestCase):
             time.sleep(0.01)
         self.assertEqual(self.link.events(), ([], []))
 
+    def _wait_for_logs(self, count: int) -> list[bytes]:
+        logs: list[bytes] = []
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and len(logs) < count:
+            logs += self.link.events()[1]
+            time.sleep(0.01)
+        return logs
+
+    def test_device_lines_reach_the_logger_as_they_arrive(self) -> None:
+        # デバイスの print() は events() で回収されるまで deque に眠っていた。
+        # 落ちる直前の traceback を daemon の log にも残すため、届いた時点で
+        # logger へも流す。record は events() に見えるより前に出るので、
+        # 到着を待ってから record を数えれば揃っている。
+        with self.assertLogs("buddy.device", level="INFO") as captured:
+            self.fake.feed(b"claude_buddy: unhandled exception in the main loop\n")
+            self.fake.feed(b"Traceback (most recent call last):\n")
+            self.assertEqual(len(self._wait_for_logs(2)), 2)
+        self.assertEqual(
+            [r.getMessage() for r in captured.records],
+            [
+                "claude_buddy: unhandled exception in the main loop",
+                "Traceback (most recent call last):",
+            ],
+        )
+        self.assertEqual([r.levelname for r in captured.records], ["INFO", "INFO"])
+
+    def test_undecodable_protocol_line_is_logged_as_a_warning(self) -> None:
+        with self.assertLogs("buddy.device", level="WARNING") as captured:
+            self.fake.feed(framed(b"{not json"))
+            self.assertEqual(len(self._wait_for_logs(1)), 1)
+        self.assertEqual(len(captured.records), 1)
+        self.assertIn("{not json", captured.records[0].getMessage())
+
+    def test_reader_death_is_logged_with_the_port(self) -> None:
+        # ENXIO の瞬間そのものが log に残る。次の get_link が「dropped」と
+        # 言うのは最大 60 秒後なので、reboot の時刻はここでしか取れない。
+        with self.assertLogs("buddy.link", level="WARNING") as captured:
+            self.fake.fail = OSError(6, "Device not configured")
+            with self.assertRaises(ConnectionError):
+                self.link.request({"cmd": "status"}, "status", timeout=3.0)
+        self.assertEqual(len(captured.records), 1)
+        message = captured.records[0].getMessage()
+        self.assertIn("/dev/fake", message)
+        self.assertIn("Device not configured", message)
+
     def test_dropped_port_raises_connection_error(self) -> None:
         self.fake.fail = OSError(6, "Device not configured")
         with self.assertRaises(ConnectionError):
