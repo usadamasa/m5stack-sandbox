@@ -15,6 +15,9 @@ from pathlib import Path
 from buddy_emu import Emulator
 from buddy_link import BuddyLink
 
+# emu_board.ORANGE を RGB に解いたもの。stand-in の header の色。
+HEADER_ORANGE = (0xCC, 0x78, 0x5C)
+
 
 class EmulatorTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -33,16 +36,18 @@ class EmulatorTest(unittest.TestCase):
         self.assertTrue(ack["ok"])
         self.assertTrue(ack["active"])
         self.emu.wait_drawn("hello")
-        # transcript の領域 (y=0..110) に何か描かれている。
-        self.assertIsNotNone(self.emu.screen.crop((0, 0, 240, 110)).getbbox())
+        # transcript は header (y=0..22 の橙) ごと塗り潰す。chat.py の契約。
+        self.assertNotEqual(self.emu.screen.getpixel((120, 10)), HEADER_ORANGE)
 
     def test_chat_clear_hands_the_panel_back(self) -> None:
         _ = self.link.request({"cmd": "chat.say", "role": "claude", "text": "hello"}, "chat.say")
         self.emu.wait_drawn("hello")
+        before = len(self.emu.lcd.drawn)
         ack = self.link.request({"cmd": "chat.clear"}, "chat.clear")
         self.assertFalse(ack["active"])
-        # dashboard の chrome が描き直される。header の "Claude Buddy" が戻る。
-        self.emu.wait_drawn("Claude Buddy")
+        # dashboard の chrome が描き直される。起動時のぶんではなく、clear の後に。
+        self.emu.wait_drawn("Claude Buddy", since=before)
+        self.assertEqual(self.emu.screen.getpixel((120, 10)), HEADER_ORANGE)
 
     def test_japanese_wraps_on_the_wide_face(self) -> None:
         text = "ずんだもんなのだ。" * 3

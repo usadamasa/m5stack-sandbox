@@ -147,11 +147,15 @@ class Emulator:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.screen.save(path)
 
-    def wait_drawn(self, text: str, timeout: float = 3.0) -> None:
-        """`text` を含む drawString が来るまで待つ。ack は描画より先に返る。"""
+    def wait_drawn(self, text: str, timeout: float = 3.0, since: int = 0) -> None:
+        """`text` を含む drawString が来るまで待つ。ack は描画より先に返る。
+
+        `since` は `lcd.drawn` の添字。起動時に描いた文字列を「描き直した」と
+        読み違えないよう、送る前の `len(lcd.drawn)` を渡す。
+        """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if any(text in drawn for drawn, _x, _y, _c in self.lcd.drawn):
+            if any(text in drawn for drawn, _x, _y, _c in self.lcd.drawn[since:]):
                 return
             time.sleep(0.02)
         raise TimeoutError(f"{text!r} was not drawn within {timeout}s")

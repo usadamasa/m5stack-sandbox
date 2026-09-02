@@ -97,7 +97,13 @@ class Lcd:
         return self._metrics()[1]
 
     def textWidth(self, text: str) -> int:
-        return int(self._pil_font(self._metrics()[0]).getlength(text))
+        px = self._metrics()[0]
+        if self._font_path is None:
+            # ponytail: TTF が無い (CI) ときの固定送り。Pillow の既定書体は CJK を
+            # 持たず、豆腐の幅で測ると折り返しが実機とずれる。VLW 16px の実測
+            # (あ 16 / A 8) と同じ比にしておく。
+            return sum(px if ord(ch) >= 0x1100 else px // 2 for ch in text)
+        return int(self._pil_font(px).getlength(text))
 
     # -- 描画
 
@@ -115,7 +121,7 @@ class Lcd:
     def drawString(self, text: str, x: int, y: int) -> None:
         px, height = self._metrics()
         font = self._pil_font(px)
-        width = int(font.getlength(text))
+        width = self.textWidth(text)
         with self._lock:
             draw = ImageDraw.Draw(self.image)
             draw.rectangle((x, y, x + width - 1, y + height - 1), fill=_rgb(self._bg))
