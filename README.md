@@ -331,6 +331,34 @@ console へ送るもので、TCP の向こうには console が無い。`tcp://`
 BLE にしなかった理由は issue #29 にある。NimBLE を上げると ESP-IDF heap が 63 KB 減り、
 アプリと発話が同居できない。TCP の listener 1 本は 1 KB で済む。
 
+### 実機なしで動かす (エミュレータ)
+
+`host/tools/src/buddy_emu.py` がデバイスのアプリ (`device/buddy/app.py` の `run()`) を
+このマシンの CPython でそのまま回す。差し替えるのはファームウェアの境界だけで、
+`M5.Lcd` は Pillow の 240x135 の画像に描き、ホストからは上の WiFi と同じ TCP で繋ぐ。
+公式にも OSS にも UIFlow2 の MicroPython を Cardputer の画面ごと動かせるものは無かった
+(Wokwi は M5Stack の基板も LCD も持たず、m5stack/lv_m5_emulator は C++ の LVGL 専用)。
+
+```bash
+uv run python host/tools/src/buddy_emu.py            # 8788 で listen。画面は tmp/emu/screen.png
+uv run python host/link/src/buddy_bridge.py --port tcp://127.0.0.1 --say 'こんにちは'
+BUDDY_PORT=tcp://127.0.0.1 buddy-mcpd start          # daemon ごと向ける
+```
+
+画面は描き変わるたびに PNG へ出る。日本語の幅は `--font` の TTF で測り、無ければ
+`tmp/fonts/BIZUDGothic-Regular.ttf` か macOS のヒラギノを探す。書体の高さは実機の実測値に
+固定してあるので、行数 (VLW で 6 行) は実機と揃う。
+
+テストからは in-process に回す。`host/tools/tests/test_buddy_emu.py` が
+`Emulator(port=0).start()` に `BuddyLink("tcp://127.0.0.1:<port>")` で繋ぎ、ack と
+描かれた文字列と画素を見ている。画面のテストと操作のテストはここに足す。
+
+**本物でないもの。** upstream のピア (`buddy_protocol` / `buddy_ui_cp` / `buddy_state` /
+`buddy_chars`) は flash にしか無く再配布もしないので、`status` の ack と dashboard の
+chrome は形だけの stand-in。USB は無く、REPL が要る操作は `tcp://` と同じく対象外。
+Speaker はブロックを数えるだけで音は出ず、VOICEVOX へも届かない (`speak.say` は ack で
+断られる)。キーボードは実機と同じで読まない。
+
 ### plugin として使う
 
 このリポジトリのルートが Claude Code plugin のルートを兼ねる。skill・chatter の hook・

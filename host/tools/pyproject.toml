@@ -63,7 +63,9 @@ addopts = "--strict-markers --strict-config"
 pythonVersion = "3.13"
 include = ["src", "tests"]
 exclude = ["**/__pycache__"]
-extraPaths = ["src", "../link/src"]
+# ../../device は buddy_emu.py のため。エミュレータは `buddy.app` を本物のまま
+# import するので、device/ のソースが解決できないと `buddy.*` が全部 Unknown になる。
+extraPaths = ["src", "../link/src", "../../device", "../../device/typings"]
 # mpy-cross は py.typed を持たず stub パッケージも無いので、触る面だけを写した
 # 手書きのスタブを置いてある。既定値と同じ名前だが、device/ と揃えて明示する。
 stubPath = "typings"
