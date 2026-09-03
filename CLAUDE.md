@@ -90,6 +90,14 @@ uv run python host/link/src/buddy_bridge.py --port $PORT --status
 uv run python host/link/src/buddy_bridge.py --port $PORT --speak 'ずんだもんなのだ'
 ```
 
+実機が無いときはエミュレータ。デバイスのアプリを CPython で回し、画面を PNG に出す。
+ホストからは `tcp://127.0.0.1` で繋ぐ (README の「実機なしで動かす」)。
+
+```bash
+uv run python host/tools/src/buddy_emu.py                         # 8788 で listen、tmp/emu/screen.png
+uv run python host/link/src/buddy_bridge.py --port tcp://127.0.0.1 --say 'こんにちは'
+```
+
 **sandbox の外に出る必要がある理由**: シリアルポートを開くには `tcsetattr` (ioctl) が
 要り、Seatbelt はこれを拒否する。`.claude/settings.json` の
 `sandbox.excludedCommands` に `uv *` / `uvx *` / `buddy-mcpd *` を登録してあるため、
@@ -186,6 +194,10 @@ overlay が何に何を重ねているかは [README の「overlay とは」](RE
 
 ## デバイスを触るときの前提
 
+- **画面と操作のテストはエミュレータで書ける。** `host/tools/src/buddy_emu.py` の
+  `Emulator` が `buddy.app.run()` を in-process で回し、`BuddyLink("tcp://127.0.0.1:<port>")`
+  で繋いで ack・描かれた文字列・画素を見る (`host/tools/tests/test_buddy_emu.py`)。
+  upstream のピアは stand-in なので、`status` の中身や dashboard の見た目は実機で確かめる
 - **USB の代わりに WiFi でも繋がる。** アプリは TCP の 8788 番も listen していて
   (`buddy/netlink.py`、USB と `buddy/mux.py` で束ねる)、`port = "tcp://<ip>"` で
   daemon も CLI もそちらを使う。framing も verb も同じ。ただし REPL が要るもの
