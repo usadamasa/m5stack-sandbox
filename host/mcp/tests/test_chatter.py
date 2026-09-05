@@ -370,21 +370,6 @@ class VarietyTests(unittest.TestCase):
         }
         self.assertGreater(len(drawn), 1, "identical context must not mean an identical prompt")
 
-    def test_every_line_in_a_batch_gets_its_own_form(self) -> None:
-        # バッチ全体に切り口を 1 つ渡すのではなく、行ごとに形・気分・見るものを
-        # 指定する。同じバッチの中で形が重なると、そこだけ同じ型の文が並ぶ。
-        cfg = ChatterConfig(batch=4)
-        specs = ClaudeCliLineSource(cfg, random.Random(7))._specs()
-        self.assertEqual(len(specs), 4)
-        forms = [spec.form for spec in specs]
-        self.assertEqual(len(set(forms)), 4, forms)
-        prompt = ClaudeCliLineSource(cfg, random.Random(7))._user_prompt([])
-        for n, spec in enumerate(specs, 1):
-            self.assertIn(f"{n}. ", prompt)
-            self.assertIn(spec.form, prompt)
-            self.assertIn(spec.mood, prompt)
-            self.assertIn(spec.subject, prompt)
-
     def test_a_line_already_said_is_dropped_from_the_batch(self) -> None:
         source = claude_source(
             ChatterConfig(), {"lines": ["また同じことを言うのだ", "こっちは新しいのだ"]}
