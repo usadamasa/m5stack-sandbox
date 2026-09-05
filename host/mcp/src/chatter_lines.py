@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, cast
 
 from chatter_core import (
@@ -30,10 +31,18 @@ from chatter_sessions import SessionRegistry
 # 流れなので、生成の失敗とデバイスの失敗を同じ名前の下に並べる。
 log = logging.getLogger("buddy.chatter")
 
-# 2 つずつ引いてプロンプトへ貼る。イベントログはセッション中ずっと同じ形
-# — `tool: Bash` の繰り返し — なので、これが無いとどのバッチもほとんど同じ
-# 入力から生成されてほとんど同じものが返る。これは扱うべき話題ではなく、
-# 前のバッチが落ち着いた場所から押し出すための小突きに過ぎない。
+# 行ごとの指定の材料。イベントログはセッション中ずっと同じ形 — `tool: Bash`
+# の繰り返し — なので、これが無いとどのバッチもほとんど同じ入力から生成されて
+# ほとんど同じものが返る。
+#
+# 以前はバッチに 1 つ「〜のあたりから」と切り口を添えていたが、それでは
+# 語尾と文型が揃ったままだった (log に「気になるのだ」「不思議なのだ」の
+# 一文が並ぶ)。"Where You Inject Diversity Matters" (arXiv:2606.10302) は、
+# ランダムな概念をプロンプトの頭に貼るだけの注入は出力までほとんど届かず
+# (transmission ~0.003)、出力 1 つごとに tone / format / perspective を指定する
+# 注入なら届く (~0.5) と測っている。ここはその
+# 後者で、行ごとに「見るもの・形・気分」の 3 軸を引く。形はバッチ内で
+# 重ならないように引く — 同じ型の文が並ぶのが、いちばん耳につく繰り返し。
 _ANGLES: tuple[str, ...] = (
     "目の前の画面で起きていること",
     "自分の体調や気分",
@@ -48,6 +57,45 @@ _ANGLES: tuple[str, ...] = (
     "自分が住んでいる小さい機械のこと",
     "数えたり、くらべたりしてみること",
 )
+
+# 文の形。名前の意味は chatter_prompt.md の「形の名前」が説明する。
+# ここに無い形をモデルが勝手に選ぶことはあるが、それでよい。
+_FORMS: tuple[str, ...] = (
+    "言い切り",
+    "自分への問い",
+    "数え言葉",
+    "思い出の断片",
+    "たとえ",
+    "口ずさみ",
+    "途中でやめる",
+    "気づいて言い直す",
+    "小さな宣言",
+    "感嘆",
+    "ひとこと",
+)
+
+_MOODS: tuple[str, ...] = (
+    "ごきげん",
+    "だるい",
+    "ちょっと不満",
+    "得意げ",
+    "ぼんやり",
+    "そわそわ",
+    "満足",
+)
+
+
+@dataclass(frozen=True)
+class LineSpec:
+    """1 行ぶんの指定。プロンプトには番号付きの 1 行で載る。"""
+
+    subject: str
+    form: str
+    mood: str
+
+    def describe(self) -> str:
+        return f"見るもの: {self.subject} / 形: {self.form} / 気分: {self.mood}"
+
 
 # 生成が失敗したときに言うもの — CLI が無い、ログインしていない、
 # ネットワークが無い。稀ではあるが、これが無いとセッションの残りをずっと
@@ -115,15 +163,19 @@ class BatchedLineSource:
             self._prompt = self._cfg.prompt_path.read_text(encoding="utf-8")
         return self._prompt
 
-    def _angle(self) -> str:
-        """`_ANGLES` から、バッチごとに引き直したヒントを 2 つ。
+    def _specs(self) -> list[LineSpec]:
+        """バッチの行ごとに、見るもの・形・気分を引く。
 
-        1 つではなく 2 つなのは、ヒントが 1 つだとそれについて話せという
-        指示に読めるから。これは独り言なので、どちら側に寄ってもよいペアに
-        しておけば、モデルには両方を無視する余地も残る。
+        形だけは非復元で引く。バッチが `_FORMS` より長いときは一巡してから
+        引き直すので、重なるのは 2 周目以降だけ。見るものと気分は重なって
+        よい — 同じ物を違う形で言うのは繰り返しに聞こえない。
         """
-        first, second = self._rng.sample(_ANGLES, 2)
-        return f"{first}と{second}"
+        forms: list[str] = []
+        while len(forms) < self._cfg.batch:
+            forms += self._rng.sample(_FORMS, min(len(_FORMS), self._cfg.batch - len(forms)))
+        return [
+            LineSpec(self._rng.choice(_ANGLES), form, self._rng.choice(_MOODS)) for form in forms
+        ]
 
     def _sessions_note(self) -> str:
         """今このマシンで動いているセッションが何をしているか。無ければ空。
@@ -159,7 +211,13 @@ class BatchedLineSource:
         if spoken:
             said = "\n".join(f"- {line}" for line in spoken)
             parts.append(f"すでに言ったこと。話題も言い回しも繰り返さない:\n{said}")
-        parts.append(f"今回は{self._angle()}のあたりから。独り言を {self._cfg.batch} 個。")
+        specs = "\n".join(f"{n}. {spec.describe()}" for n, spec in enumerate(self._specs(), 1))
+        # 上限を言わないと「気づいて言い直す」のような形は 30 字を越えて、
+        # `clean` が語尾を落とす。切れた台詞は画一的な台詞より耳につく。
+        parts.append(
+            f"独り言を {self._cfg.batch} 個。各行 {self._cfg.max_chars} 文字以内。"
+            f"行ごとの指定:\n{specs}"
+        )
         return "\n\n".join(parts)
 
     def next_line(self, context: Sequence[Event]) -> str | None:

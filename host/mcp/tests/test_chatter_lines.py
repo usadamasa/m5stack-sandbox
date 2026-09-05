@@ -6,6 +6,7 @@ CLI を実際に起こすことは無い。`subprocess.run` を差し替える�
 
 import json
 import logging
+import random
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -193,6 +194,24 @@ class SessionContextTests(unittest.TestCase):
 
     def test_without_a_registry_the_prompt_is_unchanged(self) -> None:
         self.assertNotIn("セッション", self._prompt(None))
+
+
+class LineSpecTests(unittest.TestCase):
+    """行ごとの指定。バッチに切り口を 1 つ添えるのではなく、行ごとに形・気分・
+    見るものを渡す。同じバッチの中で形が重なると、そこだけ同じ型の文が並ぶ。"""
+
+    def test_every_line_in_a_batch_gets_its_own_form(self) -> None:
+        cfg = ChatterConfig(batch=4)
+        specs = ClaudeCliLineSource(cfg, random.Random(7))._specs()
+        self.assertEqual(len(specs), 4)
+        forms = [spec.form for spec in specs]
+        self.assertEqual(len(set(forms)), 4, forms)
+        prompt = ClaudeCliLineSource(cfg, random.Random(7))._user_prompt([])
+        for n, spec in enumerate(specs, 1):
+            self.assertIn(f"{n}. ", prompt)
+            self.assertIn(spec.form, prompt)
+            self.assertIn(spec.mood, prompt)
+            self.assertIn(spec.subject, prompt)
 
 
 class ClaudeCliLineSourceTests(unittest.TestCase):

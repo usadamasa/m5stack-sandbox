@@ -68,7 +68,10 @@ _HISTORY_DEPTH = 12
 # How many past lines come back. Long enough to cover more than one
 # batch — a repeat inside a batch is the model's to avoid, a repeat
 # across batches is what it cannot see without this.
-_SAID_DEPTH = 10
+#
+# 10 では足りなかった。log では USB ケーブルの話が 1 時間おきに戻ってきて
+# いて、それは 10 行 (バッチ 1.5 回分) より外にあった。30 行で 1 時間強。
+_SAID_DEPTH = 30
 
 
 class ChatterService:

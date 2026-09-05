@@ -363,7 +363,7 @@ class VarietyTests(unittest.TestCase):
         self.assertIn("ずんだ餅が食べたいのだ", prompt)
         self.assertNotIn(f"- {SAID}:", prompt, "a said line is not one of the events")
 
-    def test_the_angle_is_drawn_fresh_for_every_batch(self) -> None:
+    def test_the_specs_are_drawn_fresh_for_every_batch(self) -> None:
         cfg = ChatterConfig()
         drawn = {
             ClaudeCliLineSource(cfg, random.Random(seed))._user_prompt([]) for seed in range(12)
