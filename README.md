@@ -84,18 +84,9 @@ member とファイルの一覧は [CLAUDE.md](CLAUDE.md#構成) にある。
 
 ## セットアップ
 
-### Python
-
-```bash
-uv sync --all-packages
-```
-
-`.venv` が 1 つ作られる。以降のコマンドは `uv run` を通す (シリアルポートを開く
-`tcsetattr` が sandbox で拒否されるため)。
-
 ### CLI ツール
 
-ライセンス検査に `trivy` を使う。`flake.nix` の devShell で揃え、版は `flake.lock` が固定する
+`uv` と、ライセンス検査に使う `trivy` は `flake.nix` の devShell で揃え、版は `flake.lock` が固定する
 nixpkgs で決まる。CI も同じ flake を使う。
 
 - flakes を有効にした [Nix](https://nixos.org/)
@@ -107,6 +98,15 @@ direnv allow
 ```
 
 ツールの版を上げるときは `nix flake update` で `flake.lock` を更新する。
+
+### Python
+
+```bash
+uv sync --all-packages
+```
+
+Python 本体と依存は uv が入れ、`.venv` が 1 つ作られる。以降のコマンドは `uv run` を通す
+(シリアルポートを開く `tcsetattr` が sandbox で拒否されるため)。
 
 ### VOICEVOX ENGINE
 
