@@ -10,7 +10,11 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    # PR 1 本ごとに CI の matrix が全部走るので、version update は 1 本にまとめる。
-    groups:
-      uv:
-        patterns: ["*"]
+    # group は作らず、パッケージごとに PR を出させる。group の PR が開いたままだと
+    # 同じ group の更新が全部止まり、1 つの更新の不具合で他の更新まで巻き添えになる。
+    ignore:
+      # mpy-cross の版はボードの MicroPython (1.27、.mpy ABI v6) に合わせて固定している。
+      # 上げるとデバイスでの ImportError になり、CI の mpy-build では検出できない。
+      # ファームを上げるときに手で動かす。
+      - dependency-name: mpy-cross
+        versions: [">= 1.28"]
