@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # uv workspace の lockfile はルートの uv.lock 1 つだけ。ルートを指せば member の
+  # pyproject.toml と uv.lock を同じ PR で上げる。member のディレクトリを pip で
+  # 拾わせると pyproject.toml だけが上がり、CI の `uv sync --locked` で落ちる。
+  #
+  # github-actions は載せない。版は actions.lock が SHA で固定していて、`uses:` の
+  # タグだけを上げる PR は CI の actions-lock ジョブで落ちる。
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    # PR 1 本ごとに CI の matrix が全部走るので、version update は 1 本にまとめる。
+    groups:
+      uv:
+        patterns: ["*"]
