@@ -5,11 +5,11 @@ runs:
   using: 'composite'
   steps:
     - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      uses: DeterminateSystems/nix-installer-action@v23
 
     # devShell の PATH と env を GITHUB_PATH / GITHUB_ENV に書くので、以後の step は素で動く
     - name: Load devShell
-      uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
+      uses: nicknovitski/nix-develop@v1.2.1
 
     # setup-uv の enable-cache と同じ仕組みにする。uv のキャッシュだけを、依存の宣言 (pyproject.toml と
     # uv.lock) のハッシュをキーに復元し、ジョブの成功時に保存する。setup-uv の既定に合わせて prune せず、
@@ -19,7 +19,7 @@ runs:
       run: printf 'UV_CACHE_DIR=%s\n' "$RUNNER_TEMP/uv-cache" >> "$GITHUB_ENV"
 
     - name: Restore uv cache
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      uses: actions/cache@v6.1.0
       with:
         path: ${{ runner.temp }}/uv-cache
         key: uv-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/pyproject.toml', '**/uv.lock') }}
