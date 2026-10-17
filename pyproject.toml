@@ -14,7 +14,7 @@ members = [
 # member が宣言するのは、その member のコードが必要とするものだけ。
 [dependency-groups]
 dev = [
-    "basedpyright>=1.31.0",
+    "basedpyright>=1.40.2",
     "poethepoet>=0.38.0",
     "pytest>=8.4.0",
     "pytest-cov>=6.2.0",
