@@ -16,9 +16,10 @@
     in
     {
       devShells = forAllSystems (pkgs: {
-        # Python 側 (uv・mpy-cross・mpremote など) は uv が管理するので載せない
+        # Python 本体と Python のパッケージ (mpy-cross・mpremote など) は uv が入れるので載せない
         default = pkgs.mkShellNoCC {
           packages = with pkgs; [
+            uv
             # poe license がライセンス検査に使う
             trivy
           ];

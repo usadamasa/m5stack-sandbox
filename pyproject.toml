@@ -139,7 +139,7 @@ known-first-party = [
 # インストール済みの `.venv` が要る。`--table-mode detailed` は成功時に
 # 何も出させないためで、落ちたときだけ該当パッケージの表が出る。
 #
-# trivy は flake.nix の devShell から PATH に載る。対話シェルは direnv
+# trivy は uv と同じく flake.nix の devShell から PATH に載る。対話シェルは direnv
 # (nix-direnv の `use flake`)、Claude Code の Bash は direnv の hook、CI は
 # `.github/actions/setup-nix` がそれぞれ同じ flake.lock の版を渡す。
 [tool.poe.tasks.license]
