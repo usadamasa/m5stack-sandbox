@@ -139,14 +139,14 @@ known-first-party = [
 # インストール済みの `.venv` が要る。`--table-mode detailed` は成功時に
 # 何も出させないためで、落ちたときだけ該当パッケージの表が出る。
 #
-# `aqua exec` を挟むのは PATH に依存しないため。.envrc が通す PATH は
-# direnv を hook した対話シェルにしか効かず、そこを踏まない経路 (CI、
-# エディタ、Claude Code の Bash) から叩くと trivy が見つからない。
+# trivy は uv と同じく flake.nix の devShell から PATH に載る。対話シェルは direnv
+# (nix-direnv の `use flake`)、Claude Code の Bash は direnv の hook、CI は
+# `.github/actions/setup-nix` がそれぞれ同じ flake.lock の版を渡す。
 [tool.poe.tasks.license]
 help = "依存のライセンスを trivy の分類で検査する"
 env = { TRIVY_CACHE_DIR = "tmp/trivy-cache" }
 cmd = """
-aqua exec -- trivy rootfs .venv
+trivy rootfs .venv
   --scanners license
   --severity CRITICAL,HIGH,MEDIUM,UNKNOWN
   --exit-code 1
@@ -158,7 +158,7 @@ aqua exec -- trivy rootfs .venv
 [tool.poe.tasks.license-list]
 help = "依存が名乗るライセンスを分類つきで一覧する (判定はしない)"
 env = { TRIVY_CACHE_DIR = "tmp/trivy-cache" }
-cmd = "aqua exec -- trivy rootfs .venv --scanners license --quiet --table-mode detailed"
+cmd = "trivy rootfs .venv --scanners license --quiet --table-mode detailed"
 
 # 行数のラチェット。しきい値 (400 行) を超えたファイルは
 # `file-length-baseline.json` に現在値で載り、そこから増やせなくなる。減った

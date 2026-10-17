@@ -13,6 +13,9 @@ vendor/
 
 .venv/
 
+# nix-direnv が use flake の評価結果を置く。
+/.direnv/
+
 __pycache__/
 *.py[cod]
 
