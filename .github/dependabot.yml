@@ -14,3 +14,9 @@ updates:
     groups:
       uv:
         patterns: ["*"]
+    ignore:
+      # mpy-cross の版はボードの MicroPython (1.27、.mpy ABI v6) に合わせて固定している。
+      # 上げるとデバイスでの ImportError になり、CI の mpy-build では検出できない。
+      # ファームを上げるときに手で動かす。
+      - dependency-name: mpy-cross
+        versions: [">= 1.28"]
