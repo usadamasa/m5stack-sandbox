@@ -5,8 +5,8 @@ runs:
   using: 'composite'
   steps:
     - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      uses: DeterminateSystems/nix-installer-action@v23
 
     # devShell の PATH と env を GITHUB_PATH / GITHUB_ENV に書くので、以後の step は素で動く
     - name: Load devShell
-      uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
+      uses: nicknovitski/nix-develop@v1.2.1

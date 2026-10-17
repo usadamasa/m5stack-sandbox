@@ -25,8 +25,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
       # --locked fails rather than silently re-resolving, so a
@@ -58,8 +58,8 @@ jobs:
       matrix:
         member: [device, host/link, host/mcp, host/tools]
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
       - run: uv sync --locked --all-packages
@@ -73,8 +73,8 @@ jobs:
   mpy-build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
       - run: uv sync --locked --all-packages
@@ -87,8 +87,8 @@ jobs:
       matrix:
         member: [device, host/link, host/mcp, host/tools]
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
       - run: uv sync --locked --all-packages
@@ -108,8 +108,8 @@ jobs:
   isolation:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
       - run: uv sync --locked --package buddy-host-mcp
@@ -132,14 +132,29 @@ jobs:
   license:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
       # trivy は flake.nix の devShell から取る。版の正本は flake.lock で、手元と同じものが入る。
-      - uses: ./.github/actions/setup-nix
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: $/.github/actions/setup-nix
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
       - run: uv sync --locked --all-packages
       - run: uv run poe license
+
+  # action の SHA は actions.lock が固定し、ランナーが実行時に照合する。ここで見るのは
+  # その手前のずれ (lockfile に無い `uses:`、使われていない記録、上流から辿れなくなった pin)。
+  actions-lock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install gh-actions-lock
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh extension install github/gh-actions-lock --pin v0.2.0
+      - name: Verify actions are locked
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh actions-lock --verify
 
   # The single required status check. Branch protection points at this
   # job and nothing else, so adding or renaming a job above only means
@@ -153,7 +168,7 @@ jobs:
   # キャンセル時にジョブごと skipped になり、required check が通る。
   ci-status-check:
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, mpy-build, test, isolation, license]
+    needs: [lint, typecheck, mpy-build, test, isolation, license, actions-lock]
     permissions: {}
     if: always()
     steps:
