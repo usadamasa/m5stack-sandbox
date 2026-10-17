@@ -17,7 +17,7 @@ dependencies = [
     #
     # 実行時依存。以前は dev group にあったが、MCP server の経路
     # (buddy_mcp -> buddy_bridge -> device_repl) が起動のたびに import する。
-    "mpremote>=1.28.0",
+    "mpremote>=1.29.0",
     "pyserial==3.5",
 ]
 
