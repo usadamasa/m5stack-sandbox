@@ -9,7 +9,7 @@ license = "Apache-2.0"
 requires-python = ">=3.13"
 dependencies = [
     "buddy-host-link",
-    "mcp==2.0.0",
+    "mcp==2.2.0",
 ]
 
 # インストールされた環境から直接叩けるようにする。常駐 daemon はエージェントの
