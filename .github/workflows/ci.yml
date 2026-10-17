@@ -133,11 +133,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # trivy のバージョンは aqua.yaml が持つ。手元と同じものが入る。
-      - uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
-        with:
-          aqua_version: v2.62.3
-      - run: aqua install
+      # trivy は flake.nix の devShell から取る。版の正本は flake.lock で、手元と同じものが入る。
+      - uses: ./.github/actions/setup-nix
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true

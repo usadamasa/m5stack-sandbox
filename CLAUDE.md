@@ -65,10 +65,10 @@ ruff の C901 はこちらへ移したので lint 側には無い (`per-file-ign
 タスクランナーは poethepoet。定義はルートの `pyproject.toml` の `[tool.poe.tasks]`、一覧は
 `uv run poe --help`。CI に書くのはタスク名だけにして、コマンドと根拠は pyproject 側に置く。
 
-`poe license` は `aqua exec` 越しに `trivy` を呼ぶ。バージョンは `aqua.yaml` が持つ。
-`aqua exec` を挟むのは PATH に依存しないためで、`.envrc` が通す PATH は direnv を hook した
-対話シェルにしか効かない (Claude Code の Bash からは見えない)。trivy は `.venv` の
-site-packages を読むため、`uv sync` の後でないと何も検出しない。
+`poe license` は `flake.nix` の devShell が PATH に載せる `trivy` を呼ぶ。版は `flake.lock` が持つ。
+どの経路で PATH に載るかは `pyproject.toml` の `license` タスクのコメントにある。
+`command not found` になったら `.envrc` が未反映なので、サブディレクトリへ `cd` し直す。
+trivy は `.venv` の site-packages を読むため、`uv sync` の後でないと何も検出しない。
 
 pytest と basedpyright は **member ごと**に回す。どちらも 1 プロセス 1 プロジェクトで、
 member の設定を読むにはそこで動かすしかない (`device` / `host/link` / `host/mcp` /

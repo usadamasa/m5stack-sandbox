@@ -95,16 +95,18 @@ uv sync --all-packages
 
 ### CLI ツール
 
-ライセンス検査に `trivy` を使う。バージョンは `aqua.yaml` が持つ。
+ライセンス検査に `trivy` を使う。`flake.nix` の devShell で揃え、版は `flake.lock` が固定する
+nixpkgs で決まる。CI も同じ flake を使う。
+
+- flakes を有効にした [Nix](https://nixos.org/)
+- [direnv](https://direnv.net/) と [nix-direnv](https://github.com/nix-community/nix-direnv)。`.envrc` が
+  `use flake` で devShell を読み込むので `direnv allow` する
 
 ```bash
-aqua install
-direnv allow   # 対話シェルから trivy を直接叩くとき
+direnv allow
 ```
 
-`aqua` と `direnv` 自体は別途入れておく (`brew install aqua direnv`)。`poe license` は
-`aqua exec` 越しに呼ぶので direnv は要らない。`.envrc` が要るのは、シェルから `trivy` を
-そのまま打ちたいときだけ。
+ツールの版を上げるときは `nix flake update` で `flake.lock` を更新する。
 
 ### VOICEVOX ENGINE
 
