@@ -15,7 +15,7 @@ members = [
 [dependency-groups]
 dev = [
     "basedpyright>=1.40.2",
-    "poethepoet>=0.38.0",
+    "poethepoet>=0.49.0",
     "pytest>=8.4.0",
     "pytest-cov>=6.2.0",
     "ruff>=0.17.1",
