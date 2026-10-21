@@ -4,17 +4,30 @@ updates:
   # pyproject.toml と uv.lock を同じ PR で上げる。member のディレクトリを pip で
   # 拾わせると pyproject.toml だけが上がり、CI の `uv sync --locked` で落ちる。
   #
-  # github-actions は載せない。版は actions.lock が SHA で固定していて、`uses:` の
-  # タグだけを上げる PR は CI の actions-lock ジョブで落ちる。
+  # 3 つとも group は作らず、パッケージごとに PR を出させる。group の PR が開いた
+  # ままだと同じ group の更新が全部止まり、1 つの更新の不具合で他の更新まで
+  # 巻き添えになる。
   - package-ecosystem: uv
     directory: /
     schedule:
       interval: weekly
-    # group は作らず、パッケージごとに PR を出させる。group の PR が開いたままだと
-    # 同じ group の更新が全部止まり、1 つの更新の不具合で他の更新まで巻き添えになる。
     ignore:
       # mpy-cross の版はボードの MicroPython (1.27、.mpy ABI v6) に合わせて固定している。
       # 上げるとデバイスでの ImportError になり、CI の mpy-build では検出できない。
       # ファームを上げるときに手で動かす。
       - dependency-name: mpy-cross
         versions: [">= 1.28"]
+
+  # Dependabot は `uses:` のタグと actions.lock の SHA を同じ commit で上げるので、
+  # CI の actions-lock ジョブ (`gh actions-lock --verify`) を通る。
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  # devShell のツール (uv、trivy など) の版は flake.lock の nixpkgs の rev で決まる。
+  # nix の対象は flake.lock の input の更新だけで、security updates は出ない。
+  - package-ecosystem: nix
+    directory: /
+    schedule:
+      interval: weekly
