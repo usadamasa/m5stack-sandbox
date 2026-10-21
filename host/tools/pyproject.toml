@@ -22,7 +22,7 @@ dependencies = [
     # 1 バイトのアルファを並べただけの形式なので、必要なのは FreeType に
     # 8bit で描かせる口だけ。fontTools を足さずに済ませているのは、
     # cmap を読まなくても .notdef との一致で未収録文字を弾けるため。
-    "pillow>=11.0,<12",
+    "pillow>=12.3.0,<13",
 ]
 
 [tool.uv.sources]
