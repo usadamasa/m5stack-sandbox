@@ -8,6 +8,7 @@ workflows:
         - 'actions/checkout@v7.0.1'
         - 'determinatesystems/nix-installer-action@v23'
         - 'nicknovitski/nix-develop@v1.2.1'
+        - 'usadamasa/gh-manage@main'
 dependencies:
     'actions/cache@v6.1.0':
         ref: 'v6.1.0'
@@ -29,3 +30,8 @@ dependencies:
         commit: 'sha1-9be7cfb4b10451d3390a75dc18ad0465bed4932a'
         owner_id: 151337
         repo_id: 706956179
+    'usadamasa/gh-manage@main':
+        ref: 'main'
+        commit: 'sha1-48cf26858899ac4fc1671089d4eb57835513d03d'
+        owner_id: 513226
+        repo_id: 1390013800
