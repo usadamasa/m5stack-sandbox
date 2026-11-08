@@ -32,7 +32,7 @@ sources = ["src"]
 only-include = ["src"]
 
 [dependency-groups]
-dev = ["types-pyserial>=3.5.0.20250822"]
+dev = ["types-pyserial>=3.5.0.20261104"]
 
 # ---------------------------------------------------------------- ruff
 
