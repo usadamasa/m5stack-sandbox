@@ -31,6 +31,11 @@ working tree の編集が届かない。
 これから書くコメント・docstring、コミットメッセージ、PR の本文は日本語 (標準語) で書く。
 既存の英語コメントは触らない。当面は混在する。
 
+## PR のマージ
+
+merge commit だけが有効で、squash と rebase はリポジトリ設定で無効。`gh pr merge <n> --merge` を使う
+(`--squash` は `Squash merges are not allowed on this repository` で失敗する)。
+
 ## コマンド
 
 ```bash
@@ -49,6 +54,8 @@ uv run poe metrics                                            # 複雑度・凝�
 現在値で載り、そこから増やせない。減らしたぶんは `--update` が取り込んで baseline が
 下がる。上げる方向へは動かないので、baseline に並ぶ行数がそのままリファクタリングの
 backlog になる。新しく超えたファイルを意図して受け入れるときだけ `--adopt`。
+対象は `git ls-files` で集めるので、untracked のファイルはしきい値を超えていても数えられない。
+新しく作ったファイルは `git add` してから回す。
 
 `poe complexity` は同じ仕掛けを関数ごとの循環的複雑度に掛ける。しきい値 10、baseline は
 `complexity-baseline.json`、キーは `path::function`。関数をリネームすると baseline からは
@@ -124,6 +131,11 @@ buddy-mcpd stop                      # deploy や esptool の前に
   ことになる。editable なら working tree をそのまま見る
 - **ホスト側のコードを直したら `buddy-mcpd restart`。** セッションの再起動は要らない。
   daemon は import 済みのコードで動き続けるので、restart しない限り反映されない
+- **worktree で直したぶんは restart でも載らない。** editable install が指すのは本体 checkout の
+  `host/*/src` で、`.claude/worktrees/*` の `host/` ではない。worktree の変更を実機に当てるときは
+  `buddy-mcpd stop` し、worktree から `buddy_bridge.py` などを `uv run python ...` で直接回す
+  (`run_in_background` を付けない)。終わったら `buddy-mcpd start` で戻す。daemon に載るのは
+  マージ後に本体で restart したとき
 - **HTTP は `127.0.0.1:8787` 固定**。`mcp-servers.json` が静的な URL を持つので、
   `config.toml` で `http_port` を変えたら登録側も直す。ずれは `buddy-mcpd status` の
   `url` に出る
