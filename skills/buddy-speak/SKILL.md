@@ -62,6 +62,8 @@ PSRAM が無く heap も数十 KB しかないので、WAV 全体をメモリに
 GIL 付きなので逃げ場がない。再生が始まってからは tick ごとに枠が空くぶんしか読まないので
 UI は動く。
 
+ノイズ・速さ・途切れを録音で測るときは [measuring-audio.md](measuring-audio.md)。
+
 ## サンプリングレート
 
 既定は 24 kHz (`buddy_verbs.DEFAULT_RATE`)。VOICEVOX のネイティブで、エンジン側の
